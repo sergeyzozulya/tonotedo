@@ -230,13 +230,16 @@ describe("mock IPC command surface", () => {
     }
   });
 
-  it("real.ts returns not_implemented for unimplemented commands (ref #30)", async () => {
+  it("real.ts returns io_error for commands when Tauri is absent (first-wave commands are implemented, ref #30)", async () => {
+    // First-wave IPC commands are now implemented (issue #30 done).
+    // In Node/vitest without a Tauri runtime, invoke() throws; we wrap that
+    // as io_error rather than not_implemented.
     const { real } = await import("../lib/ipc/real.js");
     const result = await real.read_entry("any-entry");
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.error.code).toBe("not_implemented");
-      expect(result.error.detail).toMatch(/#30/);
+      // io_error: Tauri invoke not available in Node environment.
+      expect(result.error.code).toBe("io_error");
     }
   });
 });
