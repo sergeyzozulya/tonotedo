@@ -131,11 +131,15 @@ pnpm dev
 
 1. The page mounts the **full production editor** (all extensions, mock IPC)
    with a deterministic ~10 000-word markdown document (seed `0xdeadbeef`).
-2. Click **Run benchmark** — the harness executes 300 scripted keystrokes at
-   realistic positions (middle half of document), measuring each via
-   `performance.now()` + double-rAF (transaction → next painted frame).
-3. Results (p50/p95/max typing latency, open-time, switch-time) appear
-   on-page, are `console.table`'d, and can be downloaded as JSON.
+2. Click **Run benchmark** — the harness calibrates the display frame interval,
+   then executes 300 scripted keystrokes (middle half of document), measuring
+   per keystroke: **busy time** (synchronous dispatch cost — the editor's real
+   work; this is what the 16 ms budget governs), **missed-next-frame rate**
+   (change failed to reach the next vsync = visible jank), and informational
+   painted time (vsync-bound; floors at ~1.5 frame intervals even at zero work
+   — do NOT compare it against the 16 ms budget).
+3. Results appear on-page, are `console.table`'d, and can be downloaded as JSON.
+   Pass = busy p95 < 16 ms AND missed-next-frame ≤ 1%.
 
 The JSON report includes `meta.userAgent` so desktop vs phone results can be
 distinguished. For the Phase 3 exit gate, collect results on:

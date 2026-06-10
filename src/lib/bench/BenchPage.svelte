@@ -4,10 +4,18 @@
   // Part 1 of the issue #16 exit gate (spec 0006 §Performance budgets):
   //   - Generates a deterministic ~10k-word markdown doc on mount
   //   - Mounts the FULL production editor (all extensions, mock IPC)
-  //   - On "Run benchmark": executes 300 scripted keystrokes at realistic
-  //     positions, measuring per-keystroke input-to-paint latency via
-  //     performance.now() around dispatch + double-rAF (transaction → next frame)
-  //   - Reports p50 / p95 / max, open-time, and switch-time
+  //   - On "Run benchmark": calibrates the display frame interval, then executes
+  //     300 scripted keystrokes measuring per-keystroke BUSY time (synchronous
+  //     dispatch cost — CM6 applies transactions + DOM writes synchronously),
+  //     missed-next-frame rate, and informational painted time (vsync-bound)
+  //   - Reports busy p50/p95/max, missed-frame %, open-time, and switch-time
+  //
+  // WHY busy time, not double-rAF: a double-rAF wait is bounded below by ~1.5
+  // frame intervals of pure vsync idle (~25 ms at 60 Hz) even at zero editor
+  // work — the first harness version measured exactly that constant. The 0006
+  // budget ("input-to-paint < 16 ms") is satisfied iff the editor's work fits
+  // within one frame: busy p95 < 16 ms AND the change reaches the next frame
+  // (missed-next-frame ≤ 1%).
   //   - Results shown on-page, console.table'd, and downloadable as JSON
   //
   // Budgets (spec 0006 + 0013):
@@ -50,9 +58,13 @@
   let status = $state<RunStatus>("idle");
   let openMs = $state<number | null>(null);
   let switchMs = $state<number | null>(null);
-  let typingStats = $state<{ p50: number; p95: number; max: number } | null>(null);
+  let busyStats = $state<{ p50: number; p95: number; max: number } | null>(null);
+  let paintedStats = $state<{ p50: number; p95: number; max: number } | null>(null);
+  let frameMs = $state<number | null>(null);
+  let missedFramePct = $state<number | null>(null);
   let errorMsg = $state<string | null>(null);
-  let keystrokeSamples = $state<number[]>([]);
+  let busySamples = $state<number[]>([]);
+  let paintedSamples = $state<number[]>([]);
 
   // ── Editor mount ──────────────────────────────────────────────────────────────
 
@@ -84,6 +96,24 @@
         requestAnimationFrame(() => resolve());
       });
     });
+  }
+
+  /**
+   * Calibrate the display's frame interval by timing ~30 consecutive rAF
+   * callbacks and taking the median delta. Needed to interpret paint-cycle
+   * numbers: a double-rAF wait is bounded below by ~1.5 frame intervals of
+   * pure vsync idle time even when the actual work is near zero.
+   */
+  async function calibrateFrameInterval(): Promise<number> {
+    const deltas: number[] = [];
+    let prev = await new Promise<number>((r) => requestAnimationFrame(r));
+    for (let i = 0; i < 30; i++) {
+      const t = await new Promise<number>((r) => requestAnimationFrame(r));
+      deltas.push(t - prev);
+      prev = t;
+    }
+    deltas.sort((a, b) => a - b);
+    return deltas[Math.floor(deltas.length / 2)];
   }
 
   /**
@@ -152,16 +182,37 @@
 
     status = "running";
     errorMsg = null;
-    typingStats = null;
+    busyStats = null;
+    paintedStats = null;
+    missedFramePct = null;
     switchMs = null;
-    keystrokeSamples = [];
+    busySamples = [];
+    paintedSamples = [];
 
     try {
+      // ── Calibrate the display refresh interval first ─────────────────────────
+      // Without this, paint-cycle numbers are uninterpretable: a double-rAF wait
+      // includes ~1.5 frame intervals of pure vsync idle even at zero work, so on
+      // a 60 Hz display every sample floors at ~25-27 ms regardless of the editor.
+      const frame = await calibrateFrameInterval();
+      frameMs = frame;
+
       const docLen = view.state.doc.length;
       const positions = keystrokePositions(docLen);
-      const durations: number[] = [];
+      const busy: number[] = [];
+      const painted: number[] = [];
+      let missed = 0;
 
       // ── Typing latency: 300 scripted insertions ───────────────────────────────
+      // Three numbers per keystroke:
+      //   busyMs    — synchronous cost of dispatch (CM6 applies the transaction
+      //               and writes the DOM synchronously). This is the editor's
+      //               actual work and the number the 0006 16 ms budget governs:
+      //               if busy < frame budget, the change paints on the next vsync.
+      //   frameFit  — dispatch → first rAF (start of the frame that paints the
+      //               change). Used only to detect MISSED frames (> 1.5 × frame).
+      //   paintedMs — dispatch → second rAF (change visibly painted). Reported
+      //               for information; dominated by vsync wait, not by work.
       for (const pos of positions) {
         const t0 = performance.now();
 
@@ -171,15 +222,22 @@
           changes: { from: safePos, to: safePos, insert: "a" } satisfies ChangeSpec,
           selection: { anchor: safePos + 1 },
         } satisfies Parameters<typeof view.dispatch>[0]);
+        busy.push(performance.now() - t0);
 
-        // Wait for two frames (transaction → update → layout → paint).
-        await afterTwoPaints();
+        const frameFit = await new Promise<number>((r) =>
+          requestAnimationFrame(() => r(performance.now() - t0)),
+        );
+        if (frameFit > 1.5 * frame) missed++;
 
-        durations.push(performance.now() - t0);
+        await new Promise<void>((r) => requestAnimationFrame(() => r()));
+        painted.push(performance.now() - t0);
       }
 
-      keystrokeSamples = durations;
-      typingStats = percentiles(durations);
+      busySamples = busy;
+      paintedSamples = painted;
+      busyStats = percentiles(busy);
+      paintedStats = percentiles(painted);
+      missedFramePct = (missed / positions.length) * 100;
 
       // ── Switch time: swap the entire doc ─────────────────────────────────────
       const t1 = performance.now();
@@ -198,11 +256,14 @@
       const report = buildReport();
       console.log("[bench] #16 10k-word typing benchmark results:");
       console.table({
+        "frame interval (ms)": { value: frameMs?.toFixed(2) },
         "open (ms)": { value: openMs?.toFixed(2) },
         "switch (ms)": { value: switchMs?.toFixed(2) },
-        "p50 typing (ms)": { value: typingStats.p50.toFixed(2) },
-        "p95 typing (ms)": { value: typingStats.p95.toFixed(2) },
-        "max typing (ms)": { value: typingStats.max.toFixed(2) },
+        "busy p50 (ms)": { value: busyStats?.p50.toFixed(3) },
+        "busy p95 (ms)": { value: busyStats?.p95.toFixed(3) },
+        "busy max (ms)": { value: busyStats?.max.toFixed(3) },
+        "missed frames (%)": { value: missedFramePct?.toFixed(1) },
+        "painted p95 (ms, vsync-bound)": { value: paintedStats?.p95.toFixed(2) },
       });
       console.log("[bench] full report (JSON):", JSON.stringify(report, null, 2));
     } catch (e) {
@@ -223,16 +284,20 @@
       seed: number;
     };
     timings: {
+      frameMs: number | null;
       openMs: number | null;
       switchMs: number | null;
-      typing: { p50: number; p95: number; max: number } | null;
+      busy: { p50: number; p95: number; max: number } | null;
+      painted: { p50: number; p95: number; max: number } | null;
+      missedFramePct: number | null;
     };
     budgets: {
-      "typing p95 < 16ms": boolean | null;
+      "typing busy p95 < 16ms": boolean | null;
+      "missed next-frame <= 1%": boolean | null;
       "open < 100ms": boolean | null;
       "switch < 50ms": boolean | null;
     };
-    samples: number[];
+    samples: { busy: number[]; painted: number[] };
   }
 
   function buildReport(): BenchReport {
@@ -242,20 +307,24 @@
         userAgent: typeof navigator !== "undefined" ? navigator.userAgent : "unknown",
         docWords,
         docChars,
-        keystrokes: keystrokeSamples.length,
+        keystrokes: busySamples.length,
         seed: BENCH_SEED,
       },
       timings: {
+        frameMs,
         openMs,
         switchMs,
-        typing: typingStats,
+        busy: busyStats,
+        painted: paintedStats,
+        missedFramePct,
       },
       budgets: {
-        "typing p95 < 16ms": typingStats ? typingStats.p95 < 16 : null,
+        "typing busy p95 < 16ms": busyStats ? busyStats.p95 < 16 : null,
+        "missed next-frame <= 1%": missedFramePct !== null ? missedFramePct <= 1 : null,
         "open < 100ms": openMs !== null ? openMs < 100 : null,
         "switch < 50ms": switchMs !== null ? switchMs < 50 : null,
       },
-      samples: keystrokeSamples,
+      samples: { busy: busySamples, painted: paintedSamples },
     };
   }
 
@@ -333,22 +402,42 @@
               <td class={passClass(switchMs < 50)}>{passStr(switchMs < 50)}</td>
             </tr>
           {/if}
-          {#if typingStats}
+          {#if frameMs !== null}
             <tr>
-              <td>Typing p50</td>
-              <td>{typingStats.p50.toFixed(2)}</td>
+              <td>Display frame interval</td>
+              <td>{frameMs.toFixed(2)}</td>
+              <td>—</td>
+              <td class="neutral">—</td>
+            </tr>
+          {/if}
+          {#if busyStats}
+            <tr>
+              <td>Typing busy p50 (editor work per keystroke)</td>
+              <td>{busyStats.p50.toFixed(3)}</td>
               <td>—</td>
               <td class="neutral">—</td>
             </tr>
             <tr>
-              <td>Typing p95</td>
-              <td>{typingStats.p95.toFixed(2)}</td>
+              <td>Typing busy p95</td>
+              <td>{busyStats.p95.toFixed(3)}</td>
               <td>&lt; 16 ms</td>
-              <td class={passClass(typingStats.p95 < 16)}>{passStr(typingStats.p95 < 16)}</td>
+              <td class={passClass(busyStats.p95 < 16)}>{passStr(busyStats.p95 < 16)}</td>
             </tr>
             <tr>
-              <td>Typing max</td>
-              <td>{typingStats.max.toFixed(2)}</td>
+              <td>Missed next-frame</td>
+              <td>{missedFramePct?.toFixed(1)}%</td>
+              <td>&le; 1%</td>
+              <td class={passClass((missedFramePct ?? 100) <= 1)}
+                >{passStr((missedFramePct ?? 100) <= 1)}</td
+              >
+            </tr>
+          {/if}
+          {#if paintedStats && frameMs !== null}
+            <tr>
+              <td
+                >Painted p95 (info — includes ~{(1.5 * frameMs).toFixed(0)} ms unavoidable vsync wait)</td
+              >
+              <td>{paintedStats.p95.toFixed(2)}</td>
               <td>—</td>
               <td class="neutral">—</td>
             </tr>
