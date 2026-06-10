@@ -102,6 +102,12 @@ function stubIpc(overrides?: {
     list_groups: vi.fn() as never,
     saved_searches_get: vi.fn() as never,
     saved_searches_set: vi.fn() as never,
+    set_person: vi.fn() as never,
+    delete_person: vi.fn() as never,
+    mentions_for: vi.fn() as never,
+    rename_tag: vi.fn() as never,
+    merge_tag: vi.fn() as never,
+    delete_tag: vi.fn() as never,
     on: vi.fn(() => () => {}),
   };
 }

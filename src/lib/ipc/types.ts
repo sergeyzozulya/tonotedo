@@ -75,6 +75,10 @@ export interface TagMeta {
   name: string;
   color: ChipColor;
   count: number;
+  /** Optional human-readable description (from _tags.md metadata). */
+  description?: string;
+  /** Optional icon (emoji or name) from _tags.md metadata. */
+  icon?: string;
 }
 
 // ── People types ──────────────────────────────────────────────────────────────
@@ -86,6 +90,19 @@ export interface PersonMeta {
   /** Chip color token (same palette as ChipColor) or a raw hex value. */
   color?: ChipColor | string;
   /** Vault-relative asset path to an avatar image, e.g. "_assets/anna.jpg". */
+  avatarPath?: string;
+  /** Whether this person has an explicit declaration in _people.md. */
+  declared?: boolean;
+  /** Optional description from _people.md metadata. */
+  description?: string;
+}
+
+/** Fields for creating or updating a person declaration in _people.md. */
+export interface PersonInput {
+  slug: string;
+  displayName?: string;
+  description?: string;
+  color?: ChipColor | string;
   avatarPath?: string;
 }
 
@@ -251,6 +268,50 @@ export interface IpcCommands {
    * The implementation serialises the exact YAML shape from spec 0009.
    */
   saved_searches_set(searches: SavedSearch[]): Promise<Result<void>>;
+  // ── People mutation commands (issue #22) ──────────────────────────────────────
+
+  /**
+   * Add or update a person declaration in _people.md.
+   * If the slug already exists, its metadata is overwritten.
+   * refs #22 — Rust side is a stub returning not_implemented.
+   */
+  set_person(person: PersonInput): Promise<Result<void>>;
+
+  /**
+   * Remove a person declaration from _people.md.
+   * Existing @slug references in entries are NOT rewritten — they become
+   * "unmanaged" until the user cleans them up.
+   * refs #22 — Rust side is a stub returning not_implemented.
+   */
+  delete_person(slug: string): Promise<Result<void>>;
+
+  /**
+   * All entries that mention a person (union of frontmatter + body surfaces),
+   * sorted most-recent-first (spec 0005 §People view).
+   */
+  mentions_for(slug: string): Promise<Result<EntrySummary[]>>;
+
+  // ── Tag mutation commands (issue #22) ─────────────────────────────────────────
+
+  /**
+   * Rename a tag: rewrite every entry that references oldName to newName.
+   * Confirmed batch operation. refs #22 — Rust stub returns not_implemented.
+   */
+  rename_tag(oldName: string, newName: string): Promise<Result<void>>;
+
+  /**
+   * Merge tag sourceTag into targetTag: rewrite all occurrences of sourceTag
+   * to targetTag, then remove sourceTag's metadata.
+   * refs #22 — Rust stub returns not_implemented.
+   */
+  merge_tag(sourceTag: string, targetTag: string): Promise<Result<void>>;
+
+  /**
+   * Delete a tag from metadata (_tags.md). Entries that carry the tag string
+   * are NOT rewritten — the tag becomes "unmanaged" until cleaned up.
+   * refs #22 — Rust stub returns not_implemented.
+   */
+  delete_tag(name: string): Promise<Result<void>>;
 }
 
 // ── Event surface (core → UI, design-0004 §Event surface) ─────────────────────
