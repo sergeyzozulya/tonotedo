@@ -1,8 +1,9 @@
 <script lang="ts">
   import { Editor, type SelectionContext } from "./lib/editor/index.js";
   import DevPage from "./lib/dev/DevPage.svelte";
+  import BenchPage from "./lib/bench/BenchPage.svelte";
 
-  // ── Hash-based routing: #/dev → DevPage, else demo ─────────────────────────
+  // ── Hash-based routing: #/dev → DevPage, #/bench → BenchPage, else demo ────
 
   let hash = $state(window.location.hash);
 
@@ -15,6 +16,7 @@
   });
 
   const isDev = $derived(hash === "#/dev");
+  const isBench = $derived(hash === "#/bench");
 
   // ── Demo page state ─────────────────────────────────────────────────────────
 
@@ -45,6 +47,8 @@ const x = 1;
 
 {#if isDev}
   <DevPage />
+{:else if isBench}
+  <BenchPage />
 {:else}
   <main>
     <header>
@@ -55,6 +59,8 @@ const x = 1;
       </small>
       <small style="margin-left: 1rem;">
         <a href="#/dev" style="color: inherit; opacity: 0.5;">/dev</a>
+        &nbsp;·&nbsp;
+        <a href="#/bench" style="color: inherit; opacity: 0.5;">/bench</a>
       </small>
     </header>
     <div class="editor">
