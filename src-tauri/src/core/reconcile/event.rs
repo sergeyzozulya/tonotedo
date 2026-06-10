@@ -14,7 +14,9 @@ use std::path::PathBuf;
 /// The kind of change that caused a `ChangeEvent`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChangeKind {
-    /// An entry was created or its content changed.
+    /// A path that was not previously in the ledger was indexed for the first time.
+    Created,
+    /// An existing entry's content changed.
     Modified,
     /// An entry was removed from the library.
     Removed,

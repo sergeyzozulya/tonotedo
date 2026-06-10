@@ -13,6 +13,8 @@ pub struct SearchResult {
     pub entry_id: Option<String>,
     pub path: String,
     pub title: Option<String>,
+    /// ISO-8601 last-modified timestamp from `entries.updated` (None if unset).
+    pub updated: Option<String>,
     /// BM25 score (negative: lower = more relevant).
     pub rank: f64,
 }
@@ -75,7 +77,7 @@ pub fn search(
     }
 
     let mut stmt = conn.prepare(
-        "SELECT e.id, e.entry_id, e.path, e.title, bm25(fts, 10, 1) AS rank
+        "SELECT e.id, e.entry_id, e.path, e.title, e.updated, bm25(fts, 10, 1) AS rank
          FROM fts
          JOIN entries e ON e.id = fts.rowid
          WHERE fts MATCH ?1
@@ -89,7 +91,8 @@ pub fn search(
             entry_id: r.get(1)?,
             path: r.get(2)?,
             title: r.get(3)?,
-            rank: r.get(4)?,
+            updated: r.get(4)?,
+            rank: r.get(5)?,
         })
     })?;
 
@@ -98,7 +101,7 @@ pub fn search(
 
 fn recent_entries(conn: &Connection, limit: usize) -> Result<Vec<SearchResult>, IndexError> {
     let mut stmt = conn.prepare(
-        "SELECT id, entry_id, path, title, 0.0
+        "SELECT id, entry_id, path, title, updated, 0.0
          FROM entries
          ORDER BY updated DESC, id DESC
          LIMIT ?1",
@@ -109,7 +112,8 @@ fn recent_entries(conn: &Connection, limit: usize) -> Result<Vec<SearchResult>, 
             entry_id: r.get(1)?,
             path: r.get(2)?,
             title: r.get(3)?,
-            rank: r.get(4)?,
+            updated: r.get(4)?,
+            rank: r.get(5)?,
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)

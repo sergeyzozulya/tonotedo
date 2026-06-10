@@ -82,6 +82,10 @@ export interface PersonMeta {
   slug: string;
   displayName: string;
   count: number;
+  /** Chip color token (same palette as ChipColor) or a raw hex value. */
+  color?: ChipColor | string;
+  /** Vault-relative asset path to an avatar image, e.g. "_assets/anna.jpg". */
+  avatarPath?: string;
 }
 
 // ── Search ────────────────────────────────────────────────────────────────────
@@ -179,6 +183,12 @@ export interface IpcCommands {
    * refs #30 for Rust implementation.
    */
   remove_asset(assetPath: AssetPath): Promise<Result<void>>;
+
+  /**
+   * Returns a flat map of all entry id → display title for wikilink resolution.
+   * Used by the chips layer; callers should refresh on index_changed events.
+   */
+  entry_titles(): Promise<Result<Record<EntryId, string>>>;
 }
 
 // ── Event surface (core → UI, design-0004 §Event surface) ─────────────────────

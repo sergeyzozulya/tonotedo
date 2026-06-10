@@ -98,6 +98,7 @@ function stubIpc(overrides?: {
     asset_url: vi.fn() as never,
     asset_exists: vi.fn() as never,
     remove_asset: vi.fn() as never,
+    entry_titles: vi.fn() as never,
     on: vi.fn(() => () => {}),
   };
 }
