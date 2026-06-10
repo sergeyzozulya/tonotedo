@@ -1,6 +1,6 @@
 <script lang="ts">
   // AppShell — three-zone layout (sidebar + entry-list + editor + properties).
-  // (spec 0007 focus zones, spec 0013 mobile, issue #18)
+  // (spec 0007 focus zones, spec 0013 mobile, issue #18, issue #24)
   //
   // Zones:
   //   Left   — Sidebar (group tree navigation, 246px)
@@ -8,10 +8,12 @@
   //   Centre — Editor (fills remaining space)
   //   Right  — PropertiesPanel (260px, toggleable)
   //
-  // Mobile (<700px): zones become full-screen screens per 0013.
-  //   - "sidebar" screen: group tree, back button returns to "list"
-  //   - "list" screen: entry list + hamburger to open sidebar
-  //   - "editor" screen: open entry + back button to "list"
+  // Mobile (<700px): zones become full-screen screens per 0013 (issue #24).
+  //   Screens: list | editor | sidebar | calendar | person | tags | settings
+  //   Properties → slide-up bottom sheet from editor toolbar button.
+  //   Consistent top app bar: back/title/search/palette actions.
+  //   Floating palette FAB, pull-down-to-palette, long-press entry → action sheet,
+  //   tap-and-hold chip → metadata popover, editor accessory bar above keyboard.
   //
   // Theme attributes (data-tnd-theme / data-tnd-mode) live on <html> managed
   // by theme-store.ts.  Issue #23 will formalise persistence.
@@ -30,11 +32,26 @@
   import TagBrowser from "../tags/TagBrowser.svelte";
   import CreatePersonDialog from "../people/CreatePersonDialog.svelte";
   import CalendarView from "../calendar/CalendarView.svelte";
-  import type { EntrySummary, PersonMeta } from "../ipc/types.js";
+  import type { EntrySummary, PersonMeta, TagMeta } from "../ipc/types.js";
   import type { GroupNode } from "./group-tree.js";
   import type { ChangeSpec } from "../panel/frontmatter-view.js";
   import type { SavedSearch } from "../search/saved-searches-store.js";
   import themeMap from "../../styles/THEME-MAP.json";
+  // Mobile components (issue #24)
+  import MobileTopBar from "./MobileTopBar.svelte";
+  import PropertiesSheet from "./PropertiesSheet.svelte";
+  import ActionSheet from "./ActionSheet.svelte";
+  import ChipPopover from "./ChipPopover.svelte";
+  import EditorAccessoryBar from "./EditorAccessoryBar.svelte";
+  import FloatingPaletteButton from "./FloatingPaletteButton.svelte";
+  import {
+    initialMobileScreenState,
+    mobileScreenReduce,
+    screenTitle,
+    hasBack,
+  } from "./mobile-screen.js";
+  import { setPaletteOpener } from "../commands/index.js";
+  import Palette from "../commands/Palette.svelte";
 
   // ── Theme switcher (minimal; #23 will formalise) ────────────────────────────
 
@@ -57,18 +74,95 @@
     narrow = mq.matches;
     const handler = (e: MediaQueryListEvent) => {
       narrow = e.matches;
-      // On widening viewport, return to editor screen if on mobile
-      if (!e.matches) mobileScreen = "editor";
+      if (!e.matches) {
+        // Widened — collapse the mobile state machine
+        mobileState = mobileScreenReduce(mobileState, { type: "widen" });
+      }
     };
     mq.addEventListener("change", handler);
     return () => mq.removeEventListener("change", handler);
   });
 
-  // Mobile screen stack: "list" | "editor" | "sidebar"
-  type MobileScreen = "list" | "editor" | "sidebar";
-  let mobileScreen = $state<MobileScreen>("list");
+  // ── Mobile screen state machine (spec 0013, issue #24) ───────────────────────
+
+  let mobileState = $state(initialMobileScreenState());
+
+  // Convenience accessors
+  const mobileScreen = $derived(mobileState.screen);
+  const mobilePropertiesOpen = $derived(mobileState.propertiesOpen);
+
+  function mobilePush(screen: import("./mobile-screen.js").MobileScreen): void {
+    mobileState = mobileScreenReduce(mobileState, { type: "push", screen });
+  }
+
+  function mobileBack(): void {
+    mobileState = mobileScreenReduce(mobileState, { type: "back" });
+  }
+
+  function mobileToggleProperties(): void {
+    mobileState = mobileScreenReduce(mobileState, { type: "toggle-properties" });
+  }
 
   let sidebarOpen = $state(false);
+
+  // ── Command palette (shared between desktop keymap and mobile FAB) ───────────
+  //
+  // The palette Svelte component lives in App.svelte. AppShell's mobile FAB
+  // and top-bar palette button register their own opener via setPaletteOpener,
+  // replacing (but not conflicting with) App.svelte's registration since only
+  // one caller at a time owns it. The FAB hides itself by tracking a local flag
+  // that is set to false when the palette closes.
+
+  let paletteOpen = $state(false);
+
+  $effect(() => {
+    // Register this shell's opener so ⌘K from the keymap and the FAB both work.
+    setPaletteOpener(() => {
+      paletteOpen = true;
+    });
+  });
+
+  function openPalette(): void {
+    paletteOpen = true;
+  }
+
+  // ── Action sheet (long-press entry row) ──────────────────────────────────────
+
+  let actionSheetEntry = $state<{ id: string; title: string } | null>(null);
+
+  function openActionSheet(id: string, title: string): void {
+    actionSheetEntry = { id, title };
+  }
+
+  function closeActionSheet(): void {
+    actionSheetEntry = null;
+  }
+
+  // ── Chip popover (tap-and-hold on chip) ──────────────────────────────────────
+
+  let chipPopover = $state<{
+    kind: "tag" | "mention";
+    value: string;
+    tagMeta: TagMeta | null;
+    personMeta: PersonMeta | null;
+  } | null>(null);
+
+  function openChipPopover(
+    kind: "tag" | "mention",
+    value: string,
+    tagMeta: TagMeta | null,
+    personMeta: PersonMeta | null,
+  ): void {
+    chipPopover = { kind, value, tagMeta, personMeta };
+  }
+
+  function closeChipPopover(): void {
+    chipPopover = null;
+  }
+
+  // ── Editor focus (for accessory bar) ─────────────────────────────────────────
+
+  let editorFocused = $state(false);
 
   // ── Group tree ────────────────────────────────────────────────────────────────
 
@@ -151,7 +245,7 @@
     loadEntries(path);
     if (narrow) {
       sidebarOpen = false;
-      mobileScreen = "list";
+      mobilePush("list");
     }
   }
 
@@ -169,7 +263,7 @@
     if (result.ok) {
       selectedEntryId = id;
       editorText = result.value.text;
-      if (narrow) mobileScreen = "editor";
+      if (narrow) mobilePush("editor");
     } else {
       console.error("[shell] read_entry failed:", result.error.message);
     }
@@ -214,17 +308,25 @@
   });
 
   // ── Chip interaction (spec 0005 — chip click opens side panel) ───────────────
+  // On mobile: chip tap → metadata popover (spec 0013 "hover → tap-and-hold").
+  // The popover's navigation links can push to person/tags screens.
 
   function onTokenClick(kind: "tag" | "mention", value: string): void {
+    if (narrow) {
+      // Mobile: show metadata popover (spec 0013 "hover → tap").
+      // For tags, metadata is in chips.ts's internal cache — we don't have it here;
+      // pass null and let the popover show the name. For mentions, look up people.
+      const personMeta = kind === "mention" ? (people.find((p) => p.slug === value) ?? null) : null;
+      openChipPopover(kind, value, null, personMeta);
+      return;
+    }
     if (kind === "mention") {
       // Open person view in main zone (spec 0005: non-navigational chip click).
       selectedPersonSlug = value;
       mainZone = "person";
-      if (narrow) mobileScreen = "editor";
     } else {
       // Tag chip click: open tag browser.
       mainZone = "tags";
-      if (narrow) mobileScreen = "editor";
     }
   }
 
@@ -233,7 +335,7 @@
     mainZone = "person";
     if (narrow) {
       sidebarOpen = false;
-      mobileScreen = "editor";
+      mobilePush("person");
     }
   }
 
@@ -241,7 +343,7 @@
     mainZone = "tags";
     if (narrow) {
       sidebarOpen = false;
-      mobileScreen = "editor";
+      mobilePush("tags");
     }
   }
 
@@ -320,7 +422,7 @@
   function openCalendar(): void {
     calendarOpen = true;
     mainZone = "editor";
-    if (narrow) mobileScreen = "editor"; // reuse editor screen slot on mobile
+    if (narrow) mobilePush("calendar");
   }
 
   function onCalendarSelectEntry(entryId: string): void {
@@ -348,64 +450,249 @@
 </script>
 
 <div class="app-shell" class:app-shell--narrow={narrow} class:sidebar-open={sidebarOpen}>
-  <!-- Title bar -->
-  <header class="titlebar">
-    <div class="titlebar-left">
-      {#if narrow}
-        <!-- Hamburger to reveal sidebar on mobile -->
-        <button
-          class="titlebar-btn"
-          aria-label="Open sidebar"
-          onclick={() => {
-            sidebarOpen = !sidebarOpen;
-          }}
-        >
-          ☰
-        </button>
-        {#if mobileScreen === "editor" && selectedEntryId}
-          <button
-            class="titlebar-btn titlebar-btn--back"
-            aria-label="Back to list"
-            onclick={() => (mobileScreen = "list")}
-          >
-            ‹ Back
-          </button>
-        {/if}
+  {#if narrow}
+    <!-- ── Mobile layout ────────────────────────────────────────────────────── -->
+
+    <!-- Consistent mobile top app bar (back/title/search/palette) -->
+    <MobileTopBar
+      title={mobilePropertiesOpen ? "Properties" : screenTitle(mobileScreen)}
+      showBack={hasBack(mobileState)}
+      onBack={mobileBack}
+      showHamburger={!hasBack(mobileState)}
+      onHamburger={() => {
+        sidebarOpen = !sidebarOpen;
+      }}
+      onSearch={openSearch}
+      onPalette={openPalette}
+    />
+
+    <!-- Sidebar as a slide-over (backdrop + panel) on mobile -->
+    {#if sidebarOpen}
+      <div class="sidebar-backdrop" role="presentation" onclick={() => (sidebarOpen = false)}></div>
+      <div class="mobile-sidebar-panel">
+        <Sidebar
+          tree={groupTree}
+          selectedPath={selectedGroupPath}
+          {onGroupSelect}
+          onOpenSearch={openSearch}
+          {onSelectSavedSearch}
+          {people}
+          {selectedPersonSlug}
+          {onPersonSelect}
+          {onTagsOpen}
+          tagsOpen={mainZone === "tags"}
+          onCalendarOpen={openCalendar}
+          calendarActive={calendarOpen}
+        />
+      </div>
+    {/if}
+
+    <!-- Full-screen mobile body: one screen at a time -->
+    <div class="app-body">
+      <!-- list screen -->
+      {#if mobileScreen === "list"}
+        <EntryList
+          groupName={groupDisplayName}
+          {entries}
+          selectedId={selectedEntryId}
+          loading={entriesLoading}
+          error={entriesError}
+          {onEntrySelect}
+          onLongPress={(id, title) => openActionSheet(id, title)}
+        />
       {/if}
-      <span class="titlebar-app-name">ToNoteDo</span>
-      {#if selectedGroupPath}
-        <span class="titlebar-crumb-sep">/</span>
-        <span class="titlebar-crumb">{groupDisplayName}</span>
+
+      <!-- editor screen -->
+      {#if mobileScreen === "editor"}
+        <main class="editor-zone" data-focus-zone="editor">
+          {#if selectedEntryId}
+            <!-- Editor toolbar button to open properties sheet -->
+            <div class="mobile-editor-toolbar">
+              <button
+                class="mobile-editor-toolbar-btn"
+                aria-label="Toggle properties"
+                aria-pressed={mobilePropertiesOpen}
+                onclick={mobileToggleProperties}
+              >
+                ⚙ Props
+              </button>
+            </div>
+            <Editor
+              doc={editorText}
+              {onDocChanged}
+              {onTokenClick}
+              {onNavigate}
+              {onCreatePerson}
+              entryPath={selectedEntryId}
+              {blockCallbacks}
+              externalChange={panelChange}
+            />
+          {:else}
+            <div class="editor-empty">Select an entry to begin editing</div>
+          {/if}
+        </main>
+      {/if}
+
+      <!-- calendar screen (full-screen on mobile) -->
+      {#if mobileScreen === "calendar"}
+        <main class="editor-zone" data-focus-zone="calendar">
+          <CalendarView
+            group={selectedGroupPath}
+            onSelectEntry={(id) => {
+              onCalendarSelectEntry(id);
+              mobilePush("editor");
+            }}
+            onApplyEdit={onCalendarApplyEdit}
+          />
+        </main>
+      {/if}
+
+      <!-- person screen (full-screen on mobile) -->
+      {#if mobileScreen === "person"}
+        <main class="editor-zone" data-focus-zone="editor">
+          {#if selectedPersonMeta}
+            <PersonView
+              person={selectedPersonMeta}
+              onEntrySelect={(id) => {
+                mainZone = "editor";
+                selectEntry(id);
+              }}
+              {onPersonCreated}
+            />
+          {:else}
+            <div class="editor-empty">No person selected</div>
+          {/if}
+        </main>
+      {/if}
+
+      <!-- tags screen (full-screen on mobile) -->
+      {#if mobileScreen === "tags"}
+        <main class="editor-zone" data-focus-zone="editor">
+          <TagBrowser
+            onTagSelect={(name) => {
+              console.log("[shell] tag selected:", name);
+            }}
+          />
+        </main>
+      {/if}
+
+      <!-- settings screen (full-screen stub; settings UI is a sibling agent) -->
+      {#if mobileScreen === "settings"}
+        <main class="editor-zone">
+          <div class="editor-empty">Settings — coming soon (#25)</div>
+        </main>
+      {/if}
+
+      <!-- sidebar screen (full-screen on mobile — accessible via hamburger push too) -->
+      {#if mobileScreen === "sidebar"}
+        <div style="flex:1;overflow:auto;">
+          <Sidebar
+            tree={groupTree}
+            selectedPath={selectedGroupPath}
+            {onGroupSelect}
+            onOpenSearch={openSearch}
+            {onSelectSavedSearch}
+            {people}
+            {selectedPersonSlug}
+            {onPersonSelect}
+            {onTagsOpen}
+            tagsOpen={mainZone === "tags"}
+            onCalendarOpen={openCalendar}
+            calendarActive={calendarOpen}
+          />
+        </div>
       {/if}
     </div>
 
-    <div class="titlebar-right">
-      <!-- Theme switcher (minimal; #23 will formalise) -->
-      <label class="titlebar-label" for="shell-theme">Theme</label>
-      <select
-        id="shell-theme"
-        class="titlebar-select"
-        value={themeStore.theme}
-        onchange={(e) => themeStore.setTheme((e.target as HTMLSelectElement).value)}
-      >
-        {#each themeKeys as key (key)}
-          <option value={key}>{themeNames[key]}</option>
-        {/each}
-      </select>
+    <!-- Properties bottom sheet (layered on top of editor screen) -->
+    <PropertiesSheet
+      open={mobilePropertiesOpen}
+      docText={editorText}
+      onEdit={onPanelEdit}
+      onClose={() => (mobileState = mobileScreenReduce(mobileState, { type: "close-properties" }))}
+    />
 
-      <label class="titlebar-label" for="shell-mode">Mode</label>
-      <select
-        id="shell-mode"
-        class="titlebar-select"
-        value={themeStore.mode}
-        onchange={(e) => themeStore.setMode((e.target as HTMLSelectElement).value as ThemeMode)}
-      >
-        <option value="light">Light</option>
-        <option value="dark">Dark</option>
-        <option value="system">System</option>
-      </select>
+    <!-- Action sheet (long-press entry row) -->
+    <ActionSheet
+      open={actionSheetEntry !== null}
+      entryId={actionSheetEntry?.id ?? null}
+      entryTitle={actionSheetEntry?.title ?? ""}
+      onClose={closeActionSheet}
+      onOpen={(id) => {
+        selectEntry(id);
+        closeActionSheet();
+      }}
+      onTrash={(id) => {
+        console.log("[shell] trash entry:", id);
+        closeActionSheet();
+      }}
+    />
 
-      {#if !narrow}
+    <!-- Chip popover (tap-and-hold on chip) -->
+    {#if chipPopover !== null}
+      <ChipPopover
+        open={true}
+        kind={chipPopover.kind}
+        value={chipPopover.value}
+        tagMeta={chipPopover.tagMeta}
+        personMeta={chipPopover.personMeta}
+        onClose={closeChipPopover}
+      />
+    {/if}
+
+    <!-- Floating palette button (persistent, narrow only) -->
+    {#if !paletteOpen && actionSheetEntry === null && chipPopover === null && !mobilePropertiesOpen}
+      <FloatingPaletteButton onTap={openPalette} />
+    {/if}
+
+    <!-- Editor accessory bar above software keyboard -->
+    <EditorAccessoryBar {editorFocused} />
+
+    <!-- Status bar (narrow: minimal, no hints) -->
+    <footer class="statusbar">
+      <span class="statusbar-zone">
+        {screenTitle(mobileScreen).toUpperCase()}
+      </span>
+    </footer>
+  {:else}
+    <!-- ── Desktop layout ───────────────────────────────────────────────────── -->
+
+    <!-- Title bar -->
+    <header class="titlebar">
+      <div class="titlebar-left">
+        <span class="titlebar-app-name">ToNoteDo</span>
+        {#if selectedGroupPath}
+          <span class="titlebar-crumb-sep">/</span>
+          <span class="titlebar-crumb">{groupDisplayName}</span>
+        {/if}
+      </div>
+
+      <div class="titlebar-right">
+        <!-- Theme switcher (minimal; #23 will formalise) -->
+        <label class="titlebar-label" for="shell-theme">Theme</label>
+        <select
+          id="shell-theme"
+          class="titlebar-select"
+          value={themeStore.theme}
+          onchange={(e) => themeStore.setTheme((e.target as HTMLSelectElement).value)}
+        >
+          {#each themeKeys as key (key)}
+            <option value={key}>{themeNames[key]}</option>
+          {/each}
+        </select>
+
+        <label class="titlebar-label" for="shell-mode">Mode</label>
+        <select
+          id="shell-mode"
+          class="titlebar-select"
+          value={themeStore.mode}
+          onchange={(e) => themeStore.setMode((e.target as HTMLSelectElement).value as ThemeMode)}
+        >
+          <option value="light">Light</option>
+          <option value="dark">Dark</option>
+          <option value="system">System</option>
+        </select>
+
         <button
           class="titlebar-btn titlebar-btn--toggle"
           aria-label="Toggle properties panel"
@@ -414,35 +701,28 @@
         >
           Properties
         </button>
-      {/if}
-    </div>
-  </header>
+      </div>
+    </header>
 
-  <!-- Body: sidebar + entry-list + editor + properties -->
-  <div class="app-body">
-    <!-- Sidebar overlay backdrop on mobile -->
-    {#if narrow && sidebarOpen}
-      <div class="sidebar-backdrop" role="presentation" onclick={() => (sidebarOpen = false)}></div>
-    {/if}
+    <!-- Body: sidebar + entry-list + editor + properties -->
+    <div class="app-body">
+      <!-- Sidebar -->
+      <Sidebar
+        tree={groupTree}
+        selectedPath={selectedGroupPath}
+        {onGroupSelect}
+        onOpenSearch={openSearch}
+        {onSelectSavedSearch}
+        {people}
+        {selectedPersonSlug}
+        {onPersonSelect}
+        {onTagsOpen}
+        tagsOpen={mainZone === "tags"}
+        onCalendarOpen={openCalendar}
+        calendarActive={calendarOpen}
+      />
 
-    <!-- Sidebar -->
-    <Sidebar
-      tree={groupTree}
-      selectedPath={selectedGroupPath}
-      {onGroupSelect}
-      onOpenSearch={openSearch}
-      {onSelectSavedSearch}
-      {people}
-      {selectedPersonSlug}
-      {onPersonSelect}
-      {onTagsOpen}
-      tagsOpen={mainZone === "tags"}
-      onCalendarOpen={openCalendar}
-      calendarActive={calendarOpen}
-    />
-
-    <!-- Entry list (hidden on mobile when in editor screen) -->
-    {#if !narrow || mobileScreen === "list"}
+      <!-- Entry list -->
       <EntryList
         groupName={groupDisplayName}
         {entries}
@@ -451,10 +731,8 @@
         error={entriesError}
         {onEntrySelect}
       />
-    {/if}
 
-    <!-- Editor / Person / Tags zone (hidden on mobile when in list screen) -->
-    {#if !narrow || mobileScreen === "editor"}
+      <!-- Editor / Person / Tags / Calendar zone -->
       <main class="editor-zone" data-focus-zone="editor">
         {#if calendarOpen && mainZone === "editor"}
           <CalendarView
@@ -492,26 +770,39 @@
           <div class="editor-empty">Select an entry to begin editing</div>
         {/if}
       </main>
-    {/if}
 
-    <!-- Properties panel (desktop only when visible; not shown for person/tags views) -->
-    {#if !narrow && propertiesVisible && mainZone === "editor"}
-      <aside class="properties-zone" data-focus-zone="properties">
-        {#if selectedEntryId}
-          <PropertiesPanel docText={editorText} onEdit={onPanelEdit} />
-        {:else}
-          <div class="properties-empty">No entry selected</div>
-        {/if}
-      </aside>
-    {/if}
-  </div>
+      <!-- Properties panel (desktop only when visible; not shown for person/tags views) -->
+      {#if propertiesVisible && mainZone === "editor"}
+        <aside class="properties-zone" data-focus-zone="properties">
+          {#if selectedEntryId}
+            <PropertiesPanel docText={editorText} onEdit={onPanelEdit} />
+          {:else}
+            <div class="properties-empty">No entry selected</div>
+          {/if}
+        </aside>
+      {/if}
+    </div>
 
-  <!-- Search overlay (cmd+p) -->
+    <!-- Status bar (desktop: full hints) -->
+    <footer class="statusbar">
+      <span class="statusbar-hints">
+        <kbd>⌘K</kbd> Commands
+        <kbd>⌘P</kbd> Search
+        <kbd>⌘N</kbd> New entry
+        <kbd>?</kbd> Shortcuts
+      </span>
+      <span class="statusbar-zone">
+        {#if selectedEntryId}EDITOR{:else}ENTRY-LIST{/if}
+      </span>
+    </footer>
+  {/if}
+
+  <!-- Search overlay (cmd+p) — shared between narrow and wide -->
   <SearchOverlay
     bind:this={searchOverlay}
     onSelectEntry={(id) => {
       selectEntry(id);
-      if (narrow) mobileScreen = "editor";
+      if (narrow) mobilePush("editor");
     }}
   />
 
@@ -524,18 +815,10 @@
     />
   {/if}
 
-  <!-- Status bar -->
-  <footer class="statusbar">
-    <span class="statusbar-hints">
-      <kbd>⌘K</kbd> Commands
-      <kbd>⌘P</kbd> Search
-      <kbd>⌘N</kbd> New entry
-      <kbd>?</kbd> Shortcuts
-    </span>
-    <span class="statusbar-zone">
-      {#if selectedEntryId}EDITOR{:else}ENTRY-LIST{/if}
-    </span>
-  </footer>
+  <!-- Command palette — rendered here so the FAB and ⌘K both work.
+       AppShell's $effect registers the opener via setPaletteOpener, replacing
+       App.svelte's registration; App.svelte's <Palette> stays dormant. -->
+  <Palette bind:open={paletteOpen} />
 </div>
 
 <style>
@@ -644,12 +927,6 @@
     border-color: var(--tnd-accent);
   }
 
-  .titlebar-btn--back {
-    color: var(--tnd-accent-text);
-    border-color: transparent;
-    font-size: 13px;
-  }
-
   /* Body */
   .app-body {
     flex: 1;
@@ -738,23 +1015,54 @@
     z-index: 199;
   }
 
+  /* ── Mobile-specific layout ─────────────────────────────────────────────── */
+
+  /* Sidebar slide-over panel on narrow */
+  .mobile-sidebar-panel {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: min(280px, 85vw);
+    background: var(--tnd-panel);
+    z-index: 200;
+    overflow-y: auto;
+    box-shadow: 2px 0 16px rgba(0, 0, 0, 0.18);
+  }
+
+  /* Mobile editor toolbar (properties toggle) */
+  .mobile-editor-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    background: var(--tnd-panel2);
+    border-bottom: 1px solid var(--tnd-line);
+    flex-shrink: 0;
+  }
+
+  .mobile-editor-toolbar-btn {
+    background: var(--tnd-panel);
+    border: 1px solid var(--tnd-line-strong);
+    color: var(--tnd-text-muted);
+    font-size: 12px;
+    font-family: inherit;
+    padding: 4px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+
+  .mobile-editor-toolbar-btn[aria-pressed="true"] {
+    background: var(--tnd-accent-soft);
+    color: var(--tnd-accent-text);
+    border-color: var(--tnd-accent);
+  }
+
   /* ── Responsive ──────────────────────────────────────────────────────────── */
 
   @media (max-width: 699px) {
-    .titlebar {
-      height: 48px;
-    }
-
-    .titlebar-label {
-      display: none;
-    }
-
     .editor-zone {
       width: 100%;
-    }
-
-    .statusbar-hints {
-      display: none;
     }
   }
 </style>
