@@ -29,6 +29,16 @@
   import PropertiesPanel from "../panel/PropertiesPanel.svelte";
   import SearchOverlay from "../search/SearchOverlay.svelte";
   import { savedSearchesStore } from "../search/saved-searches-store.js";
+  import ConflictBanner from "./ConflictBanner.svelte";
+  import {
+    makeTracker,
+    onLoaded,
+    onEditorChange,
+    onWriteComplete,
+    onIndexChanged,
+    stashBufferBackup,
+    clearBufferBackup,
+  } from "./conflict.js";
   import PersonView from "../people/PersonView.svelte";
   import TagBrowser from "../tags/TagBrowser.svelte";
   import CreatePersonDialog from "../people/CreatePersonDialog.svelte";
@@ -269,11 +279,24 @@
 
   let writeTimer: ReturnType<typeof setTimeout> | undefined;
 
+  // ── Conflict / external-edit tracking (spec 0006) ────────────────────────────
+
+  let conflictTracker = $state(makeTracker());
+  /** When non-null, the conflict banner is shown. diskText is the on-disk version. */
+  let conflictDiskText = $state<string | null>(null);
+  /**
+   * When non-null, a full-document replace is pending for the editor (silent
+   * reload or use-disk action). Passed as externalDocReplace to the Editor.
+   */
+  let fullDocReplace = $state<{ fullDoc: string } | null>(null);
+
   async function selectEntry(id: string): Promise<void> {
     const result = await ipc.read_entry(id);
     if (result.ok) {
       selectedEntryId = id;
       editorText = result.value.text;
+      conflictTracker = onLoaded(conflictTracker, id, result.value.text);
+      conflictDiskText = null; // clear any pending conflict from a previous entry
       if (narrow) mobilePush("editor");
     } else {
       console.error("[shell] read_entry failed:", result.error.message);
@@ -286,11 +309,15 @@
 
   function onDocChanged(text: string): void {
     editorText = text;
+    conflictTracker = onEditorChange(conflictTracker);
     if (!selectedEntryId) return;
     clearTimeout(writeTimer);
     const id = selectedEntryId;
     writeTimer = setTimeout(async () => {
-      await ipc.write_entry(id, text, "shell-self-tok");
+      const writeResult = await ipc.write_entry(id, text, conflictTracker.lastWriteToken ?? "");
+      if (writeResult.ok) {
+        conflictTracker = onWriteComplete(conflictTracker, writeResult.value.selfToken);
+      }
     }, 500);
   }
 
@@ -307,16 +334,79 @@
     },
   };
 
-  // ── index_changed → refresh lists ─────────────────────────────────────────────
+  // ── index_changed → refresh lists + conflict detection (spec 0006) ───────────
 
   $effect(() => {
-    const unsub = ipc.on("index_changed", () => {
+    const unsub = ipc.on("index_changed", async (event) => {
+      // Always refresh lists and groups.
       loadEntries(selectedGroupPath);
       loadGroups();
       loadPeople();
+
+      // Check each changed path for a conflict with the open buffer.
+      for (const path of event.paths) {
+        const decision = await onIndexChanged(
+          conflictTracker,
+          path,
+          event.selfToken,
+          async (id) => {
+            const r = await ipc.read_entry(id);
+            return r.ok ? r.value.text : null;
+          },
+        );
+
+        if (decision.action === "reload") {
+          // Buffer was clean — silently re-read and replace via fullDocReplace.
+          const r = await ipc.read_entry(conflictTracker.entryId!);
+          if (r.ok) {
+            editorText = r.value.text;
+            fullDocReplace = { fullDoc: r.value.text };
+            conflictTracker = onLoaded(conflictTracker, conflictTracker.entryId!, r.value.text);
+          }
+          break;
+        } else if (decision.action === "banner") {
+          // Buffer is dirty — show the banner.
+          conflictDiskText = decision.diskText;
+          break;
+        }
+        // "ignore" — do nothing for this path
+      }
     });
     return unsub;
   });
+
+  // ── Conflict banner actions ────────────────────────────────────────────────────
+
+  async function conflictKeepMine(): Promise<void> {
+    if (!selectedEntryId) return;
+    // Write the current buffer over disk.
+    const writeResult = await ipc.write_entry(
+      selectedEntryId,
+      editorText,
+      conflictTracker.lastWriteToken ?? "",
+    );
+    if (writeResult.ok) {
+      conflictTracker = onWriteComplete(conflictTracker, writeResult.value.selfToken);
+      clearBufferBackup(selectedEntryId);
+    }
+    conflictDiskText = null;
+  }
+
+  function conflictUseDisk(): void {
+    if (!selectedEntryId || conflictDiskText === null) return;
+    // Stash local buffer before discarding (cheap insurance per spec 0006).
+    stashBufferBackup(selectedEntryId, editorText);
+    const diskText = conflictDiskText;
+    conflictDiskText = null;
+    // Replace the editor document with the disk content via fullDocReplace.
+    editorText = diskText;
+    fullDocReplace = { fullDoc: diskText };
+    conflictTracker = onLoaded(conflictTracker, selectedEntryId, diskText);
+  }
+
+  function conflictDismiss(): void {
+    conflictDiskText = null;
+  }
 
   // ── Chip interaction (spec 0005 — chip click opens side panel) ───────────────
   // On mobile: chip tap → metadata popover (spec 0013 "hover → tap-and-hold").
@@ -543,6 +633,15 @@
                 ⚙ Props
               </button>
             </div>
+            {#if conflictDiskText !== null}
+              <ConflictBanner
+                diskText={conflictDiskText}
+                bufferText={editorText}
+                onKeepMine={conflictKeepMine}
+                onUseDisk={conflictUseDisk}
+                onDismiss={conflictDismiss}
+              />
+            {/if}
             <Editor
               doc={editorText}
               {onDocChanged}
@@ -552,6 +651,7 @@
               entryPath={selectedEntryId}
               {blockCallbacks}
               externalChange={panelChange}
+              externalDocReplace={fullDocReplace}
             />
           {:else}
             <div class="editor-empty">Select an entry to begin editing</div>
@@ -795,6 +895,15 @@
         {:else if mainZone === "settings"}
           <SettingsView onClose={() => (mainZone = "editor")} />
         {:else if selectedEntryId}
+          {#if conflictDiskText !== null}
+            <ConflictBanner
+              diskText={conflictDiskText}
+              bufferText={editorText}
+              onKeepMine={conflictKeepMine}
+              onUseDisk={conflictUseDisk}
+              onDismiss={conflictDismiss}
+            />
+          {/if}
           <Editor
             doc={editorText}
             {onDocChanged}
@@ -804,6 +913,7 @@
             entryPath={selectedEntryId}
             {blockCallbacks}
             externalChange={panelChange}
+            externalDocReplace={fullDocReplace}
           />
         {:else}
           <div class="editor-empty">Select an entry to begin editing</div>

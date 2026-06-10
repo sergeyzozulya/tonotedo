@@ -354,6 +354,13 @@ export type IndexChangedKind = "created" | "modified" | "deleted" | "renamed";
 export interface IndexChangedEvent {
   paths: string[];
   kinds: IndexChangedKind[];
+  /**
+   * When the change was originated by the app's own write_entry call, this
+   * carries the selfToken that write_entry returned.  The UI uses it to
+   * suppress false conflict banners for self-writes (design-0001 §self-write
+   * token).  Absent for external changes (e.g. vim saves).
+   */
+  selfToken?: string;
 }
 
 export interface FileConflictEvent {

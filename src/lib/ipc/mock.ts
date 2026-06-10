@@ -839,7 +839,8 @@ export const mock: Ipc = {
     store.set(id, updated);
     invalidateCaches();
     const newToken = `mock-tok-${id}-written`;
-    emit("index_changed", { paths: [e.path], kinds: ["modified"] });
+    // Carry selfToken so the conflict model can suppress the echo (design-0001).
+    emit("index_changed", { paths: [e.path], kinds: ["modified"], selfToken: newToken });
     return { ok: true, value: { selfToken: newToken } };
   },
 
@@ -1236,3 +1237,23 @@ export const mock: Ipc = {
 
 // Export raw data for tests.
 export { ENTRIES, PEOPLE_DECLARED, peopleStore };
+
+// ── Dev / test helpers ────────────────────────────────────────────────────────
+
+/**
+ * Simulate an external edit to an existing entry (e.g. a vim save).
+ *
+ * Writes `newText` directly into the mock store WITHOUT emitting a selfToken,
+ * so the conflict model treats the resulting index_changed as external.
+ * Only available in the mock — used by the /dev demo and unit tests.
+ */
+export function simulateExternalEdit(id: EntryId, newText: string): boolean {
+  const e = store.get(id);
+  if (!e) return false;
+  const updated = { ...e, text: newText, modifiedAt: new Date().toISOString() };
+  store.set(id, updated);
+  invalidateCaches();
+  // No selfToken — looks like an external change to the conflict model.
+  emit("index_changed", { paths: [e.path], kinds: ["modified"] });
+  return true;
+}

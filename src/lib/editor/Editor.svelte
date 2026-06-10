@@ -76,6 +76,14 @@
      * each dispatch (swap the reference to trigger the effect).
      */
     externalChange?: { from: number; to: number; insert: string } | null;
+    /**
+     * Full-document replacement (spec 0006 — conflict resolution: silent reload
+     * and use-disk action). When non-null, replaces the entire editor document
+     * with the given text, preserving cursor position where possible (cursor is
+     * clamped to the new document length). Caller must swap the reference to
+     * trigger re-dispatch.
+     */
+    externalDocReplace?: { fullDoc: string } | null;
     /** Vault-relative path of the currently open entry (for asset resolution). */
     entryPath?: string;
     /** Block-layer callbacks (open attachment, relink/remove broken). */
@@ -99,6 +107,7 @@
     blockCallbacks = {},
     onCreatePerson,
     externalChange = null,
+    externalDocReplace = null,
   }: Props = $props();
 
   let host: HTMLDivElement;
@@ -166,6 +175,19 @@
           from: externalChange.from,
           to: externalChange.to,
           insert: externalChange.insert,
+        },
+      });
+    }
+  });
+
+  // Dispatch a full-document replacement (conflict reload / use-disk, spec 0006).
+  $effect(() => {
+    if (externalDocReplace && view) {
+      view.dispatch({
+        changes: {
+          from: 0,
+          to: view.state.doc.length,
+          insert: externalDocReplace.fullDoc,
         },
       });
     }
