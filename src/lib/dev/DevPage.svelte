@@ -34,6 +34,11 @@
     lastChipEvent = `navigate → ${target}`;
   }
 
+  function onCreatePerson(slug: string): void {
+    lastChipEvent = `create person: ${slug || "(empty)"}`;
+    console.log("[dev] create person:", slug);
+  }
+
   // ── Theme switcher state ────────────────────────────────────────────────────
 
   type Mode = "light" | "dark" | "system";
@@ -210,6 +215,7 @@
           {onDocChanged}
           {onTokenClick}
           {onNavigate}
+          {onCreatePerson}
           {entryTitles}
           entryPath={selectedId}
           {blockCallbacks}

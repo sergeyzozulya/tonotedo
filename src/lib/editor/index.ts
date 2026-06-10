@@ -47,3 +47,10 @@ export {
   toggleCheckbox,
 } from "./extensions/blocks.js";
 export type { BlockCallbacks, AttachmentAction } from "./extensions/blocks.js";
+export {
+  autocomplete,
+  buildCompletionSources,
+  rankTags,
+  rankPeople,
+} from "./extensions/autocomplete.js";
+export type { AutocompleteConfig } from "./extensions/autocomplete.js";

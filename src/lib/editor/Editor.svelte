@@ -35,6 +35,7 @@
     pasteDropHandlers,
     type BlockCallbacks,
   } from "./extensions/blocks.js";
+  import { autocomplete } from "./extensions/autocomplete.js";
   import { ipc } from "../ipc/index.js";
 
   interface Props {
@@ -72,6 +73,11 @@
     entryPath?: string;
     /** Block-layer callbacks (open attachment, relink/remove broken). */
     blockCallbacks?: BlockCallbacks;
+    /**
+     * Called when the user selects the "Create person '<slug>'" autocomplete
+     * option. No text is inserted; creation is the caller's responsibility.
+     */
+    onCreatePerson?: (slug: string) => void;
   }
 
   let {
@@ -84,6 +90,7 @@
     entryTitles = new Map(),
     entryPath = "",
     blockCallbacks = {},
+    onCreatePerson,
   }: Props = $props();
 
   let host: HTMLDivElement;
@@ -122,6 +129,7 @@
           cursorReveal,
           blocksPlugin(ipc, blockCallbacks),
           pasteDropHandlers(ipc, () => entryPath),
+          autocomplete({ ipc, onCreatePerson }),
           markdownExtension,
           baseSetup,
           editorTheme,
