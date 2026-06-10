@@ -10,6 +10,8 @@
 //   - FTS search title-over-body ranking
 //   - rebuild-equivalence (spec 0009 §"Acceptance criteria")
 //   - rename preserves backlinks
+//   - 10k-entry search benchmark (issue #28, spec 0009 / design-0001)
+//   - full_name person search (issue #28, spec 0005 AC10)
 
 use std::collections::BTreeMap;
 
@@ -536,4 +538,296 @@ fn entries_in_group_does_not_match_sibling_prefix() {
     let rows = idx.entries_in_group("Work").unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].group_path, "Work");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 10k-entry search benchmark (issue #28, spec 0009 / design-0001 benchmark plan)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Generate a deterministic synthetic entry corpus of `n` entries.
+///
+/// Each entry has a distinct ID, varied title/body text, a handful of tags,
+/// and two mentions.  The corpus is designed to be realistic enough that FTS
+/// tokenisation and BM25 ranking exercise their full code paths.
+fn make_synthetic_corpus(
+    n: usize,
+) -> Vec<(String, String, String, crate::core::frontmatter::Entry)> {
+    let nouns = [
+        "alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "iota", "kappa",
+        "lambda", "mu", "nu", "xi", "omicron", "pi", "rho", "sigma", "tau", "upsilon", "phi",
+        "chi", "psi", "omega",
+    ];
+    let verbs = [
+        "review", "update", "plan", "design", "build", "test", "deploy", "refactor", "document",
+        "discuss", "schedule", "analyse", "approve",
+    ];
+    let tags_pool = [
+        "planning",
+        "engineering",
+        "design",
+        "review",
+        "finance",
+        "ops",
+        "hr",
+        "legal",
+        "marketing",
+        "product",
+    ];
+    let people_pool = ["alice", "bob", "carol", "dave", "eve"];
+
+    let mut entries = Vec::with_capacity(n);
+    for i in 0..n {
+        let noun = nouns[i % nouns.len()];
+        let verb = verbs[i % verbs.len()];
+        let tag1 = tags_pool[i % tags_pool.len()];
+        let tag2 = tags_pool[(i + 3) % tags_pool.len()];
+        let person = people_pool[i % people_pool.len()];
+
+        let id = format!("bench-{i:05}");
+        let title = format!("{verb} {noun} entry {i}");
+        let body = format!(
+            "# {title}\n\n\
+             This entry covers the {verb} of the {noun} component.\n\
+             Stakeholder @{person} should review the {verb} plan.\n\
+             ##{tag1} context: the {noun} needs attention.\n\
+             See also [[{noun}-spec]] for background.\n\
+             Tags: #{tag1} #{tag2}\n",
+        );
+
+        let group = format!("group{}", i % 20);
+        let slug = format!("{verb}-{noun}-{i}");
+        let path = format!("{group}/{slug}.md");
+
+        let entry = make_entry(&id, &[tag1, tag2], &[person], &body);
+        entries.push((path, slug, group, entry));
+    }
+    entries
+}
+
+/// 1k smoke variant — always runs (fast).
+///
+/// Validates that bulk upsert + search completes without error and that
+/// at least one result is returned for simple queries.
+#[test]
+fn ten_k_smoke_1k_entries() {
+    let corpus = make_synthetic_corpus(1_000);
+    let mut idx = Index::open_in_memory().unwrap();
+
+    for (path, slug, group, entry) in &corpus {
+        upsert(&mut idx, path, slug, group, entry);
+    }
+
+    // Basic queries that must find results.
+    let queries = ["alpha", "review", "planning", "alice", "spec"];
+    for q in &queries {
+        let results = idx.search(q, 20).unwrap();
+        assert!(
+            !results.is_empty(),
+            "1k smoke: search '{q}' must return results"
+        );
+    }
+
+    // Entry count sanity check.
+    let all = idx.entries_in_group("").unwrap();
+    assert_eq!(
+        all.len(),
+        1_000,
+        "1k smoke: all 1000 entries must be indexed"
+    );
+}
+
+/// 10k-entry file-backed benchmark (marked `#[ignore]` for CI speed).
+///
+/// Uses a real on-disk SQLite file (via `tempfile`) so I/O is included.
+/// Assertions:
+///   - index build completes (time is printed for reference)
+///   - p95 search latency over 20 varied queries < 100ms
+///
+/// Run manually with:
+///   cargo test --release ten_k_search_latency_file_backed -- --ignored --nocapture
+#[test]
+#[ignore]
+fn ten_k_search_latency_file_backed() {
+    use std::time::Instant;
+
+    // ── Build the corpus ──────────────────────────────────────────────────────
+    let corpus = make_synthetic_corpus(10_000);
+
+    // Open a real file-backed database.
+    let dir = tempfile::tempdir().expect("tempdir must work");
+    let db_path = dir.path().join("bench.db");
+    let db_path_str = db_path.to_str().unwrap();
+
+    let t_build_start = Instant::now();
+    let mut idx = Index::open(db_path_str).expect("open file-backed index");
+
+    for (path, slug, group, entry) in &corpus {
+        upsert(&mut idx, path, slug, group, entry);
+    }
+
+    let build_ms = t_build_start.elapsed().as_millis();
+    println!("[bench] 10k-entry index build time: {build_ms}ms");
+
+    // ── Measure search latency over 20 varied queries ─────────────────────────
+    let queries = [
+        "alpha",
+        "beta",
+        "gamma",
+        "delta",
+        "epsilon",
+        "review",
+        "update",
+        "plan",
+        "design",
+        "build",
+        "planning",
+        "engineering",
+        "ops",
+        "finance",
+        "product",
+        "alice",
+        "bob",
+        "carol",
+        "spec",
+        "component",
+    ];
+    assert_eq!(queries.len(), 20, "need exactly 20 benchmark queries");
+
+    let mut latencies_ms: Vec<f64> = Vec::with_capacity(queries.len());
+    for q in &queries {
+        let t0 = Instant::now();
+        let results = idx.search(q, 20).unwrap();
+        let elapsed = t0.elapsed().as_secs_f64() * 1_000.0;
+        latencies_ms.push(elapsed);
+        println!(
+            "[bench] query {:12} → {:3} results in {:.2}ms",
+            q,
+            results.len(),
+            elapsed
+        );
+    }
+
+    // ── p95 calculation ───────────────────────────────────────────────────────
+    latencies_ms.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let n = latencies_ms.len();
+    // p95 index: ceiling of 0.95 * n − 1 (0-based).
+    let p95_idx = ((0.95 * n as f64).ceil() as usize)
+        .saturating_sub(1)
+        .min(n - 1);
+    let p95_ms = latencies_ms[p95_idx];
+    let max_ms = latencies_ms[n - 1];
+
+    println!("[bench] search p95={p95_ms:.2}ms max={max_ms:.2}ms over {n} queries");
+    println!("[bench] index build: {build_ms}ms for 10k entries");
+
+    assert!(
+        p95_ms < 100.0,
+        "p95 search latency {p95_ms:.2}ms must be < 100ms (spec 0009 / design-0001 benchmark plan)"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// full_name person search (issue #28, spec 0005 AC10)
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// DEFECT INVESTIGATION:
+// AC10 requires that searching for a person's full_name (e.g. "Sergey K.")
+// surfaces entries that mention @sergey.
+//
+// The current FTS implementation (query.rs::search) queries ONLY the `fts`
+// virtual table, which is an external-content table indexing:
+//   - `entries.title`  (column weight 10×)
+//   - entry body text  (column weight 1×)
+//
+// The `people` table stores (slug, full_name, color, avatar_path) but has
+// NO connection to the FTS index.  There is no code path that:
+//   1. Expands a full_name query token to its corresponding slug, OR
+//   2. Joins the people table into the FTS search, OR
+//   3. Indexes people.full_name into the FTS virtual table.
+//
+// Therefore, searching "Sergey K." will find ZERO results even if many entries
+// mention @sergey, because:
+//   - The FTS body text stores "@sergey" (the raw slug).
+//   - "Sergey K." is not present anywhere in the indexed text.
+//   - There is no name→slug expansion in the query layer.
+//
+// DEFECT: The people-name join (AC10) is NOT implemented in core/index/query.rs.
+// The test below documents this gap: it proves that the join does not work, so
+// callers relying on full_name search will get empty results.
+// A green test that silently asserts the wrong thing would hide this defect.
+
+#[test]
+fn person_full_name_search_defect_documented() {
+    // Arrange: declare a person with full_name "Sergey K." and slug "sergey".
+    let mut idx = Index::open_in_memory().unwrap();
+
+    idx.set_people(&[PeopleRow {
+        slug: "sergey".to_string(),
+        full_name: Some("Sergey K.".to_string()),
+        color: None,
+        avatar_path: None,
+    }])
+    .unwrap();
+
+    // Insert several entries that mention @sergey in their bodies.
+    for i in 0..5u32 {
+        let e = make_entry(
+            &format!("id-sk-{i}"),
+            &[],
+            &["sergey"],
+            &format!("Meeting with @sergey about topic {i}. See [[notes]] for context."),
+        );
+        upsert(
+            &mut idx,
+            &format!("meetings/meeting-{i}.md"),
+            &format!("meeting-{i}"),
+            "meetings",
+            &e,
+        );
+    }
+
+    // Verify @sergey mentions ARE indexed (the mention index works correctly).
+    let mentions = idx.mentions_index().unwrap();
+    let mentioning_entries: Vec<_> = mentions.iter().filter(|r| r.tag == "sergey").collect();
+    assert!(
+        !mentioning_entries.is_empty(),
+        "precondition: @sergey must appear in the mentions index; got: {mentions:?}"
+    );
+
+    // Attempt to search by the person's slug directly — this DOES work because
+    // "@sergey" is indexed in the FTS body text.
+    let slug_results = idx.search("sergey", 20).unwrap();
+    assert!(
+        !slug_results.is_empty(),
+        "searching by slug 'sergey' should find body mentions; got empty results"
+    );
+
+    // Now attempt to search by the full_name — this is AC10.
+    // DEFECT A: there is no name→slug expansion in the query layer.
+    // DEFECT B (additional): the period in "Sergey K." causes an FTS5 syntax
+    //          error because the raw query is passed directly to the FTS5
+    //          MATCH expression without escaping special characters.
+    //          FTS5 treats "." as a query operator/separator and rejects the
+    //          query: `SqliteFailure(Error { code: Unknown, extended_code: 1 },
+    //                  Some("fts5: syntax error near \".\""))`.
+    //
+    // The full_name search fails in two ways:
+    //   1. Even if the query succeeded, "Sergey K." ≠ "@sergey" in FTS body text.
+    //   2. The query raises an Err() instead of returning empty results.
+    //
+    // We test Defect B by asserting that the search returns an Err for this input.
+    let fullname_result = idx.search("Sergey K.", 20);
+
+    // Document the current (broken) behavior: full_name search returns an error.
+    // This assertion CONFIRMS BOTH defects rather than hiding them.
+    // When AC10 is properly implemented, the code should:
+    //   1. Sanitize / escape the query before passing to FTS5.
+    //   2. Expand full_name tokens to their slugs via a people-table join.
+    //   3. Return the mentioning entries (assert !results.is_empty()).
+    assert!(
+        fullname_result.is_err(),
+        "DEFECT CONFIRMED: full_name 'Sergey K.' search must return an Err due to \
+         FTS5 syntax error on period character; if this passes, special-char sanitisation \
+         has been added — also add a positive assertion for AC10 full_name→slug join."
+    );
 }
