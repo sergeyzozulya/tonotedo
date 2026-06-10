@@ -12,6 +12,7 @@ import type {
   EntrySummary,
   TagMeta,
   PersonMeta,
+  GroupMeta,
   Backlink,
   GroupPath,
   Cursor,
@@ -831,6 +832,31 @@ export const mock: Ipc = {
       map[e.id] = e.title;
     }
     return { ok: true, value: map };
+  },
+
+  async list_groups(): Promise<Result<GroupMeta[]>> {
+    // Derive groups from the mock entry data: collect unique group paths
+    // and count entries per group (exact match, not descendants — the sidebar
+    // aggregates counts up the tree itself).
+    const counts = new Map<string, number>();
+    for (const e of store.values()) {
+      counts.set(e.group, (counts.get(e.group) ?? 0) + 1);
+    }
+    // Also register any intermediate path segments implied by the group paths
+    // so that "work" appears even if no entry sits directly in "work/".
+    const allPaths = new Set<string>();
+    for (const path of counts.keys()) {
+      const parts = path.split("/");
+      for (let i = 1; i <= parts.length; i++) {
+        allPaths.add(parts.slice(0, i).join("/"));
+      }
+    }
+    const groups: GroupMeta[] = Array.from(allPaths).map((path) => ({
+      path,
+      name: path.split("/").at(-1) ?? path,
+      count: counts.get(path) ?? 0,
+    }));
+    return { ok: true, value: groups };
   },
 
   on<E extends IpcEventName>(
