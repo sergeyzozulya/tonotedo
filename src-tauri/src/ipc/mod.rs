@@ -229,6 +229,8 @@ fn change_kind_str(k: &ChangeKind) -> &'static str {
         ChangeKind::Modified => "modified",
         ChangeKind::Removed => "deleted",
         ChangeKind::Renamed { .. } => "renamed",
+        // Cloud placeholder: content evicted, entry shows as pending (spec 0013).
+        ChangeKind::Pending => "pending",
     }
 }
 

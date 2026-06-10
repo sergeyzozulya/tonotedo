@@ -44,7 +44,10 @@ pub fn start_watcher(
         move |result: Result<notify::Event, notify::Error>| {
             match result {
                 Ok(event) => {
-                    let kind = event_to_raw_kind(&event.kind);
+                    let kind = match event_to_raw_kind(&event.kind) {
+                        Some(k) => k,
+                        None => return, // Access events and explicit ignores: drop here.
+                    };
                     for path in event.paths {
                         // Skip .tonotedo/ and non-.md files for entry events.
                         if should_skip(&path, &root) {
@@ -73,16 +76,28 @@ pub fn start_watcher(
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+/// Test-only re-export of `event_to_raw_kind` for unit tests.
+#[cfg(test)]
+pub(crate) fn event_to_raw_kind_for_test(kind: &notify::EventKind) -> Option<super::RawKind> {
+    event_to_raw_kind(kind)
+}
+
 /// Map a notify `EventKind` to our coarser `RawKind`.
-fn event_to_raw_kind(kind: &EventKind) -> RawKind {
+///
+/// `EventKind::Access` is explicitly mapped to `None` (ignored) — issue #29,
+/// item 2.  Access events fire on every file read and carry no information about
+/// content changes; dispatching a reconcile for each one inflates the queue
+/// without benefit.  The mtime/size fast-path in `reconcile_path` would make
+/// them no-ops anyway, but it's cheaper to drop them here before they even enter
+/// the debounce window.
+fn event_to_raw_kind(kind: &EventKind) -> Option<RawKind> {
     match kind {
-        EventKind::Create(_) | EventKind::Modify(_) => RawKind::CreateOrModify,
-        EventKind::Remove(_) => RawKind::Remove,
-        // Access / Other / Any: treat as a potential create-or-modify so we
-        // at least re-check mtime.
-        EventKind::Access(_) => RawKind::CreateOrModify,
-        EventKind::Other => RawKind::FullRescanNeeded,
-        EventKind::Any => RawKind::CreateOrModify,
+        EventKind::Create(_) | EventKind::Modify(_) => Some(RawKind::CreateOrModify),
+        EventKind::Remove(_) => Some(RawKind::Remove),
+        // Access: file was read but not modified — no reconcile needed.
+        EventKind::Access(_) => None,
+        EventKind::Other => Some(RawKind::FullRescanNeeded),
+        EventKind::Any => Some(RawKind::CreateOrModify),
     }
 }
 

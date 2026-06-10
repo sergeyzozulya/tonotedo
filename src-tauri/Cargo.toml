@@ -57,6 +57,12 @@ xxhash-rust = { version = "0.8", features = ["xxh3"] }
 notify = "8"
 crossbeam-channel = "0.5"
 
+# Unicode normalization: NFC/NFD path normalization at the reconcile boundary
+# (issue #29, item 3). macOS HFS+ delivers filenames in NFD; the index stores
+# NFC; without normalization the same file can appear as both absent and present
+# depending on which form is compared. Small, no C build step, no serde dep.
+unicode-normalization = "0.1"
+
 [profile.release]
 codegen-units = 1
 lto = true

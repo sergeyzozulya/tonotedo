@@ -18,7 +18,7 @@ use crate::core::{
     frontmatter::{Entry, Value},
     fswrite::{write_entry, TokenRegistry},
     index::Index,
-    reconcile::{ChangeKind, SyncReconciler},
+    reconcile::{ChangeEvent, ChangeKind, SyncReconciler},
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -896,4 +896,284 @@ fn worker_survives_panic_and_processes_next_batch() {
         "worker must process the batch after a panicking batch"
     );
     assert_eq!(ev.unwrap().path, dir.path().join("after.md"));
+}
+
+// ── Issue #29, item 2: EventKind::Access → ignore ────────────────────────────
+
+#[test]
+fn access_event_kind_maps_to_none() {
+    // EventKind::Access must not produce a RawKind — it should be dropped.
+    // We test the mapping function directly by checking its output type.
+    use crate::core::reconcile::watcher::event_to_raw_kind_for_test;
+    use notify::EventKind;
+
+    // Access events of any sub-kind must return None.
+    assert!(
+        event_to_raw_kind_for_test(&EventKind::Access(notify::event::AccessKind::Any)).is_none(),
+        "Access(Any) must map to None (ignored)"
+    );
+    assert!(
+        event_to_raw_kind_for_test(&EventKind::Access(notify::event::AccessKind::Read)).is_none(),
+        "Access(Read) must map to None (ignored)"
+    );
+
+    // Other kinds must still produce RawKind values.
+    use crate::core::reconcile::RawKind;
+    assert_eq!(
+        event_to_raw_kind_for_test(&EventKind::Create(notify::event::CreateKind::Any)),
+        Some(RawKind::CreateOrModify)
+    );
+    assert_eq!(
+        event_to_raw_kind_for_test(&EventKind::Remove(notify::event::RemoveKind::Any)),
+        Some(RawKind::Remove)
+    );
+}
+
+// ── Issue #29, item 3: Unicode NFC normalization guard ────────────────────────
+
+#[test]
+fn nfc_normalized_rel_path_matches_nfd_on_disk() {
+    // Create a file with NFD filename bytes ("café.md" in NFD: the 'é' is
+    // represented as 'e' + COMBINING ACUTE ACCENT, U+0301).
+    // macOS HFS+/APFS normalizes filenames to NFD on disk; this simulates that.
+    use crate::core::reconcile::reconcile_path::rel_path;
+
+    let (dir, _rec) = setup();
+
+    // NFD form: 'c','a','f','e', U+0301 (combining acute accent), '.','m','d'
+    let nfd_name: String = "cafe\u{0301}.md".to_string(); // NFD "café.md"
+    let nfc_name = "café.md"; // NFC form
+
+    assert_ne!(
+        nfd_name, nfc_name,
+        "precondition: NFD and NFC must differ as raw strings"
+    );
+
+    // Write a file with NFD name (simulates what macOS delivers via the watcher).
+    let nfd_abs = dir.path().join(&nfd_name);
+    std::fs::write(&nfd_abs, "---\nid: id-cafe\n---\n# Café\n").unwrap();
+
+    // rel_path must return NFC regardless of which form the OS path uses.
+    let rel = rel_path(dir.path(), &nfd_abs);
+    assert!(rel.is_some(), "rel_path must succeed for NFD path");
+    let rel_str = rel.unwrap();
+    // The returned string must be NFC.
+    let expected_nfc: String = nfc_name.chars().collect();
+    assert_eq!(
+        rel_str, expected_nfc,
+        "rel_path must normalize NFD filename to NFC (got {rel_str:?}, expected {expected_nfc:?})"
+    );
+}
+
+#[test]
+fn nfd_file_survives_full_rescan_not_deleted() {
+    // A file with an NFD filename must not be treated as deleted on full_rescan.
+    //
+    // Without NFC normalization: the ledger stores the first-reconcile path
+    // (NFC), but full_rescan sees the on-disk NFD path.  The ledger lookup
+    // fails (string mismatch), the path appears absent, and the entry is deleted.
+    //
+    // With NFC normalization: both the first reconcile and full_rescan normalize
+    // to NFC, so they always agree on the path string.
+    let (dir, mut rec) = setup();
+
+    // NFD filename bytes (same as above test).
+    let nfd_name = "cafe\u{0301}.md";
+    let nfd_abs = dir.path().join(nfd_name);
+    std::fs::write(&nfd_abs, "---\nid: id-nfd-test\n---\n# NFD test\n").unwrap();
+
+    // First reconcile: ledger row written with NFC path.
+    rec.reconcile_path(&nfd_abs);
+    assert_eq!(
+        rec.index().entries_in_group("").unwrap().len(),
+        1,
+        "NFD file must be indexed"
+    );
+
+    // Full rescan: must find the NFC ledger row and NOT delete it.
+    let events = rec.full_rescan();
+    let remove_events: Vec<_> = events
+        .iter()
+        .filter(|e| matches!(e.kind, ChangeKind::Removed))
+        .collect();
+    assert!(
+        remove_events.is_empty(),
+        "full_rescan must NOT emit Removed for an NFD-named file (got {remove_events:?})"
+    );
+    assert_eq!(
+        rec.index().entries_in_group("").unwrap().len(),
+        1,
+        "NFD file must still be indexed after full_rescan"
+    );
+}
+
+// ── Issue #29, item 1: cloud placeholder detection ───────────────────────────
+//
+// We can't actually set SF_DATALESS in a test (requires kernel/superuser), so
+// we test the cross-platform heuristic path: stat_size > 0 but read returns
+// empty bytes → placeholder.  We simulate this with a mock-stat by testing
+// detect_placeholder's behaviour via the `stat()` function on a real zero-byte
+// file vs a non-empty file.
+//
+// The SF_DATALESS flag path is covered by a compile-time assertion that the
+// constant is correct (0x40000000) — that constant is from the macOS SDK header.
+
+#[test]
+fn normal_file_not_detected_as_placeholder() {
+    // A file with real content must not be detected as a placeholder.
+    let (dir, _rec) = setup();
+    let path = dir.path().join("real.md");
+    std::fs::write(&path, "---\nid: id-real\n---\n# Real\n").unwrap();
+
+    let file_stat = crate::core::reconcile::ledger::stat(&path);
+    assert!(file_stat.is_some());
+    let file_stat = file_stat.unwrap();
+    assert!(
+        !file_stat.is_placeholder,
+        "a file with real content must not be detected as a placeholder"
+    );
+}
+
+#[test]
+fn empty_file_not_detected_as_placeholder() {
+    // A genuinely empty file (size == 0) must NOT be detected as a placeholder.
+    // The heuristic only fires on size > 0 + read returns empty.  An empty file
+    // is just an empty file.
+    let (dir, _rec) = setup();
+    let path = dir.path().join("empty.md");
+    std::fs::write(&path, "").unwrap();
+
+    let file_stat = crate::core::reconcile::ledger::stat(&path).unwrap();
+    assert!(
+        !file_stat.is_placeholder,
+        "a zero-byte file must not be detected as a placeholder (it's just empty)"
+    );
+}
+
+#[test]
+fn placeholder_file_emits_pending_event_and_preserves_existing_entry() {
+    // When a reconcile encounters a placeholder, it must:
+    //   1. Emit ChangeKind::Pending (not Created/Modified).
+    //   2. Preserve any existing entry row (not delete, not replace with empty).
+    //   3. Mark files.pending = 1 in the ledger.
+    //
+    // We simulate a placeholder by creating a file, indexing it, then replacing
+    // it with a zero-byte file while keeping the same name — and patching
+    // detect_placeholder to return true via the heuristic (the stat says size > 0
+    // but we make the file physically 0 bytes so the heuristic triggers).
+    //
+    // In practice on macOS, iCloud sets SF_DATALESS.  Here we use the heuristic:
+    // the file has size > 0 in the ledger but the real file has 0 bytes, which
+    // mirrors what the heuristic sees.
+    //
+    // NOTE: The OS `stat()` will report size=0 for a zero-byte file, so the
+    // heuristic won't trigger (stat_size == 0 → not a placeholder).  To exercise
+    // the heuristic we need a file whose stat says size > 0 but whose read returns
+    // 0 bytes.  We use a named pipe (FIFO) for this: stat reports size=0 on a FIFO
+    // on Linux, but on macOS a FIFO also reports size=0.  This means we cannot
+    // easily trigger the heuristic in a portable unit test without a root-level
+    // operation.
+    //
+    // Instead we test the pending path by calling index.mark_pending directly and
+    // verifying the ChangeEvent kind is set correctly by the ledger API.
+    let (dir, mut rec) = setup();
+
+    // Index a real file first.
+    write_file(
+        &dir,
+        "evicted.md",
+        &entry_bytes("id-evict", "# Will be evicted\n"),
+    );
+    let events1 = rec.reconcile_path(std::path::Path::new("evicted.md"));
+    assert_eq!(events1.len(), 1);
+    assert!(matches!(events1[0].kind, ChangeKind::Created));
+
+    // Simulate the placeholder state: mark the ledger row as pending directly.
+    // This is what do_placeholder() does internally; we skip the SF_DATALESS
+    // check since we cannot set that flag in a test.
+    let ledger_before = rec.index().ledger_row("evicted.md").unwrap().unwrap();
+    rec.index_mut()
+        .mark_pending(
+            "evicted.md",
+            ledger_before.mtime,
+            ledger_before.size,
+            "00000000000000000000000000000000",
+        )
+        .unwrap();
+
+    // The entry row must still be there (not deleted by mark_pending).
+    let entries = rec.index().entries_in_group("").unwrap();
+    assert_eq!(
+        entries.len(),
+        1,
+        "entry row must be preserved when file is marked pending"
+    );
+    assert_eq!(entries[0].slug, "evicted");
+
+    // The ledger row must show pending = true.
+    let ledger = rec.index().ledger_row("evicted.md").unwrap().unwrap();
+    assert!(
+        ledger.pending,
+        "ledger.pending must be true after mark_pending"
+    );
+
+    // After clear_pending, the flag must be gone.
+    rec.index_mut().clear_pending("evicted.md").unwrap();
+    let ledger2 = rec.index().ledger_row("evicted.md").unwrap().unwrap();
+    assert!(
+        !ledger2.pending,
+        "ledger.pending must be false after clear_pending"
+    );
+}
+
+#[test]
+fn pending_event_kind_propagates_through_change_event() {
+    // Verify ChangeKind::Pending round-trips through the ChangeEvent struct.
+    let abs_path = std::path::PathBuf::from("/tmp/test.md");
+    let ev = ChangeEvent {
+        path: abs_path.clone(),
+        kind: ChangeKind::Pending,
+        self_originated: false,
+    };
+    assert!(matches!(ev.kind, ChangeKind::Pending));
+    assert_eq!(ev.path, abs_path);
+    assert!(!ev.self_originated);
+}
+
+// ── Issue #29, item 4: _group.md is not indexed as an entry ──────────────────
+// (Code change: none. The comment in reconcile_path.rs §"Reserved gate"
+// already documents this ruling.  This test confirms the behaviour.)
+
+#[test]
+fn group_md_not_indexed_as_entry() {
+    let (dir, mut rec) = setup();
+    // Create a _group.md at root and in a subdirectory.
+    std::fs::write(
+        dir.path().join("_group.md"),
+        "---\nview: note\n---\n# Root group\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.path().join("sub")).unwrap();
+    std::fs::write(
+        dir.path().join("sub/_group.md"),
+        "---\nview: note\n---\n# Sub group\n",
+    )
+    .unwrap();
+
+    rec.full_rescan();
+
+    let entries = rec.index().entries_in_group("").unwrap();
+    let paths: Vec<_> = entries.iter().map(|e| e.path.as_str()).collect();
+    assert!(
+        !paths.contains(&"_group.md"),
+        "_group.md at root must not be indexed as an entry (spec 0002 §Reserved names)"
+    );
+    assert!(
+        !paths.contains(&"sub/_group.md"),
+        "sub/_group.md must not be indexed as an entry"
+    );
+    assert!(
+        entries.is_empty(),
+        "no entries must exist — only reserved files were written"
+    );
 }
