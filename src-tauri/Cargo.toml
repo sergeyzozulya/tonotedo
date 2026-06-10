@@ -31,7 +31,6 @@ saphyr = "0.0.6"
 # of ISO 8601. It has explicit-offset support (Timestamp + TimeZone::fixed) which
 # matches the spec's "stored with explicit offset" requirement, and separately
 # represents offset-less civil datetimes for the zone-naive case allowed by 0002.
-jiff = "0.2"
 
 # ID generation: ULID is lexicographically sortable (good for SQLite index
 # ordering), monotonic, URL-safe, and opaque to users. UUID v7 would also be
