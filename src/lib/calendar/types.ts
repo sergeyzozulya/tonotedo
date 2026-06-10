@@ -2,7 +2,19 @@
 // Spec: docs/spec/0008-calendar.md
 
 // ── Primary date property ─────────────────────────────────────────────────────
-// TODO(#23): replace hard-coded constant with library settings lookup.
+// Reads the library setting with "due" as fallback (spec 0011, closes TODO #23).
+import { getPrimaryDateProp } from "../commands/settings.js";
+
+/**
+ * Returns the active primary date property name for calendar placement.
+ * Reads from the library settings store so changing the setting takes effect
+ * immediately without a module reload.
+ */
+export function primaryDateProp(): string {
+  return getPrimaryDateProp();
+}
+
+/** Backward-compat constant — still the default value; prefer primaryDateProp(). */
 export const PRIMARY_DATE_PROP = "due" as const;
 
 // ── View modes ────────────────────────────────────────────────────────────────

@@ -17,7 +17,8 @@
   // by theme-store.ts.  Issue #23 will formalise persistence.
 
   import { ipc } from "../ipc/index.js";
-  import { registry } from "../commands/index.js";
+  import { registry, seedThemeCommands } from "../commands/index.js";
+  import { settings_get_user } from "../commands/settings.js";
   import { buildGroupTree } from "./group-tree.js";
   import { themeStore } from "./theme-store.js";
   import Sidebar from "./Sidebar.svelte";
@@ -30,13 +31,14 @@
   import TagBrowser from "../tags/TagBrowser.svelte";
   import CreatePersonDialog from "../people/CreatePersonDialog.svelte";
   import CalendarView from "../calendar/CalendarView.svelte";
+  import SettingsView from "../settings/SettingsView.svelte";
   import type { EntrySummary, PersonMeta } from "../ipc/types.js";
   import type { GroupNode } from "./group-tree.js";
   import type { ChangeSpec } from "../panel/frontmatter-view.js";
   import type { SavedSearch } from "../search/saved-searches-store.js";
   import themeMap from "../../styles/THEME-MAP.json";
 
-  // ── Theme switcher (minimal; #23 will formalise) ────────────────────────────
+  // ── Theme (initialise from persisted user settings, then wire commands) ────────
 
   type ThemeMode = "light" | "dark" | "system";
 
@@ -44,7 +46,16 @@
   const themeNames = Object.fromEntries(themeMap.themes.map((t) => [t.key, t.name]));
 
   $effect(() => {
+    // Restore persisted theme/mode before init() applies DOM attributes.
+    const savedTheme = settings_get_user("theme");
+    const savedMode = settings_get_user("mode");
+    if (savedTheme && typeof savedTheme === "string") themeStore.setTheme(savedTheme);
+    if (savedMode && (savedMode === "light" || savedMode === "dark" || savedMode === "system")) {
+      themeStore.setMode(savedMode as ThemeMode);
+    }
     themeStore.init();
+    // Wire theme/mode commands through themeStore (fixes issue #23 sync gap).
+    seedThemeCommands(themeStore);
     return () => themeStore.destroy();
   });
 
@@ -98,8 +109,8 @@
 
   // ── Main zone mode ────────────────────────────────────────────────────────────
 
-  /** Which main-zone content to show: editor, person view, or tag browser. */
-  type MainZone = "editor" | "person" | "tags";
+  /** Which main-zone content to show: editor, person view, tag browser, or settings. */
+  type MainZone = "editor" | "person" | "tags" | "settings";
   let mainZone = $state<MainZone>("editor");
 
   let selectedPersonSlug = $state<string | null>(null);
@@ -313,6 +324,21 @@
     }
   });
 
+  // ── app.settings via the command registry ─────────────────────────────────────
+  // Re-register the seeded stub with the real handler that opens the settings view.
+
+  function openSettings(): void {
+    mainZone = "settings";
+    if (narrow) mobileScreen = "editor";
+  }
+
+  $effect(() => {
+    const seeded = registry.get("app.settings");
+    if (seeded) {
+      registry.register({ ...seeded, handler: () => openSettings() });
+    }
+  });
+
   // ── Calendar zone ─────────────────────────────────────────────────────────────
 
   let calendarOpen = $state(false);
@@ -415,6 +441,18 @@
           Properties
         </button>
       {/if}
+
+      <!-- Settings gear affordance -->
+      <button
+        class="titlebar-btn titlebar-btn--settings"
+        class:titlebar-btn--toggle={mainZone === "settings"}
+        aria-label="Open Settings (⌘,)"
+        aria-pressed={mainZone === "settings"}
+        onclick={openSettings}
+        title="Settings (⌘,)"
+      >
+        ⚙
+      </button>
     </div>
   </header>
 
@@ -477,6 +515,8 @@
               console.log("[shell] tag selected:", name);
             }}
           />
+        {:else if mainZone === "settings"}
+          <SettingsView onClose={() => (mainZone = "editor")} />
         {:else if selectedEntryId}
           <Editor
             doc={editorText}
@@ -648,6 +688,11 @@
     color: var(--tnd-accent-text);
     border-color: transparent;
     font-size: 13px;
+  }
+
+  .titlebar-btn--settings {
+    font-size: 15px;
+    padding: 2px 7px;
   }
 
   /* Body */

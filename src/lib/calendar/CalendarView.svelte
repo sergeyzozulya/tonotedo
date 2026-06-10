@@ -9,6 +9,7 @@
   import { ipc } from "../ipc/index.js";
   import type { CalendarWindowItem } from "../ipc/types.js";
   import type { CalItem, CalDate, CalendarViewMode } from "./types.js";
+  import { primaryDateProp } from "./types.js";
   import {
     parseCalValue,
     calDateFromDate,
@@ -232,15 +233,20 @@
       // Write an override: add/update the overrides map.
       newText = applyOccurrenceOverride(text, item.occurrenceKey, formatCalDate(toDate));
     } else {
-      // Direct reschedule: update the due property.
+      // Direct reschedule: update the primary date property.
+      const dateProp = primaryDateProp();
       const newDateStr = formatCalDate(toDate);
-      const dueRow = model.rows.find((r) => r.key === "due");
+      const dueRow = model.rows.find((r) => r.key === dateProp);
       let change: ChangeSpec | null = null;
 
       if (dueRow) {
-        change = applyPanelEdit(text, model, { kind: "set-scalar", key: "due", value: newDateStr });
+        change = applyPanelEdit(text, model, {
+          kind: "set-scalar",
+          key: dateProp,
+          value: newDateStr,
+        });
       } else {
-        change = applyPanelEdit(text, model, { kind: "add", key: "due", value: newDateStr });
+        change = applyPanelEdit(text, model, { kind: "add", key: dateProp, value: newDateStr });
       }
 
       if (change) {

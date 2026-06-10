@@ -43,8 +43,22 @@ export {
   savePreset,
   LocalStorageSettingsStore,
   MemorySettingsStore,
+  librarySettingsStore,
+  setLibrarySettingsStore,
+  MemoryLibrarySettingsStore,
+  settings_get_user,
+  settings_set_user,
+  settings_get_library,
+  settings_set_library,
+  getPrimaryDateProp,
 } from "./settings.js";
-export type { UserSettings, ISettingsStore, PresetId } from "./settings.js";
+export type {
+  UserSettings,
+  LibrarySettings,
+  ISettingsStore,
+  ILibrarySettingsStore,
+  PresetId,
+} from "./settings.js";
 
 export { parsePresetMarkdown, loadPresets, getPreset, _resetPresetCache } from "./presets.js";
 export type { PresetDefinition, PresetBinding } from "./presets.js";
@@ -63,7 +77,7 @@ export {
   setHintCallback,
 } from "./keymap-action.js";
 
-export { seedCommands } from "./seed.js";
+export { seedCommands, seedThemeCommands } from "./seed.js";
 
 export { default as Palette } from "./Palette.svelte";
 export { default as Cheatsheet } from "./Cheatsheet.svelte";
