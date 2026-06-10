@@ -40,6 +40,95 @@ jobs:
       - name: Build
         run: pnpm build
 
+  # Mobile build jobs — compile-only verification (no device sign/ship).
+  # Cost note: macos-14 (Apple Silicon) runners are billed at ~10× ubuntu rates;
+  # the iOS job runs ~5 min and is gated to main-branch pushes only to limit spend.
+  android:
+    name: Android (debug APK)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Set up Android SDK/NDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install NDK 30
+        run: sdkmanager --install "ndk;30.0.14904198"
+
+      - name: Set ANDROID_HOME / NDK_HOME
+        run: |
+          echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
+          echo "NDK_HOME=$ANDROID_SDK_ROOT/ndk/30.0.14904198" >> "$GITHUB_ENV"
+
+      - name: Build frontend
+        run: pnpm build
+
+      - name: Build Android debug APK (aarch64)
+        run: pnpm tauri android build --apk --target aarch64 --ci
+        env:
+          JAVA_HOME: ${{ env.JAVA_HOME }}
+
+  ios:
+    name: iOS (simulator build)
+    runs-on: macos-14
+    # Only run on pushes to main (not every PR) to control macos runner costs.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios-sim,aarch64-apple-ios,x86_64-apple-ios
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install CocoaPods
+        run: brew install cocoapods
+
+      - name: Build frontend
+        run: pnpm build
+
+      - name: iOS simulator build (debug, aarch64-sim)
+        # Unset GIT_CONFIG_COUNT etc. — swift-rs creates a bare repo and
+        # safe.bareRepository=explicit breaks the Swift package step (spike gotcha #1).
+        run: |
+          unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
+          pnpm tauri ios build --debug --target aarch64-sim --ci
+
   rust:
     name: Rust (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
