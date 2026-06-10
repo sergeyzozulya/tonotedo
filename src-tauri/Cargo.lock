@@ -1962,6 +1962,7 @@ checksum = "e3e0adef53c21f888deb4fa59fc59f7eb17404926ee8a6f59f5df0fd7f9f3272"
 dependencies = [
  "bitflags 2.13.0",
  "block2",
+ "libc",
  "objc2",
  "objc2-core-foundation",
 ]
@@ -2878,6 +2879,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sync_async"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b815ef8e053247ad785b136d233ee9c9872eeda5319f2719d57cac88270c3dd9"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "sync_wrapper"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3078,6 +3090,65 @@ dependencies = [
  "syn 2.0.117",
  "tauri-codegen",
  "tauri-utils",
+]
+
+[[package]]
+name = "tauri-plugin"
+version = "2.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e126abc9e84e35cdfd01596140a73a1850cdb0df0a23acf0185776c30b469a6e"
+dependencies = [
+ "anyhow",
+ "glob",
+ "plist",
+ "schemars 0.8.22",
+ "serde",
+ "serde_json",
+ "tauri-utils",
+ "walkdir",
+]
+
+[[package]]
+name = "tauri-plugin-android-fs"
+version = "28.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b12e49f103e69e0f35e10983961135128e7fa5d38ec4517efecb0e6582d4c1d8"
+dependencies = [
+ "base64 0.22.1",
+ "glob",
+ "percent-encoding",
+ "schemars 0.8.22",
+ "serde",
+ "serde_json",
+ "sync_async",
+ "tauri",
+ "tauri-plugin",
+ "tauri-plugin-fs",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "tauri-plugin-fs"
+version = "2.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b7ecc274121aca0c036a2b42d1cbe83d368d348f54e0bb8a735c2b1548e8f371"
+dependencies = [
+ "anyhow",
+ "dunce",
+ "glob",
+ "log",
+ "objc2-foundation",
+ "percent-encoding",
+ "schemars 0.8.22",
+ "serde",
+ "serde_json",
+ "serde_repr",
+ "tauri",
+ "tauri-plugin",
+ "tauri-utils",
+ "thiserror 2.0.18",
+ "toml 1.1.2+spec-1.1.0",
+ "url",
 ]
 
 [[package]]
@@ -3441,6 +3512,7 @@ dependencies = [
  "serde_json",
  "tauri",
  "tauri-build",
+ "tauri-plugin-android-fs",
 ]
 
 [[package]]
