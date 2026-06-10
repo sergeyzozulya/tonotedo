@@ -13,5 +13,26 @@ dist/
 
 # Rust / Tauri (src-tauri/)
 target/
-src-tauri/gen/
+# Mobile gen/ trees: project files are tracked; only build artefacts are ignored.
+# iOS build outputs
+src-tauri/gen/apple/build/
+src-tauri/gen/apple/Externals/
+src-tauri/gen/apple/**/xcuserdata/
+src-tauri/gen/apple/DerivedData/
+# Android build outputs
+src-tauri/gen/android/.gradle/
+src-tauri/gen/android/build/
+src-tauri/gen/android/app/build/
+src-tauri/gen/android/.cxx/
+src-tauri/gen/android/.externalNativeBuild/
+src-tauri/gen/android/local.properties
+# Tauri-injected runtime artefacts (listed in gen/.gitignore files but kept here for clarity)
+src-tauri/gen/android/app/src/main/**/generated/
+src-tauri/gen/android/app/src/main/jniLibs/**/*.so
+src-tauri/gen/android/app/src/main/assets/tauri.conf.json
+src-tauri/gen/android/app/tauri.build.gradle.kts
+src-tauri/gen/android/app/proguard-tauri.pro
+src-tauri/gen/android/app/tauri.properties
+src-tauri/gen/android/.tauri/
+src-tauri/gen/android/tauri.settings.gradle
 .mobile-env

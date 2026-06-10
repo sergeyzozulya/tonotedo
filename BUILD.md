@@ -51,23 +51,46 @@ CI runs the same set on push/PR to `main` (`.github/workflows/ci.yml`).
 
 Both platforms were validated end-to-end by the Phase 0 spikes (see issue #1 and
 the `phase-0-spike-ios` / `phase-0-spike-android` branches, each with a
-`SPIKE-*.md` evidence report). Mobile targets are **not yet committed to main**
-— that lands in Phase 5. Until then, the spike branches are runnable references.
+`SPIKE-*.md` evidence report). Mobile targets landed on `main` in Phase 5:
+`src-tauri/gen/apple` and `src-tauri/gen/android` are now committed (project
+files only; build artefacts remain gitignored via `.gitignore` and the
+Tauri-generated `src-tauri/gen/{apple,android}/.gitignore` files).
 
 ### iOS
 
+One-time toolchain:
+
 ```sh
 rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
-brew install cocoapods
-pnpm tauri ios init   # one-time, generates src-tauri/gen/apple
-pnpm tauri ios dev    # builds + launches in the booted simulator
+brew install cocoapods  # xcodegen / libimobiledevice / ios-deploy pulled on first use
 ```
 
-Gotchas (learned in the spike):
-- If the Swift package step fails with a git error, run
-  `unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0` first.
-- Simulator needs no code signing; physical devices do.
-- First-run brew pulls: `xcodegen`, `libimobiledevice`, `ios-deploy`.
+`src-tauri/gen/apple` is already committed — **no need to run `pnpm tauri ios init`
+again** unless the tauri.conf.json changes. To re-generate: delete `gen/apple/` and
+re-run `pnpm tauri ios init`.
+
+Development and build commands:
+
+```sh
+# Hot-reload dev loop (requires a booted iOS simulator or connected device):
+pnpm tauri ios dev
+
+# Headless compile + .app bundle for the simulator (no device needed):
+pnpm tauri ios build --debug --target aarch64-sim --ci
+# Produces: src-tauri/gen/apple/build/arm64-sim/ToNoteDo.app
+# Measured build time (Phase 5, cold Rust, M2 Mac): ~5 min first build, ~25 s incremental
+```
+
+Gotchas:
+- **`GIT_CONFIG_COUNT` env breaks the iOS cargo build.** The shell may inject
+  `GIT_CONFIG_COUNT=1 / GIT_CONFIG_KEY_0=safe.bareRepository / GIT_CONFIG_VALUE_0=explicit`.
+  Tauri's `swift-rs` build dep creates a bare git repo for its Swift package; that env
+  makes git refuse it. Fix: `unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0`
+  before any iOS build. CI does this automatically.
+- Simulator needs no code signing; physical devices need `bundle > iOS > developmentTeam`
+  or `APPLE_DEVELOPMENT_TEAM` env var.
+- `actool` asset-catalog compile can deadlock intermittently under Xcode 26 + iOS 26 sim.
+  Killing the stuck `actool` process (or adding a CI retry) unblocks it.
 
 ### Android
 
@@ -75,8 +98,9 @@ One-time toolchain (Homebrew):
 
 ```sh
 brew install openjdk@21 && brew install --cask android-commandlinetools
-# accept licenses, then install: platform-tools platforms;android-35 \
-#   build-tools;35.0.0 ndk;<latest> emulator system-images;android-35;google_apis;arm64-v8a
+# accept licenses, then install:
+# platform-tools  platforms;android-35  build-tools;35.0.0
+# ndk;30.0.14904198  emulator  system-images;android-35;google_apis;arm64-v8a
 rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
 ```
 
@@ -86,22 +110,35 @@ set up by the build tooling — `source .mobile-env`):
 ```sh
 export JAVA_HOME="$(brew --prefix openjdk@21)/libexec/openjdk.jdk/Contents/Home"
 export ANDROID_HOME="$(brew --prefix)/share/android-commandlinetools"
-export NDK_HOME="$ANDROID_HOME/ndk/<version>"
+export NDK_HOME="$ANDROID_HOME/ndk/30.0.14904198"
 export PATH="$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$PATH"
 ```
 
+`src-tauri/gen/android` is already committed — **no need to run `pnpm tauri android init`
+again** unless the tauri.conf.json changes. To re-generate: delete `gen/android/` and
+re-run `pnpm tauri android init`.
+
+Development and build commands:
+
 ```sh
-pnpm tauri android init   # one-time, generates src-tauri/gen/android
-emulator -avd <name> &    # or a USB device with debugging enabled
+# Hot-reload dev loop (requires a running emulator or USB device):
+emulator -avd <name> &     # or a USB device with debugging enabled
 pnpm tauri android dev
+
+# Headless debug APK (no device needed):
+pnpm tauri android build --apk --target aarch64 --ci
+# Produces: src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release-unsigned.apk
+# Measured build time (Phase 5, cold Rust + Gradle, M2 Mac): ~3 min first build, ~15 s incremental
 ```
 
 Gotchas:
 - **Run one mobile VM at a time** (iOS simulator *or* Android emulator) — both
   together crush a dev machine.
-- First debug APK ~3 min; incremental rebuilds ~15 s.
-- NDK 30-beta works; if a future NDK breaks the Rust cross-compile, install the
-  newest stable via `sdkmanager` and point `NDK_HOME` at it.
+- NDK 30-beta (`30.0.14904198`) works cleanly. If a future NDK breaks the Rust
+  cross-compile, install the newest stable via `sdkmanager` and update `NDK_HOME`.
+- Java compiler deprecation warnings for source/target 8 are benign (Tauri-generated
+  Gradle; suppress with `android.javaCompile.suppressSourceTargetDeprecationWarning=true`
+  in `gen/android/gradle.properties` if desired).
 
 ## Benchmarks (issue #16 exit gate)
 
