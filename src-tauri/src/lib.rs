@@ -25,6 +25,27 @@ pub fn run() {
             ipc::entries_in_group,
             ipc::backlinks,
             ipc::entry_titles,
+            // Phase 5 — IPC second wave (issue #32)
+            ipc::commands2::list_groups,
+            ipc::commands2::attach_file,
+            ipc::commands2::asset_url,
+            ipc::commands2::asset_exists,
+            ipc::commands2::remove_asset,
+            ipc::commands2::saved_searches_get,
+            ipc::commands2::saved_searches_set,
+            ipc::commands2::set_person,
+            ipc::commands2::delete_person,
+            ipc::commands2::mentions_for,
+            ipc::commands2::rename_tag,
+            ipc::commands2::merge_tag,
+            ipc::commands2::delete_tag,
+            ipc::commands2::rename_person,
+            ipc::commands2::merge_person,
+            ipc::commands2::calendar_window,
+            ipc::commands2::settings_get_user,
+            ipc::commands2::settings_set_user,
+            ipc::commands2::settings_get_library,
+            ipc::commands2::settings_set_library,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

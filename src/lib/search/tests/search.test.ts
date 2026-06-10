@@ -362,24 +362,3 @@ describe("recents surface — empty query", () => {
   });
 });
 
-// ── real.ts stubs ─────────────────────────────────────────────────────────────
-
-describe("real.ts saved_searches stubs (refs #20)", () => {
-  it("saved_searches_get returns not_implemented", async () => {
-    const { real } = await import("../../ipc/real.js");
-    const result = await real.saved_searches_get();
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error.code).toBe("not_implemented");
-    }
-  });
-
-  it("saved_searches_set returns not_implemented", async () => {
-    const { real } = await import("../../ipc/real.js");
-    const result = await real.saved_searches_set([]);
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error.code).toBe("not_implemented");
-    }
-  });
-});
