@@ -1,4 +1,7 @@
 pub mod core;
+pub mod ipc;
+
+use ipc::AppState;
 
 /// Returns the version of this crate as a string.
 #[tauri::command]
@@ -9,7 +12,19 @@ fn core_version() -> String {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![core_version])
+        .manage(AppState(std::sync::Mutex::new(None)))
+        .invoke_handler(tauri::generate_handler![
+            core_version,
+            ipc::library_open,
+            ipc::library_close,
+            ipc::read_entry,
+            ipc::write_entry,
+            ipc::search,
+            ipc::tag_index,
+            ipc::people_index,
+            ipc::entries_in_group,
+            ipc::backlinks,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
