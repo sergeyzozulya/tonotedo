@@ -24,20 +24,22 @@
 //        is still refreshed (mtime/size) but `ChangeEvent::self_originated` is
 //        set, so the originating view does not echo.
 //
-// INV-3  Rename detection: a removed-path + new-path with the SAME frontmatter
-//        id in the SAME debounce batch → `index.rename_entry` (preserves row
-//        identity / backlinks).  Cross-batch renames re-add the entry with the
-//        same frontmatter id but a new integer row-id.
+// INV-3  Rename detection (two layers): an in-batch remove+create with the SAME
+//        frontmatter id → `index.rename_entry`.  Cross-batch / offline renames are
+//        also detected: when a create's fmid collides with a different indexed
+//        path whose file is now GONE on disk, it is treated as a rename (identity
+//        + backlinks preserved, NO file rewrite) rather than a duplicate.
 //
-// INV-4  Duplicate-id rule (spec 0002 §"Edge cases"):  if a NEW file's frontmatter
-//        id already belongs to a LIVE different path, the newcomer receives a fresh
-//        generated id, is rewritten atomically (with a token), upserted under the
-//        new id, and a second `ChangeEvent` (self_originated=true) is emitted.
+// INV-4  Duplicate-id rule (spec 0002 §"Edge cases"):  when two LIVE files claim
+//        one id, the keeper is deterministic — the lexicographically smaller path
+//        keeps the id; the other is re-id'd (fresh generated id, atomic rewrite
+//        with a token) and a second `ChangeEvent` (self_originated=true) is
+//        emitted.  This converges on the same keeper regardless of scan order.
 //
 // INV-5  Projection files (_tags.md, _people.md): parsed with saphyr directly;
-//        their schema (lists-of-maps) does NOT go through Entry::from_bytes.
-//        Errors in projection parsing are logged and ignored (projection is stale
-//        until next successful parse).
+//        their schema (lists-of-maps) does NOT go through Entry::from_bytes.  A
+//        MALFORMED projection keeps the last-good projection (parse failure is
+//        logged and `set_*` is skipped); a genuinely-empty projection replaces it.
 //
 // INV-6  Watcher overflow → `needs_full_rescan` flag is set; the consumer should
 //        call `full_rescan()` on next opportunity (e.g. app foreground, 0013).
@@ -62,7 +64,7 @@ pub use watcher::WatcherHandle;
 use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc, Mutex,
+    Arc,
 };
 
 use crossbeam_channel::{Receiver, Sender};
@@ -73,6 +75,12 @@ use crate::core::{fswrite::TokenRegistry, index::Index};
 pub(crate) struct RawEvent {
     pub path: PathBuf,
     pub kind: RawKind,
+}
+
+/// Test-only constructor for a `RawEvent` (fields are private otherwise).
+#[cfg(test)]
+pub(crate) fn test_raw_event(path: PathBuf, kind: RawKind) -> RawEvent {
+    RawEvent { path, kind }
 }
 
 /// Coarse event kind used inside the reconciler.
@@ -177,12 +185,16 @@ impl Reconciler {
         let tokens = Arc::clone(&self.tokens);
         let library_root = self.library_root.clone();
 
-        let state = Arc::new(Mutex::new(WorkerState {
+        // The worker OWNS its state directly (no shared Mutex): it is the only
+        // thread that touches the Index after spawn (INV-1).  This removes the
+        // mutex-poisoning failure mode entirely — a panic can no longer poison a
+        // lock and permanently wedge the worker.
+        let state = WorkerState {
             index: self.index,
             tokens,
             library_root,
             event_tx,
-        }));
+        };
 
         std::thread::Builder::new()
             .name("reconcile-worker".to_string())
@@ -219,7 +231,7 @@ const DEBOUNCE_MS: u64 = 100;
 
 fn worker_loop(
     raw_rx: Receiver<RawEvent>,
-    state: Arc<Mutex<WorkerState>>,
+    mut state: WorkerState,
     needs_full_rescan: Arc<AtomicBool>,
 ) {
     use std::collections::HashMap;
@@ -259,26 +271,61 @@ fn worker_loop(
         // Build the batch.
         let batch: Vec<(PathBuf, RawKind)> = coalesced.into_iter().collect();
 
-        // Process the batch under the mutex.
-        let mut guard = state.lock().expect("reconcile worker mutex poisoned");
-        let worker = &mut *guard;
-
-        let events = reconcile_path::reconcile_batch(
-            &mut worker.index,
-            &worker.tokens,
-            &worker.library_root,
-            &batch,
-        );
-
-        // Resolve links after the batch.
-        if !events.is_empty() {
-            let _ = worker.index.resolve_links();
+        // Process the batch.  A panic inside reconcile must NOT kill the worker:
+        // catch it, log it, request a recovery rescan, and CONTINUE the loop so
+        // subsequent batches are still processed.
+        //
+        // NOTE: this relies on unwinding.  Release builds set `panic = "abort"`
+        // (Cargo.toml), where a panic aborts the process before `catch_unwind`
+        // runs; the safety net here is effective in dev/test (unwind) builds.
+        let state_ref = &mut state;
+        let flag_ref = &needs_full_rescan;
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            process_batch(state_ref, flag_ref, &batch);
+        }));
+        if let Err(panic) = result {
+            let msg = panic_message(&panic);
+            eprintln!(
+                "reconcile worker: panicked while processing a batch: {msg}; \
+                       scheduling full rescan and continuing"
+            );
+            needs_full_rescan.store(true, Ordering::SeqCst);
+            continue;
         }
+    }
+}
 
-        // Emit change events.
-        for ev in events {
-            let _ = worker.event_tx.send(ev);
-        }
+/// Process one coalesced batch: reconcile, resolve links, emit events.
+fn process_batch(
+    state: &mut WorkerState,
+    needs_full_rescan: &AtomicBool,
+    batch: &[(PathBuf, RawKind)],
+) {
+    let events = reconcile_path::reconcile_batch(
+        &mut state.index,
+        &state.tokens,
+        &state.library_root,
+        batch,
+        needs_full_rescan,
+    );
+
+    if !events.is_empty() {
+        let _ = state.index.resolve_links();
+    }
+
+    for ev in events {
+        let _ = state.event_tx.send(ev);
+    }
+}
+
+/// Extract a human-readable message from a caught panic payload.
+fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = panic.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = panic.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "<non-string panic payload>".to_string()
     }
 }
 
@@ -305,6 +352,9 @@ pub struct SyncReconciler {
     pub(crate) index: Index,
     pub(crate) tokens: Arc<TokenRegistry>,
     pub(crate) library_root: PathBuf,
+    /// Set when an index write fails or an unreadable subtree blocks deletion
+    /// detection; the caller should run another `full_rescan` to recover.
+    needs_full_rescan: AtomicBool,
 }
 
 impl SyncReconciler {
@@ -313,7 +363,14 @@ impl SyncReconciler {
             index,
             tokens,
             library_root,
+            needs_full_rescan: AtomicBool::new(false),
         }
+    }
+
+    /// Whether a recovery `full_rescan` has been requested (index error or an
+    /// unreadable subtree during deletion detection).
+    pub fn needs_full_rescan(&self) -> bool {
+        self.needs_full_rescan.load(Ordering::SeqCst)
     }
 
     /// Reconcile a create/modify event for a single path.
@@ -330,6 +387,7 @@ impl SyncReconciler {
             &self.tokens,
             &self.library_root,
             &[(abs, RawKind::CreateOrModify)],
+            &self.needs_full_rescan,
         );
         if !events.is_empty() {
             let _ = self.index.resolve_links();
@@ -349,6 +407,7 @@ impl SyncReconciler {
             &self.tokens,
             &self.library_root,
             &[(abs, RawKind::Remove)],
+            &self.needs_full_rescan,
         );
         if !events.is_empty() {
             let _ = self.index.resolve_links();
@@ -361,7 +420,12 @@ impl SyncReconciler {
     /// Walks the tree, reconciles new/changed files, removes deleted entries.
     /// Returns all `ChangeEvent`s produced.
     pub fn full_rescan(&mut self) -> Vec<ChangeEvent> {
-        let events = rescan::full_rescan(&mut self.index, &self.tokens, &self.library_root);
+        let events = rescan::full_rescan(
+            &mut self.index,
+            &self.tokens,
+            &self.library_root,
+            &self.needs_full_rescan,
+        );
         let _ = self.index.resolve_links();
         events
     }

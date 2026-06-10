@@ -260,6 +260,45 @@ pub fn entry_by_frontmatter_id(
     }
 }
 
+// ── frontmatter_id_for_path ───────────────────────────────────────────────────
+
+/// Look up the frontmatter `id` string for an entry path (indexed lookup).
+///
+/// Returns `Ok(None)` when the path has no entry row, and `Ok(Some(None))`
+/// when the row exists but lacks a frontmatter id.
+pub fn frontmatter_id_for_path(
+    conn: &Connection,
+    path: &str,
+) -> Result<Option<Option<String>>, IndexError> {
+    let result: rusqlite::Result<Option<String>> = conn.query_row(
+        "SELECT entry_id FROM entries WHERE path = ?1",
+        params![path],
+        |r| r.get(0),
+    );
+    match result {
+        Ok(fmid) => Ok(Some(fmid)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+// ── tag_meta_index ────────────────────────────────────────────────────────────
+
+/// All rows from the `tag_meta` projection table.
+pub fn tag_meta_index(conn: &Connection) -> Result<Vec<super::TagMetaRow>, IndexError> {
+    let mut stmt =
+        conn.prepare("SELECT tag, description, color, icon FROM tag_meta ORDER BY tag")?;
+    let rows = stmt.query_map([], |r| {
+        Ok(super::TagMetaRow {
+            tag: r.get(0)?,
+            description: r.get(1)?,
+            color: r.get(2)?,
+            icon: r.get(3)?,
+        })
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
 // ── entries_by_slug ───────────────────────────────────────────────────────────
 
 /// All entries with the given slug.  Used for link resolution (spec 0006):

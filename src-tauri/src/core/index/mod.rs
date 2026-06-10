@@ -200,6 +200,22 @@ impl Index {
         query::entry_id_for_path(&self.conn, path)
     }
 
+    /// Return the frontmatter `id` string for an entry path (indexed lookup).
+    ///
+    /// `Ok(None)` → no entry row for that path; `Ok(Some(None))` → row exists but
+    /// has no frontmatter id.
+    pub fn frontmatter_id_for_path(
+        &self,
+        path: &str,
+    ) -> Result<Option<Option<String>>, IndexError> {
+        query::frontmatter_id_for_path(&self.conn, path)
+    }
+
+    /// All rows from the `tag_meta` projection table.
+    pub fn tag_meta_index(&self) -> Result<Vec<TagMetaRow>, IndexError> {
+        query::tag_meta_index(&self.conn)
+    }
+
     // ── Link-resolution helpers (reconciler use) ─────────────────────────────
 
     /// Look up an entry by its frontmatter `id` string.
@@ -225,6 +241,14 @@ impl Index {
     #[cfg(test)]
     pub fn entries_by_slug(&self, slug: &str) -> Result<Vec<(i64, String)>, IndexError> {
         query::entries_by_slug(&self.conn, slug)
+    }
+
+    /// Execute raw SQL.  Test-only: used to craft index-error states (e.g. drop a
+    /// table so the next write fails) without exposing the connection publicly.
+    #[cfg(test)]
+    pub fn exec_raw(&self, sql: &str) -> Result<(), IndexError> {
+        self.conn.execute_batch(sql)?;
+        Ok(())
     }
 
     /// Look up `(rowid, group_path)` pairs for a slug. Public for reconciler.

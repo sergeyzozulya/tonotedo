@@ -20,6 +20,23 @@ pub fn is_openable_reserved(name: &str) -> bool {
     name == "_group.md"
 }
 
+/// Returns `true` if `rel_path` (a `/`-separated library-relative path) contains
+/// any reserved (`_`- or `.`-prefixed) path COMPONENT — at any depth.
+///
+/// This is the gate used by the walker, the watcher, and the reconcile upsert
+/// guard: a file is NOT an entry if it (or any ancestor directory under the
+/// library root) is reserved.  Examples that are reserved: `_people/sergey.md`,
+/// `sub/_group.md`, `.trash/x.md`, `_searches.md`.
+///
+/// The two root-level projection files (`_tags.md`, `_people.md`) ARE reserved
+/// by this predicate; the reconciler special-cases them BEFORE consulting it.
+pub fn has_reserved_component(rel_path: &str) -> bool {
+    rel_path
+        .split('/')
+        .filter(|c| !c.is_empty())
+        .any(is_reserved)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -68,5 +85,21 @@ mod tests {
     #[test]
     fn empty_name_not_reserved() {
         assert!(!is_reserved(""));
+    }
+
+    #[test]
+    fn reserved_component_detected_at_any_depth() {
+        assert!(has_reserved_component("_people/sergey.md"));
+        assert!(has_reserved_component("sub/_group.md"));
+        assert!(has_reserved_component("a/b/_searches.md"));
+        assert!(has_reserved_component(".trash/x.md"));
+        assert!(has_reserved_component("_tags.md"));
+    }
+
+    #[test]
+    fn reserved_component_absent_for_normal_paths() {
+        assert!(!has_reserved_component("note.md"));
+        assert!(!has_reserved_component("Work/Atlas/note.md"));
+        assert!(!has_reserved_component("a/b/c.md"));
     }
 }

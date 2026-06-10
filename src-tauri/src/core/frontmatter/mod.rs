@@ -16,7 +16,7 @@ mod value;
 
 pub use entry::Entry;
 pub use id::generate_id;
-pub use reserved::{is_openable_reserved, is_reserved};
+pub use reserved::{has_reserved_component, is_openable_reserved, is_reserved};
 pub use serialize::{serialize_frontmatter, BUILTIN_ORDER};
 pub use value::{DatetimeValue, RangeEndpoint, RangeValue, Value};
 

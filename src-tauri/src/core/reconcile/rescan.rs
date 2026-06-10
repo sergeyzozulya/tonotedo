@@ -10,25 +10,26 @@
 //
 // ## Algorithm
 //
-//   1. Walk the tree from `library_root`, skipping:
-//      - `.tonotedo/` (index + journals) — spec 0002 §"Reserved names"
-//      - Any path component starting with `.` (hidden files)
-//      - Non-`.md` files (only `.md` files are indexed)
-//      - `_assets/` directories (attachment storage, not entries)
-//   2. For each discovered path: run `reconcile_one` (same as the watcher path).
+//   1. Walk the tree from `library_root`, skipping any path component that is
+//      reserved (`_`/`.`-prefixed) — `.tonotedo/`, `_assets/`, `_people/`, etc.
+//      Only `.md` files are collected.  (spec 0002 §"Reserved names")
+//   2. For each discovered path: run `reconcile_batch` (same as the watcher path).
 //      The ledger's mtime+size fast-path makes this cheap for unchanged files.
-//   3. After the walk, check all `files` ledger rows.  Any row whose path no
-//      longer exists on disk → remove.
+//   3. After the walk, check all `files` ledger rows.  A row is removed ONLY
+//      when its absolute path is CONFIRMED ABSENT on disk (symlink_metadata
+//      errors with NotFound).  A row that we simply failed to encounter because
+//      a subtree was unreadable (permission error) is KEPT and `needs_full_rescan`
+//      is set so the deletion can be retried once the subtree is readable again.
 //
-// INV (single function, two callers): `full_rescan` is called from:
-//   - Startup (on a background thread via the spawned worker).
-//   - Mobile foreground (via `SyncReconciler::full_rescan`).
-//   No other code path does a tree walk.
+// INV (single function, two callers): `full_rescan` is called from startup (via
+// the spawned worker) and mobile foreground (`SyncReconciler::full_rescan`).
 //
-// INV (deletion detection): we compare ALL ledger rows against the current disk
-// state AFTER the walk, not during, to avoid TOCTOU races on the walk itself.
+// INV (deletion safety): "not encountered in the walk" is NOT sufficient to
+// delete a ledger row — an unreadable subtree must not orphan its index rows.
+// We confirm absence per-path with `symlink_metadata` before deleting.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::core::{fswrite::TokenRegistry, index::Index};
@@ -38,7 +39,7 @@ use super::{event::ChangeEvent, reconcile_path::reconcile_batch, RawKind};
 /// Full tree rescan.
 ///
 /// Walks `library_root`, reconciles all discovered `.md` files (fast-path for
-/// unchanged files), then removes ledger rows for files that no longer exist.
+/// unchanged files), then removes ledger rows for files CONFIRMED absent on disk.
 ///
 /// Returns all `ChangeEvent`s produced during the scan.  Link resolution is
 /// the caller's responsibility (call `index.resolve_links()` after this).
@@ -46,20 +47,10 @@ pub fn full_rescan(
     index: &mut Index,
     tokens: &Arc<TokenRegistry>,
     library_root: &Path,
+    needs_full_rescan: &AtomicBool,
 ) -> Vec<ChangeEvent> {
     // ── Step 1: walk the tree ────────────────────────────────────────────────
     let md_paths = walk_md_files(library_root);
-
-    // Build a set of all paths discovered on disk (library-relative strings).
-    let disk_set: std::collections::HashSet<String> = md_paths
-        .iter()
-        .filter_map(|p| {
-            p.strip_prefix(library_root)
-                .ok()?
-                .to_str()
-                .map(|s| s.to_string())
-        })
-        .collect();
 
     // ── Step 2: reconcile discovered files ───────────────────────────────────
     let batch: Vec<(PathBuf, RawKind)> = md_paths
@@ -67,21 +58,36 @@ pub fn full_rescan(
         .map(|p| (p, RawKind::CreateOrModify))
         .collect();
 
-    let mut events = reconcile_batch(index, tokens, library_root, &batch);
+    let mut events = reconcile_batch(index, tokens, library_root, &batch, needs_full_rescan);
 
-    // ── Step 3: detect deletions ─────────────────────────────────────────────
-    // Collect ledger paths that are no longer on disk.
+    // ── Step 3: detect deletions (confirm absence per-path) ──────────────────
+    // A ledger row is removed ONLY if its absolute path is genuinely gone.  An
+    // I/O error other than NotFound (e.g. an unreadable subtree) keeps the row
+    // and flags a recovery rescan — we must never delete index rows for a
+    // subtree we simply could not read.
     let ledger_paths = index.all_ledger_paths().unwrap_or_default();
     let mut removes: Vec<(PathBuf, RawKind)> = Vec::new();
     for ledger_rel in ledger_paths {
-        if !disk_set.contains(&ledger_rel) {
-            let abs = library_root.join(&ledger_rel);
-            removes.push((abs, RawKind::Remove));
+        let abs = library_root.join(&ledger_rel);
+        match std::fs::symlink_metadata(&abs) {
+            Ok(_) => {} // still present → keep
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                removes.push((abs, RawKind::Remove));
+            }
+            Err(_) => {
+                // Unreadable (permission, transient I/O): keep the row, retry later.
+                eprintln!(
+                    "rescan: cannot confirm absence of {ledger_rel}; keeping ledger row, \
+                     scheduling rescan"
+                );
+                needs_full_rescan.store(true, Ordering::SeqCst);
+            }
         }
     }
 
     if !removes.is_empty() {
-        let remove_events = reconcile_batch(index, tokens, library_root, &removes);
+        let remove_events =
+            reconcile_batch(index, tokens, library_root, &removes, needs_full_rescan);
         events.extend(remove_events);
     }
 
@@ -92,10 +98,8 @@ pub fn full_rescan(
 
 /// Walk `root` recursively, returning absolute paths to all `.md` files.
 ///
-/// Skip rules (see INV at top of file):
-/// - Directories starting with `.` (includes `.tonotedo`).
-/// - The `_assets` directory (contains attachments, not entries).
-/// - Non-`.md` files.
+/// Skip rules: any directory whose name is reserved (`_`/`.`-prefixed) — this
+/// covers `.tonotedo`, `_assets`, `_people`, etc.  Only `.md` files are returned.
 fn walk_md_files(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     walk_dir(root, &mut out);
@@ -115,25 +119,25 @@ fn walk_dir(dir: &Path, out: &mut Vec<PathBuf>) {
             None => continue,
         };
 
-        // Skip hidden / system directories.
-        if name.starts_with('.') {
-            continue;
-        }
-        // Skip _assets directories.
-        if name == "_assets" {
-            continue;
-        }
-
         let file_type = match entry.file_type() {
             Ok(t) => t,
             Err(_) => continue,
         };
 
         if file_type.is_dir() {
+            // Skip reserved directories at any depth (`.tonotedo`, `_assets`,
+            // `_people`, …).  A reserved directory never contains entries.
+            if name.starts_with('_') || name.starts_with('.') {
+                continue;
+            }
             walk_dir(&path, out);
         } else if file_type.is_file() && name.ends_with(".md") {
+            // Hand every `.md` not under a reserved subtree to the reconciler.
+            // Reserved FILES at this level (root `_tags.md`/`_people.md` →
+            // projections; `_searches.md` etc. → ledger-only) are routed by
+            // `reconcile_batch` via `has_reserved_component`; we do not filter
+            // them here.
             out.push(path);
         }
-        // Symlinks are ignored for now.
     }
 }

@@ -13,10 +13,12 @@
 // Entry normalises and strips properties in ways incompatible with these
 // projection schemas.
 //
-// INV (projection resilience): parse errors are NOT fatal.  A malformed
-// `_tags.md` results in the `tag_meta` table being cleared (old data removed)
-// but the error is logged; the reconciler continues.  This matches the general
-// philosophy: the index is a cache, never the source of truth.
+// INV (projection resilience): a MALFORMED projection (YAML that fails to parse)
+// is NOT fatal and does NOT clobber the existing projection.  The parser returns
+// `Err(ProjectionError::Parse)`, the caller logs and SKIPS `set_*`, so the last
+// good projection survives.  A genuinely-empty projection (valid YAML, no
+// `tags:`/`people:` key, or an empty list) DOES replace the table.  This
+// distinction prevents a transient bad save from wiping tag/person metadata.
 //
 // INV (root-only): only `_tags.md` and `_people.md` at the library root are
 // projection files.  Identically-named files in subdirectories are silently
@@ -25,6 +27,22 @@
 use saphyr::{LoadableYamlNode, MappingOwned, YamlOwned};
 
 use crate::core::index::{Index, IndexError, PeopleRow, TagMetaRow};
+
+/// Failure while applying a projection.
+#[derive(Debug)]
+pub enum ProjectionError {
+    /// The projection file's frontmatter YAML failed to parse.  The caller must
+    /// keep the previous projection (do NOT clear the table).
+    Parse,
+    /// An index write failed.
+    Index(IndexError),
+}
+
+impl From<IndexError> for ProjectionError {
+    fn from(e: IndexError) -> Self {
+        ProjectionError::Index(e)
+    }
+}
 
 /// Parse `_tags.md` bytes and replace `tag_meta` in the index.
 ///
@@ -40,9 +58,10 @@ use crate::core::index::{Index, IndexError, PeopleRow, TagMetaRow};
 ///
 /// Unknown fields are silently ignored.  Missing optional fields (description,
 /// color, icon) → stored as NULL.
-pub fn apply_tags_projection(index: &mut Index, bytes: &[u8]) -> Result<(), IndexError> {
-    let rows = parse_tags_md(bytes);
-    index.set_tag_meta(&rows)
+pub fn apply_tags_projection(index: &mut Index, bytes: &[u8]) -> Result<(), ProjectionError> {
+    let rows = parse_tags_md(bytes)?;
+    index.set_tag_meta(&rows)?;
+    Ok(())
 }
 
 /// Parse `_people.md` bytes and replace `people` in the index.
@@ -56,9 +75,10 @@ pub fn apply_tags_projection(index: &mut Index, bytes: &[u8]) -> Result<(), Inde
 ///     avatar_path: "_people/sergey.jpg"
 ///   - slug: anna
 /// ```
-pub fn apply_people_projection(index: &mut Index, bytes: &[u8]) -> Result<(), IndexError> {
-    let rows = parse_people_md(bytes);
-    index.set_people(&rows)
+pub fn apply_people_projection(index: &mut Index, bytes: &[u8]) -> Result<(), ProjectionError> {
+    let rows = parse_people_md(bytes)?;
+    index.set_people(&rows)?;
+    Ok(())
 }
 
 // ── Internal parsers ──────────────────────────────────────────────────────────
@@ -66,23 +86,23 @@ pub fn apply_people_projection(index: &mut Index, bytes: &[u8]) -> Result<(), In
 /// Extract frontmatter YAML from a `.md` file's bytes, then parse the `tags:`
 /// list-of-maps into `TagMetaRow`s.
 ///
-/// Returns an empty Vec on any parse error (caller should log and continue).
-fn parse_tags_md(bytes: &[u8]) -> Vec<TagMetaRow> {
+/// Returns `Err(Parse)` if the frontmatter YAML is malformed (caller keeps the
+/// previous projection).  Returns `Ok(empty)` when there is genuinely nothing to
+/// project (no frontmatter, no `tags:` key, or an empty list).
+fn parse_tags_md(bytes: &[u8]) -> Result<Vec<TagMetaRow>, ProjectionError> {
     let yaml_text = match extract_frontmatter_text(bytes) {
         Some(t) => t,
-        None => return Vec::new(),
+        None => return Ok(Vec::new()),
     };
-    let docs = match YamlOwned::load_from_str(&yaml_text) {
-        Ok(d) => d,
-        Err(_) => return Vec::new(),
-    };
+    // A YAML parse failure is a MALFORMED file: keep the previous projection.
+    let docs = YamlOwned::load_from_str(&yaml_text).map_err(|_| ProjectionError::Parse)?;
     let doc = match docs.into_iter().next() {
         Some(d) => d,
-        None => return Vec::new(),
+        None => return Ok(Vec::new()),
     };
     let mapping = match doc.as_mapping() {
         Some(m) => m.clone(),
-        None => return Vec::new(),
+        None => return Ok(Vec::new()),
     };
 
     // Find the "tags" key in the mapping.
@@ -93,7 +113,7 @@ fn parse_tags_md(bytes: &[u8]) -> Vec<TagMetaRow> {
 
     let list = match tags_list {
         Some(l) => l,
-        None => return Vec::new(),
+        None => return Ok(Vec::new()),
     };
 
     let mut rows = Vec::with_capacity(list.len());
@@ -112,27 +132,24 @@ fn parse_tags_md(bytes: &[u8]) -> Vec<TagMetaRow> {
             });
         }
     }
-    rows
+    Ok(rows)
 }
 
 /// Extract frontmatter YAML from a `.md` file's bytes, then parse the `people:`
 /// list-of-maps into `PeopleRow`s.
-fn parse_people_md(bytes: &[u8]) -> Vec<PeopleRow> {
+fn parse_people_md(bytes: &[u8]) -> Result<Vec<PeopleRow>, ProjectionError> {
     let yaml_text = match extract_frontmatter_text(bytes) {
         Some(t) => t,
-        None => return Vec::new(),
+        None => return Ok(Vec::new()),
     };
-    let docs = match YamlOwned::load_from_str(&yaml_text) {
-        Ok(d) => d,
-        Err(_) => return Vec::new(),
-    };
+    let docs = YamlOwned::load_from_str(&yaml_text).map_err(|_| ProjectionError::Parse)?;
     let doc = match docs.into_iter().next() {
         Some(d) => d,
-        None => return Vec::new(),
+        None => return Ok(Vec::new()),
     };
     let mapping = match doc.as_mapping() {
         Some(m) => m.clone(),
-        None => return Vec::new(),
+        None => return Ok(Vec::new()),
     };
 
     // Find the "people" key in the mapping.
@@ -143,7 +160,7 @@ fn parse_people_md(bytes: &[u8]) -> Vec<PeopleRow> {
 
     let list = match people_list {
         Some(l) => l,
-        None => return Vec::new(),
+        None => return Ok(Vec::new()),
     };
 
     let mut rows = Vec::with_capacity(list.len());
@@ -162,7 +179,7 @@ fn parse_people_md(bytes: &[u8]) -> Vec<PeopleRow> {
             });
         }
     }
-    rows
+    Ok(rows)
 }
 
 /// Extract the YAML text between the first `---` fence pair in a `.md` file.
@@ -203,7 +220,7 @@ mod tests {
     #[test]
     fn parse_tags_md_basic() {
         let src = b"---\ntags:\n  - tag: followup\n    description: Revisit later\n    color: amber\n  - tag: work\n---\n";
-        let rows = parse_tags_md(src);
+        let rows = parse_tags_md(src).unwrap();
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].tag, "followup");
         assert_eq!(rows[0].description.as_deref(), Some("Revisit later"));
@@ -215,7 +232,7 @@ mod tests {
     #[test]
     fn parse_people_md_basic() {
         let src = b"---\npeople:\n  - slug: sergey\n    full_name: Sergey K.\n    color: blue\n  - slug: anna\n---\n";
-        let rows = parse_people_md(src);
+        let rows = parse_people_md(src).unwrap();
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].slug, "sergey");
         assert_eq!(rows[0].full_name.as_deref(), Some("Sergey K."));
@@ -225,14 +242,28 @@ mod tests {
 
     #[test]
     fn parse_tags_md_no_frontmatter() {
-        let rows = parse_tags_md(b"# Just body\nno frontmatter\n");
+        // No frontmatter is a genuinely-empty projection, not a parse failure.
+        let rows = parse_tags_md(b"# Just body\nno frontmatter\n").unwrap();
         assert!(rows.is_empty());
     }
 
     #[test]
     fn parse_people_no_frontmatter() {
-        let rows = parse_people_md(b"just body");
+        let rows = parse_people_md(b"just body").unwrap();
         assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn parse_tags_md_malformed_yaml_is_error() {
+        // Unbalanced/invalid YAML inside the fence → Parse error (keep prior).
+        let src = b"---\ntags:\n  - tag: followup\n   bad: \"unterminated\n---\n";
+        assert!(matches!(parse_tags_md(src), Err(ProjectionError::Parse)));
+    }
+
+    #[test]
+    fn parse_people_md_malformed_yaml_is_error() {
+        let src = b"---\npeople:\n  - slug: sergey\n   bad: \"unterminated\n---\n";
+        assert!(matches!(parse_people_md(src), Err(ProjectionError::Parse)));
     }
 
     #[test]
