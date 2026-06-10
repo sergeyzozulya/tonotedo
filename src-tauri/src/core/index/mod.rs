@@ -178,6 +178,20 @@ impl Index {
     pub fn entry_id_for_path(&self, path: &str) -> Result<Option<i64>, IndexError> {
         query::entry_id_for_path(&self.conn, path)
     }
+
+    /// All entry paths (union of both surfaces) that carry `tag`, case-insensitively.
+    ///
+    /// Used by the journal module for pre-flight discovery before batch rewrites.
+    pub fn paths_with_tag(&self, tag: &str) -> Result<Vec<String>, IndexError> {
+        query::paths_with_tag(&self.conn, tag)
+    }
+
+    /// All entry paths (union of both surfaces) that carry mention `slug`, case-insensitively.
+    ///
+    /// Used by the journal module for pre-flight discovery before batch rewrites.
+    pub fn paths_with_mention(&self, slug: &str) -> Result<Vec<String>, IndexError> {
+        query::paths_with_mention(&self.conn, slug)
+    }
 }
 
 /// Tag metadata row (mirrors `tag_meta` table).

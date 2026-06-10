@@ -222,6 +222,36 @@ pub fn backlinks(conn: &Connection, entry_id: i64) -> Result<Vec<BacklinkRow>, I
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
 
+// ── paths_with_tag ───────────────────────────────────────────────────────────
+
+/// All entry paths (both surfaces) that carry `tag`, case-insensitively.
+pub fn paths_with_tag(conn: &Connection, tag: &str) -> Result<Vec<String>, IndexError> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT e.path
+         FROM tags t
+         JOIN entries e ON e.id = t.entry_id
+         WHERE lower(t.tag) = lower(?1)
+         ORDER BY e.path",
+    )?;
+    let rows = stmt.query_map(params![tag], |r| r.get(0))?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+// ── paths_with_mention ────────────────────────────────────────────────────────
+
+/// All entry paths (both surfaces) that carry mention `slug`, case-insensitively.
+pub fn paths_with_mention(conn: &Connection, slug: &str) -> Result<Vec<String>, IndexError> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT e.path
+         FROM mentions m
+         JOIN entries e ON e.id = m.entry_id
+         WHERE lower(m.slug) = lower(?1)
+         ORDER BY e.path",
+    )?;
+    let rows = stmt.query_map(params![slug], |r| r.get(0))?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
 // ── entry_id_for_path ────────────────────────────────────────────────────────
 
 pub fn entry_id_for_path(conn: &Connection, path: &str) -> Result<Option<i64>, IndexError> {
