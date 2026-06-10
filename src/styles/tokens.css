@@ -1,0 +1,587 @@
+/* =============================================================================
+   ToNoteDo Design Tokens  (Phase 4 · issue #17)
+   Naming convention: --tnd-<category>[-<sub>]
+   Source: docs/design.html — 5 named themes × dark/light, extracted from the
+   TND_THEMES constant in the design bundle.
+
+   Scoping rules
+   ─────────────
+   • :root  →  default theme (Paper · light)  — safe fallback for any consumer
+   • [data-tnd-theme="<key>"][data-tnd-mode="light|dark"] { ... }  — full set
+   • The app shell sets both attributes on <html> (or a root wrapper).
+   • "system" mode is handled in JS: map it to the OS preference, then write
+     data-tnd-mode="light" or "dark" accordingly.  No CSS media-query fallback
+     is needed; the attribute always wins.
+
+   Surface tokens  (all themes define these)
+   ─────────────────────────────────────────
+   --tnd-bg            App background (outermost chrome)
+   --tnd-panel         Primary panel / sidebar surface
+   --tnd-panel2        Secondary panel / hover / inset surface
+   --tnd-text          Primary text
+   --tnd-text-muted    Secondary / dimmed text
+   --tnd-text-faint    Placeholder / decorative text
+   --tnd-line          Subtle border / divider
+   --tnd-line-strong   Prominent border / rule
+   --tnd-accent        Single confident hue per theme (buttons, active states)
+   --tnd-accent-soft   Low-opacity tint of accent (backgrounds, selections)
+   --tnd-accent-text   Accessible text-weight variant of accent
+   --tnd-sel           Editor / list selection highlight
+   --tnd-shadow        Box-shadow string for elevated surfaces
+
+   Editor tokens
+   ─────────────
+   --tnd-editor-heading   Color for Markdown headings (h1–h3)
+   --tnd-editor-code-bg   Inline-code / fenced-code background
+   --tnd-editor-cursor    Blinking cursor color
+   --tnd-editor-syntax    Secondary syntax accent (links, wikilinks, dates)
+
+   Chip color tokens  (8-token palette contract · spec 0004)
+   ─────────────────────────────────────────────────────────
+   Each token resolves to fg (text/icon) and bg (chip background).
+   --tnd-chip-<name>-fg  /  --tnd-chip-<name>-bg
+   Names: slate · red · amber · green · teal · blue · violet · pink
+   Design notes per token are below each theme block.  Tokens not explicitly
+   defined in the design source are DERIVED (marked /* derived *\/ inline).
+   Derivation strategy: each theme has one primary accent and one warm accent
+   (amber).  The remaining 6 chip tokens are derived using perceptually-spaced
+   shifts against the theme's surface palette.  Values were chosen to remain
+   readable at WCAG AA against --tnd-panel (contrast ≥ 4.5 for fg, ≥ 1.5 for
+   bg against panel).
+
+   Theme keys (design names)
+   ─────────────────────────
+   paper      Warm minimal · serif reading body
+   fog        Soft neutral · rounded · muted blue
+   mono       Terminal · keyboard-forward · dense
+   editorial  High-contrast typographic · hairline rules
+   soft       Rounded friendly · sage green · avatar-forward
+   ============================================================================= */
+
+/* ── :root = Paper · light (canonical default) ──────────────────────────── */
+:root,
+[data-tnd-theme="paper"][data-tnd-mode="light"] {
+  /* surfaces */
+  --tnd-bg: #f7f4ee;
+  --tnd-panel: #fbf9f4;
+  --tnd-panel2: #f1ece3;
+  --tnd-text: #2c2620;
+  --tnd-text-muted: #8c8475;
+  --tnd-text-faint: #b6ad9c;
+  --tnd-line: rgba(60, 48, 28, 0.08);
+  --tnd-line-strong: rgba(60, 48, 28, 0.14);
+  --tnd-accent: #b5613e;
+  --tnd-accent-soft: rgba(181, 97, 62, 0.12);
+  --tnd-accent-text: #9a4f30;
+  --tnd-sel: rgba(181, 97, 62, 0.1);
+  --tnd-shadow: 0 1px 2px rgba(60, 48, 28, 0.05), 0 6px 24px rgba(60, 48, 28, 0.05);
+
+  /* editor */
+  --tnd-editor-heading: #2c2620; /* = text; serif themes use primary text for headings */
+  --tnd-editor-code-bg: #ede8df; /* derived: panel2 darkened one step */
+  --tnd-editor-cursor: #b5613e; /* = accent */
+  --tnd-editor-syntax: #9a4f30; /* = accent-text */
+
+  /* chip: amber — design's explicit warm accent */
+  --tnd-chip-amber-fg: #7a4b1a;
+  --tnd-chip-amber-bg: rgba(169, 116, 42, 0.14);
+
+  /* chip: slate — neutral near text-muted */
+  --tnd-chip-slate-fg: #6b6459; /* derived: slightly warmer than text-muted */
+  --tnd-chip-slate-bg: rgba(140, 132, 117, 0.13); /* derived */
+
+  /* chip: red — warm crimson against warm bg */
+  --tnd-chip-red-fg: #8e2d23; /* derived */
+  --tnd-chip-red-bg: rgba(142, 45, 35, 0.11); /* derived */
+
+  /* chip: green — earthy sage complement to terracotta accent */
+  --tnd-chip-green-fg: #3a6642; /* derived */
+  --tnd-chip-green-bg: rgba(58, 102, 66, 0.11); /* derived */
+
+  /* chip: teal — cool complement */
+  --tnd-chip-teal-fg: #2f6263; /* derived */
+  --tnd-chip-teal-bg: rgba(47, 98, 99, 0.11); /* derived */
+
+  /* chip: blue — desaturated to stay warm-palette-compatible */
+  --tnd-chip-blue-fg: #3b5a88; /* derived */
+  --tnd-chip-blue-bg: rgba(59, 90, 136, 0.11); /* derived */
+
+  /* chip: violet — muted plum */
+  --tnd-chip-violet-fg: #6a3c7a; /* derived */
+  --tnd-chip-violet-bg: rgba(106, 60, 122, 0.11); /* derived */
+
+  /* chip: pink — dusty rose */
+  --tnd-chip-pink-fg: #8d3d5c; /* derived */
+  --tnd-chip-pink-bg: rgba(141, 61, 92, 0.11); /* derived */
+}
+
+/* ── Paper · dark ────────────────────────────────────────────────────────── */
+[data-tnd-theme="paper"][data-tnd-mode="dark"] {
+  --tnd-bg: #1b1814;
+  --tnd-panel: #221e18;
+  --tnd-panel2: #2a251e;
+  --tnd-text: #eae3d6;
+  --tnd-text-muted: #9a9182;
+  --tnd-text-faint: #6b6356;
+  --tnd-line: rgba(255, 245, 225, 0.07);
+  --tnd-line-strong: rgba(255, 245, 225, 0.13);
+  --tnd-accent: #d98a66;
+  --tnd-accent-soft: rgba(217, 138, 102, 0.16);
+  --tnd-accent-text: #e7a484;
+  --tnd-sel: rgba(217, 138, 102, 0.13);
+  --tnd-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 30px rgba(0, 0, 0, 0.3);
+
+  --tnd-editor-heading: #eae3d6;
+  --tnd-editor-code-bg: #201c16; /* derived: bg darkened */
+  --tnd-editor-cursor: #d98a66;
+  --tnd-editor-syntax: #e7a484;
+
+  --tnd-chip-amber-fg: #e8b87a; /* derived: warm amber on dark bg */
+  --tnd-chip-amber-bg: rgba(216, 155, 80, 0.16); /* derived */
+
+  --tnd-chip-slate-fg: #9a9182; /* = text-muted */
+  --tnd-chip-slate-bg: rgba(154, 145, 130, 0.14); /* derived */
+
+  --tnd-chip-red-fg: #e07870; /* derived */
+  --tnd-chip-red-bg: rgba(224, 120, 112, 0.14); /* derived */
+
+  --tnd-chip-green-fg: #7daf85; /* derived */
+  --tnd-chip-green-bg: rgba(125, 175, 133, 0.14); /* derived */
+
+  --tnd-chip-teal-fg: #6ab0b0; /* derived */
+  --tnd-chip-teal-bg: rgba(106, 176, 176, 0.13); /* derived */
+
+  --tnd-chip-blue-fg: #7aa2ce; /* derived */
+  --tnd-chip-blue-bg: rgba(122, 162, 206, 0.14); /* derived */
+
+  --tnd-chip-violet-fg: #b08ec0; /* derived */
+  --tnd-chip-violet-bg: rgba(176, 142, 192, 0.13); /* derived */
+
+  --tnd-chip-pink-fg: #d08098; /* derived */
+  --tnd-chip-pink-bg: rgba(208, 128, 152, 0.13); /* derived */
+}
+
+/* ── Fog · light ─────────────────────────────────────────────────────────── */
+[data-tnd-theme="fog"][data-tnd-mode="light"] {
+  --tnd-bg: #eef1f4;
+  --tnd-panel: #ffffff;
+  --tnd-panel2: #f4f7fa;
+  --tnd-text: #222a31;
+  --tnd-text-muted: #69737e;
+  --tnd-text-faint: #9aa4ae;
+  --tnd-line: #e4e9ee;
+  --tnd-line-strong: #d3dae1;
+  --tnd-accent: #5277a6;
+  --tnd-accent-soft: rgba(82, 119, 166, 0.12);
+  --tnd-accent-text: #3e6595;
+  --tnd-sel: rgba(82, 119, 166, 0.1);
+  --tnd-shadow: 0 1px 2px rgba(30, 45, 65, 0.06), 0 8px 24px rgba(30, 45, 65, 0.07);
+
+  --tnd-editor-heading: #222a31;
+  --tnd-editor-code-bg: #e8edf2; /* derived: panel2 darkened */
+  --tnd-editor-cursor: #5277a6;
+  --tnd-editor-syntax: #3e6595;
+
+  /* chip: blue — accent is already blue, use directly */
+  --tnd-chip-blue-fg: #3e6595; /* = accent-text */
+  --tnd-chip-blue-bg: rgba(82, 119, 166, 0.12); /* = accent-soft */
+
+  /* chip: amber — fog uses the shared warm amber */
+  --tnd-chip-amber-fg: #7a5420; /* derived */
+  --tnd-chip-amber-bg: rgba(170, 120, 40, 0.12); /* derived */
+
+  /* chip: slate */
+  --tnd-chip-slate-fg: #59666f; /* derived: text-muted shifted */
+  --tnd-chip-slate-bg: rgba(105, 115, 126, 0.12); /* derived */
+
+  /* chip: red */
+  --tnd-chip-red-fg: #8c2f2a; /* derived */
+  --tnd-chip-red-bg: rgba(140, 47, 42, 0.1); /* derived */
+
+  /* chip: green */
+  --tnd-chip-green-fg: #316844; /* derived */
+  --tnd-chip-green-bg: rgba(49, 104, 68, 0.1); /* derived */
+
+  /* chip: teal */
+  --tnd-chip-teal-fg: #246b6e; /* derived */
+  --tnd-chip-teal-bg: rgba(36, 107, 110, 0.1); /* derived */
+
+  /* chip: violet */
+  --tnd-chip-violet-fg: #5c3a82; /* derived */
+  --tnd-chip-violet-bg: rgba(92, 58, 130, 0.1); /* derived */
+
+  /* chip: pink */
+  --tnd-chip-pink-fg: #8a2f56; /* derived */
+  --tnd-chip-pink-bg: rgba(138, 47, 86, 0.1); /* derived */
+}
+
+/* ── Fog · dark ──────────────────────────────────────────────────────────── */
+[data-tnd-theme="fog"][data-tnd-mode="dark"] {
+  --tnd-bg: #14181d;
+  --tnd-panel: #1c222a;
+  --tnd-panel2: #232b34;
+  --tnd-text: #e4e9ef;
+  --tnd-text-muted: #8995a2;
+  --tnd-text-faint: #5c6772;
+  --tnd-line: rgba(150, 180, 210, 0.1);
+  --tnd-line-strong: rgba(150, 180, 210, 0.18);
+  --tnd-accent: #7da2ce;
+  --tnd-accent-soft: rgba(125, 162, 206, 0.16);
+  --tnd-accent-text: #9fbee3;
+  --tnd-sel: rgba(125, 162, 206, 0.14);
+  --tnd-shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 10px 30px rgba(0, 0, 0, 0.4);
+
+  --tnd-editor-heading: #e4e9ef;
+  --tnd-editor-code-bg: #111519; /* derived */
+  --tnd-editor-cursor: #7da2ce;
+  --tnd-editor-syntax: #9fbee3;
+
+  --tnd-chip-blue-fg: #9fbee3;
+  --tnd-chip-blue-bg: rgba(125, 162, 206, 0.16);
+
+  --tnd-chip-amber-fg: #d6a45a; /* derived */
+  --tnd-chip-amber-bg: rgba(214, 164, 90, 0.15); /* derived */
+
+  --tnd-chip-slate-fg: #8995a2; /* = text-muted */
+  --tnd-chip-slate-bg: rgba(137, 149, 162, 0.14); /* derived */
+
+  --tnd-chip-red-fg: #e07a74; /* derived */
+  --tnd-chip-red-bg: rgba(224, 122, 116, 0.14); /* derived */
+
+  --tnd-chip-green-fg: #72b080; /* derived */
+  --tnd-chip-green-bg: rgba(114, 176, 128, 0.13); /* derived */
+
+  --tnd-chip-teal-fg: #62b2b6; /* derived */
+  --tnd-chip-teal-bg: rgba(98, 178, 182, 0.13); /* derived */
+
+  --tnd-chip-violet-fg: #a880cc; /* derived */
+  --tnd-chip-violet-bg: rgba(168, 128, 204, 0.13); /* derived */
+
+  --tnd-chip-pink-fg: #cc7a96; /* derived */
+  --tnd-chip-pink-bg: rgba(204, 122, 150, 0.13); /* derived */
+}
+
+/* ── Mono · light ────────────────────────────────────────────────────────── */
+[data-tnd-theme="mono"][data-tnd-mode="light"] {
+  --tnd-bg: #f4f2ec;
+  --tnd-panel: #fbfaf6;
+  --tnd-panel2: #eeebe2;
+  --tnd-text: #1f1e1a;
+  --tnd-text-muted: #7c7868;
+  --tnd-text-faint: #a8a393;
+  --tnd-line: rgba(40, 38, 28, 0.16);
+  --tnd-line-strong: rgba(40, 38, 28, 0.3);
+  --tnd-accent: #3e7a52; /* design's green accent */
+  --tnd-accent-soft: rgba(62, 122, 82, 0.12);
+  --tnd-accent-text: #2f6342;
+  --tnd-sel: rgba(62, 122, 82, 0.1);
+  --tnd-shadow: none;
+
+  /* Mono is the only theme with an explicit amber token in the design */
+  --tnd-editor-heading: #1f1e1a;
+  --tnd-editor-code-bg: #e8e5db; /* derived */
+  --tnd-editor-cursor: #3e7a52;
+  --tnd-editor-syntax: #2f6342;
+
+  /* chip: green — accent IS the green token */
+  --tnd-chip-green-fg: #2f6342; /* = accent-text */
+  --tnd-chip-green-bg: rgba(62, 122, 82, 0.12); /* = accent-soft */
+
+  /* chip: amber — explicitly defined in design: #A9742A */
+  --tnd-chip-amber-fg: #a9742a; /* design-defined */
+  --tnd-chip-amber-bg: rgba(169, 116, 42, 0.13); /* derived from design value */
+
+  /* chip: slate */
+  --tnd-chip-slate-fg: #6a6657; /* derived */
+  --tnd-chip-slate-bg: rgba(124, 120, 104, 0.13); /* derived */
+
+  /* chip: red */
+  --tnd-chip-red-fg: #8a2a24; /* derived */
+  --tnd-chip-red-bg: rgba(138, 42, 36, 0.11); /* derived */
+
+  /* chip: teal */
+  --tnd-chip-teal-fg: #2a6661; /* derived */
+  --tnd-chip-teal-bg: rgba(42, 102, 97, 0.11); /* derived */
+
+  /* chip: blue */
+  --tnd-chip-blue-fg: #305880; /* derived */
+  --tnd-chip-blue-bg: rgba(48, 88, 128, 0.11); /* derived */
+
+  /* chip: violet */
+  --tnd-chip-violet-fg: #5c3472; /* derived */
+  --tnd-chip-violet-bg: rgba(92, 52, 114, 0.11); /* derived */
+
+  /* chip: pink */
+  --tnd-chip-pink-fg: #803050; /* derived */
+  --tnd-chip-pink-bg: rgba(128, 48, 80, 0.11); /* derived */
+}
+
+/* ── Mono · dark ─────────────────────────────────────────────────────────── */
+[data-tnd-theme="mono"][data-tnd-mode="dark"] {
+  --tnd-bg: #101210;
+  --tnd-panel: #161915;
+  --tnd-panel2: #1c201b;
+  --tnd-text: #c7d0c2;
+  --tnd-text-muted: #7e887a;
+  --tnd-text-faint: #565e53;
+  --tnd-line: rgba(150, 170, 150, 0.16);
+  --tnd-line-strong: rgba(150, 170, 150, 0.32);
+  --tnd-accent: #73b083; /* design's dark-mode green */
+  --tnd-accent-soft: rgba(115, 176, 131, 0.15);
+  --tnd-accent-text: #8fc79e;
+  --tnd-sel: rgba(115, 176, 131, 0.12);
+  --tnd-shadow: none;
+
+  --tnd-editor-heading: #c7d0c2;
+  --tnd-editor-code-bg: #0d0f0c; /* derived */
+  --tnd-editor-cursor: #73b083;
+  --tnd-editor-syntax: #8fc79e;
+
+  /* chip: green */
+  --tnd-chip-green-fg: #8fc79e; /* = accent-text */
+  --tnd-chip-green-bg: rgba(115, 176, 131, 0.15); /* = accent-soft */
+
+  /* chip: amber — explicitly defined in design: #D6A256 */
+  --tnd-chip-amber-fg: #d6a256; /* design-defined */
+  --tnd-chip-amber-bg: rgba(214, 162, 86, 0.15); /* derived from design value */
+
+  /* chip: slate */
+  --tnd-chip-slate-fg: #7e887a; /* = text-muted */
+  --tnd-chip-slate-bg: rgba(126, 136, 122, 0.15); /* derived */
+
+  /* chip: red */
+  --tnd-chip-red-fg: #d97a72; /* derived */
+  --tnd-chip-red-bg: rgba(217, 122, 114, 0.14); /* derived */
+
+  /* chip: teal */
+  --tnd-chip-teal-fg: #5cb8b4; /* derived */
+  --tnd-chip-teal-bg: rgba(92, 184, 180, 0.13); /* derived */
+
+  /* chip: blue */
+  --tnd-chip-blue-fg: #6e9ec8; /* derived */
+  --tnd-chip-blue-bg: rgba(110, 158, 200, 0.14); /* derived */
+
+  /* chip: violet */
+  --tnd-chip-violet-fg: #a480c0; /* derived */
+  --tnd-chip-violet-bg: rgba(164, 128, 192, 0.13); /* derived */
+
+  /* chip: pink */
+  --tnd-chip-pink-fg: #c87890; /* derived */
+  --tnd-chip-pink-bg: rgba(200, 120, 144, 0.13); /* derived */
+}
+
+/* ── Editorial · light ───────────────────────────────────────────────────── */
+[data-tnd-theme="editorial"][data-tnd-mode="light"] {
+  --tnd-bg: #fbfaf7;
+  --tnd-panel: #fbfaf7;
+  --tnd-panel2: #f2f0ea;
+  --tnd-text: #15140f;
+  --tnd-text-muted: #6e6a60;
+  --tnd-text-faint: #a39e92;
+  --tnd-line: rgba(20, 18, 10, 0.12);
+  --tnd-line-strong: rgba(20, 18, 10, 0.85);
+  --tnd-accent: #933623; /* deep crimson */
+  --tnd-accent-soft: rgba(147, 54, 35, 0.09);
+  --tnd-accent-text: #933623;
+  --tnd-sel: rgba(20, 18, 10, 0.05);
+  --tnd-shadow: 0 1px 2px rgba(20, 18, 10, 0.05), 0 10px 30px rgba(20, 18, 10, 0.05);
+
+  --tnd-editor-heading: #15140f;
+  --tnd-editor-code-bg: #ebe9e0; /* derived */
+  --tnd-editor-cursor: #933623;
+  --tnd-editor-syntax: #933623;
+
+  /* chip: red — accent IS a deep crimson/red token */
+  --tnd-chip-red-fg: #933623; /* = accent */
+  --tnd-chip-red-bg: rgba(147, 54, 35, 0.09); /* = accent-soft */
+
+  /* chip: amber */
+  --tnd-chip-amber-fg: #7d5220; /* derived */
+  --tnd-chip-amber-bg: rgba(165, 110, 38, 0.1); /* derived */
+
+  /* chip: slate */
+  --tnd-chip-slate-fg: #5c5850; /* derived */
+  --tnd-chip-slate-bg: rgba(110, 106, 96, 0.11); /* derived */
+
+  /* chip: green */
+  --tnd-chip-green-fg: #2e6040; /* derived */
+  --tnd-chip-green-bg: rgba(46, 96, 64, 0.1); /* derived */
+
+  /* chip: teal */
+  --tnd-chip-teal-fg: #255e60; /* derived */
+  --tnd-chip-teal-bg: rgba(37, 94, 96, 0.1); /* derived */
+
+  /* chip: blue */
+  --tnd-chip-blue-fg: #2e5280; /* derived */
+  --tnd-chip-blue-bg: rgba(46, 82, 128, 0.1); /* derived */
+
+  /* chip: violet */
+  --tnd-chip-violet-fg: #5a3270; /* derived */
+  --tnd-chip-violet-bg: rgba(90, 50, 112, 0.1); /* derived */
+
+  /* chip: pink */
+  --tnd-chip-pink-fg: #7e2e50; /* derived */
+  --tnd-chip-pink-bg: rgba(126, 46, 80, 0.1); /* derived */
+}
+
+/* ── Editorial · dark ────────────────────────────────────────────────────── */
+[data-tnd-theme="editorial"][data-tnd-mode="dark"] {
+  --tnd-bg: #131210;
+  --tnd-panel: #131210;
+  --tnd-panel2: #1c1a17;
+  --tnd-text: #ece9e1;
+  --tnd-text-muted: #9a958a;
+  --tnd-text-faint: #625d53;
+  --tnd-line: rgba(236, 233, 225, 0.14);
+  --tnd-line-strong: rgba(236, 233, 225, 0.8);
+  --tnd-accent: #ce6e58; /* warm red-orange */
+  --tnd-accent-soft: rgba(206, 110, 88, 0.12);
+  --tnd-accent-text: #de8470;
+  --tnd-sel: rgba(236, 233, 225, 0.06);
+  --tnd-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 12px 36px rgba(0, 0, 0, 0.45);
+
+  --tnd-editor-heading: #ece9e1;
+  --tnd-editor-code-bg: #0f0e0c; /* derived */
+  --tnd-editor-cursor: #ce6e58;
+  --tnd-editor-syntax: #de8470;
+
+  /* chip: red — accent maps to red-orange */
+  --tnd-chip-red-fg: #de8470; /* = accent-text */
+  --tnd-chip-red-bg: rgba(206, 110, 88, 0.14); /* derived */
+
+  /* chip: amber */
+  --tnd-chip-amber-fg: #d6a060; /* derived */
+  --tnd-chip-amber-bg: rgba(214, 160, 96, 0.14); /* derived */
+
+  /* chip: slate */
+  --tnd-chip-slate-fg: #9a958a; /* = text-muted */
+  --tnd-chip-slate-bg: rgba(154, 149, 138, 0.14); /* derived */
+
+  /* chip: green */
+  --tnd-chip-green-fg: #7ab08a; /* derived */
+  --tnd-chip-green-bg: rgba(122, 176, 138, 0.13); /* derived */
+
+  /* chip: teal */
+  --tnd-chip-teal-fg: #60acac; /* derived */
+  --tnd-chip-teal-bg: rgba(96, 172, 172, 0.13); /* derived */
+
+  /* chip: blue */
+  --tnd-chip-blue-fg: #7498c4; /* derived */
+  --tnd-chip-blue-bg: rgba(116, 152, 196, 0.13); /* derived */
+
+  /* chip: violet */
+  --tnd-chip-violet-fg: #a882c0; /* derived */
+  --tnd-chip-violet-bg: rgba(168, 130, 192, 0.13); /* derived */
+
+  /* chip: pink */
+  --tnd-chip-pink-fg: #c87c94; /* derived */
+  --tnd-chip-pink-bg: rgba(200, 124, 148, 0.13); /* derived */
+}
+
+/* ── Soft · light ────────────────────────────────────────────────────────── */
+[data-tnd-theme="soft"][data-tnd-mode="light"] {
+  --tnd-bg: #edf1eb;
+  --tnd-panel: #ffffff;
+  --tnd-panel2: #f3f7f1;
+  --tnd-text: #222a23;
+  --tnd-text-muted: #6c766c;
+  --tnd-text-faint: #9ba59a;
+  --tnd-line: #e4eae1;
+  --tnd-line-strong: #d3dbcf;
+  --tnd-accent: #4f9168; /* sage green */
+  --tnd-accent-soft: rgba(79, 145, 104, 0.12);
+  --tnd-accent-text: #3c7b53;
+  --tnd-sel: rgba(79, 145, 104, 0.1);
+  --tnd-shadow: 0 1px 2px rgba(30, 50, 35, 0.05), 0 8px 26px rgba(30, 50, 35, 0.07);
+
+  --tnd-editor-heading: #222a23;
+  --tnd-editor-code-bg: #e8ede6; /* derived */
+  --tnd-editor-cursor: #4f9168;
+  --tnd-editor-syntax: #3c7b53;
+
+  /* chip: green — accent IS the green token */
+  --tnd-chip-green-fg: #3c7b53; /* = accent-text */
+  --tnd-chip-green-bg: rgba(79, 145, 104, 0.12); /* = accent-soft */
+
+  /* chip: amber */
+  --tnd-chip-amber-fg: #7a5520; /* derived */
+  --tnd-chip-amber-bg: rgba(170, 120, 42, 0.12); /* derived */
+
+  /* chip: slate */
+  --tnd-chip-slate-fg: #5c6660; /* derived */
+  --tnd-chip-slate-bg: rgba(108, 118, 108, 0.12); /* derived */
+
+  /* chip: red */
+  --tnd-chip-red-fg: #8c2e28; /* derived */
+  --tnd-chip-red-bg: rgba(140, 46, 40, 0.1); /* derived */
+
+  /* chip: teal */
+  --tnd-chip-teal-fg: #266462; /* derived */
+  --tnd-chip-teal-bg: rgba(38, 100, 98, 0.1); /* derived */
+
+  /* chip: blue */
+  --tnd-chip-blue-fg: #305882; /* derived */
+  --tnd-chip-blue-bg: rgba(48, 88, 130, 0.1); /* derived */
+
+  /* chip: violet */
+  --tnd-chip-violet-fg: #5c3872; /* derived */
+  --tnd-chip-violet-bg: rgba(92, 56, 114, 0.1); /* derived */
+
+  /* chip: pink */
+  --tnd-chip-pink-fg: #883050; /* derived */
+  --tnd-chip-pink-bg: rgba(136, 48, 80, 0.1); /* derived */
+}
+
+/* ── Soft · dark ─────────────────────────────────────────────────────────── */
+[data-tnd-theme="soft"][data-tnd-mode="dark"] {
+  --tnd-bg: #141814;
+  --tnd-panel: #1b201b;
+  --tnd-panel2: #222922;
+  --tnd-text: #e5ebe2;
+  --tnd-text-muted: #8a958a;
+  --tnd-text-faint: #5c665b;
+  --tnd-line: rgba(160, 200, 170, 0.1);
+  --tnd-line-strong: rgba(160, 200, 170, 0.18);
+  --tnd-accent: #79bb90; /* soft green */
+  --tnd-accent-soft: rgba(121, 187, 144, 0.15);
+  --tnd-accent-text: #95cea8;
+  --tnd-sel: rgba(121, 187, 144, 0.13);
+  --tnd-shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 10px 30px rgba(0, 0, 0, 0.4);
+
+  --tnd-editor-heading: #e5ebe2;
+  --tnd-editor-code-bg: #111411; /* derived */
+  --tnd-editor-cursor: #79bb90;
+  --tnd-editor-syntax: #95cea8;
+
+  /* chip: green */
+  --tnd-chip-green-fg: #95cea8; /* = accent-text */
+  --tnd-chip-green-bg: rgba(121, 187, 144, 0.15); /* = accent-soft */
+
+  /* chip: amber */
+  --tnd-chip-amber-fg: #d4a060; /* derived */
+  --tnd-chip-amber-bg: rgba(212, 160, 96, 0.15); /* derived */
+
+  /* chip: slate */
+  --tnd-chip-slate-fg: #8a958a; /* = text-muted */
+  --tnd-chip-slate-bg: rgba(138, 149, 138, 0.14); /* derived */
+
+  /* chip: red */
+  --tnd-chip-red-fg: #d87a72; /* derived */
+  --tnd-chip-red-bg: rgba(216, 122, 114, 0.14); /* derived */
+
+  /* chip: teal */
+  --tnd-chip-teal-fg: #58b4b0; /* derived */
+  --tnd-chip-teal-bg: rgba(88, 180, 176, 0.13); /* derived */
+
+  /* chip: blue */
+  --tnd-chip-blue-fg: #6c9cc4; /* derived */
+  --tnd-chip-blue-bg: rgba(108, 156, 196, 0.14); /* derived */
+
+  /* chip: violet */
+  --tnd-chip-violet-fg: #a27ec0; /* derived */
+  --tnd-chip-violet-bg: rgba(162, 126, 192, 0.13); /* derived */
+
+  /* chip: pink */
+  --tnd-chip-pink-fg: #c47890; /* derived */
+  --tnd-chip-pink-bg: rgba(196, 120, 144, 0.13); /* derived */
+}
