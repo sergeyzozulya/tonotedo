@@ -28,7 +28,7 @@ Beautiful integrated personal productivity app: calm, fast, private, modern, and
 
 ## Status
 
-Spec-first: the v1 specs and tech ADRs are accepted; implementation is starting with the mobile spike (see `docs/tech/adr-0002-tech-stack.md`). See [docs/](docs/README.md).
+Spec-first: the v1 specs and tech ADRs are accepted and implementation is underway — storage core complete, editor in progress (see the [issue tracker](https://github.com/sergeyzozulya/tonotedo/issues) for live status). See [docs/](docs/README.md).
 
 Stack: Tauri 2 (Rust core) · Svelte 5 · CodeMirror 6 · SQLite index · QuickJS plugin sandbox.
 
