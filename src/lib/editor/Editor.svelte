@@ -28,6 +28,13 @@
   import { frontmatterFold } from "./extensions/frontmatter-fold.js";
   import { editorTheme } from "./theme.js";
   import { selectionContext, type SelectionContext } from "./selection-context.js";
+  import {
+    blocksPlugin,
+    blocksTheme,
+    pasteDropHandlers,
+    type BlockCallbacks,
+  } from "./extensions/blocks.js";
+  import { ipc } from "../ipc/index.js";
 
   interface Props {
     /** Initial document text. The editor never mutates the buffer on its own. */
@@ -42,9 +49,20 @@
     onDocChanged?: (text: string) => void;
     /** Called on selection change with frontmatter / active-token context. */
     onSelectionContext?: (ctx: SelectionContext) => void;
+    /** Vault-relative path of the currently open entry (for asset resolution). */
+    entryPath?: string;
+    /** Block-layer callbacks (open attachment, relink/remove broken). */
+    blockCallbacks?: BlockCallbacks;
   }
 
-  let { doc = "", settings = {}, onDocChanged, onSelectionContext }: Props = $props();
+  let {
+    doc = "",
+    settings = {},
+    onDocChanged,
+    onSelectionContext,
+    entryPath = "",
+    blockCallbacks = {},
+  }: Props = $props();
 
   let host: HTMLDivElement;
   let view: EditorView | undefined;
@@ -76,9 +94,12 @@
           // extensions win in CM6, so frontmatter fold is listed first.
           frontmatterFold,
           cursorReveal,
+          blocksPlugin(ipc, blockCallbacks),
+          pasteDropHandlers(ipc, () => entryPath),
           markdownExtension,
           baseSetup,
           editorTheme,
+          blocksTheme,
           updateListener,
         ],
       }),

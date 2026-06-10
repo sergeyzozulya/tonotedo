@@ -23,3 +23,14 @@ export {
 } from "./extensions/inline-tokens.js";
 export type { ScannedToken, TokenKind } from "./extensions/inline-tokens.js";
 export { editorTheme } from "./theme.js";
+export {
+  blocksPlugin,
+  blocksTheme,
+  pasteDropHandlers,
+  extractBlockSpecs,
+  headInRange as blockHeadInRange,
+  isImagePath,
+  isAttachmentPath,
+  toggleCheckbox,
+} from "./extensions/blocks.js";
+export type { BlockCallbacks, AttachmentAction } from "./extensions/blocks.js";

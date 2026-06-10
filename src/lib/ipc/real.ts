@@ -17,6 +17,7 @@ import type {
   PersonMeta,
   Backlink,
   Page,
+  AssetPath,
   IpcEventName,
   IpcEventPayload,
   IpcUnsubscribe,
@@ -78,6 +79,24 @@ export const real: Ipc = {
 
   backlinks(): Promise<Result<Backlink[]>> {
     return notImpl("backlinks");
+  },
+
+  // ── Asset commands (issue #13) — stubs, refs #30 ────────────────────────────
+
+  attach_file(): Promise<Result<AssetPath>> {
+    return notImpl("attach_file");
+  },
+
+  asset_url(): Promise<Result<string>> {
+    return notImpl("asset_url");
+  },
+
+  asset_exists(): Promise<Result<boolean>> {
+    return notImpl("asset_exists");
+  },
+
+  remove_asset(): Promise<Result<void>> {
+    return notImpl("remove_asset");
   },
 
   on<E extends IpcEventName>(

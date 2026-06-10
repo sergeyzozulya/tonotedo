@@ -93,9 +93,23 @@
     }, 500);
   }
 
-  // Load on mount
+  // Block callbacks — mock: log to console. Real: will OS-open.
+  const blockCallbacks = {
+    onOpenAttachment(path: string) {
+      console.log("[dev] open attachment:", path);
+      // In browser demo: just log. Tauri will use shell.open().
+    },
+    onAttachmentAction(path: string, action: "relink" | "remove") {
+      console.log(`[dev] attachment action: ${action} on`, path);
+    },
+  };
+
+  // Load on mount — default to blocks-demo entry so /dev shows blocks.
   $effect(() => {
-    loadEntries();
+    loadEntries().then(() => {
+      const blocksDemo = entries.find((e) => e.id === "work/atlas/blocks-demo");
+      if (blocksDemo) selectEntry(blocksDemo.id);
+    });
   });
 </script>
 
@@ -157,7 +171,7 @@
     <!-- Editor -->
     <main class="dev-main">
       {#if selectedId}
-        <Editor doc={editorText} {onDocChanged} />
+        <Editor doc={editorText} {onDocChanged} entryPath={selectedId} {blockCallbacks} />
       {:else}
         <div class="dev-empty">Select an entry</div>
       {/if}

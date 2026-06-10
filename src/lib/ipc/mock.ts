@@ -17,6 +17,7 @@ import type {
   Cursor,
   Page,
   SearchQuery,
+  AssetPath,
   IpcEventName,
   IpcEventPayload,
   IpcUnsubscribe,
@@ -389,6 +390,41 @@ Directory of key contacts.
 #people.
 `,
   },
+  {
+    id: "work/atlas/blocks-demo",
+    path: "work/atlas/blocks-demo.md",
+    title: "Blocks Demo (checkboxes, attachments, images)",
+    group: "work/atlas",
+    tags: ["demo"],
+    people: [],
+    modifiedAt: "2026-06-10T00:00:00Z",
+    text: `---
+title: Blocks Demo
+tags: [demo]
+---
+
+# Blocks Demo
+
+## Tasks
+
+- [x] Design the attachment block spec
+- [ ] Implement checkbox toggle (content-only, per spec 0006)
+- [ ] Wire paste handler for images
+- [ ] Write tests
+
+## Inline image
+
+![Blueprint cover](_assets/blueprint-cover.png)
+
+![Sketch](_assets/sketch.png)
+
+## Attachments
+
+See the spec draft: [spec-draft.pdf](_assets/spec-draft.pdf)
+
+Broken link (file missing): [missing-file.pdf](_assets/missing-file.pdf)
+`,
+  },
 ];
 
 // ── Tag index ─────────────────────────────────────────────────────────────────
@@ -492,6 +528,59 @@ function buildBacklinkIndex(): Map<EntryId, Backlink[]> {
 
 /** Mutable copy of entries so write_entry works during a session. */
 const store = new Map<EntryId, MockEntry>(ENTRIES.map((e) => [e.id, { ...e }]));
+
+// ── Asset store (issue #13 — in-memory for /dev demo) ────────────────────────
+
+// Two tiny sample images as base64 data URIs so the /dev demo shows inline
+// images without any real files. Each is a 4×4 PNG generated offline.
+// "blueprint-cover.png" — a 4x4 solid blue square (#4488ff).
+const BLUEPRINT_PNG_B64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAADklEQVQI12NgYGD4TwABBAEAmRb3sgAAAABJRU5ErkJggg==";
+// "sketch.png" — a 4×4 solid green square (#44bb66).
+const SKETCH_PNG_B64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAADklEQVQI12NgYNj6HwAECAIA/8l7SAAAAABJRU5ErkJggg==";
+
+function b64ToBytes(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+interface MockAsset {
+  bytes: Uint8Array;
+  mime: string;
+}
+
+/** vault-relative AssetPath → asset bytes + mime type */
+const assetStore = new Map<AssetPath, MockAsset>([
+  [
+    "work/atlas/_assets/blueprint-cover.png",
+    { bytes: b64ToBytes(BLUEPRINT_PNG_B64), mime: "image/png" },
+  ],
+  ["work/atlas/_assets/sketch.png", { bytes: b64ToBytes(SKETCH_PNG_B64), mime: "image/png" }],
+  [
+    "work/atlas/_assets/spec-draft.pdf",
+    {
+      bytes: new TextEncoder().encode("%PDF-1.4 mock"),
+      mime: "application/pdf",
+    },
+  ],
+]);
+
+/** Cache of object URLs so we don't call URL.createObjectURL repeatedly. */
+const objectUrlCache = new Map<AssetPath, string>();
+
+function assetObjectUrl(path: AssetPath): string {
+  const cached = objectUrlCache.get(path);
+  if (cached) return cached;
+  const asset = assetStore.get(path);
+  if (!asset) return "";
+  const blob = new Blob([asset.bytes.buffer as ArrayBuffer], { type: asset.mime });
+  const url = URL.createObjectURL(blob);
+  objectUrlCache.set(path, url);
+  return url;
+}
 
 let tagIndexCache: TagMeta[] | null = null;
 let backlinkIndex: Map<EntryId, Backlink[]> | null = null;
@@ -651,6 +740,73 @@ export const mock: Ipc = {
   async backlinks(id: EntryId): Promise<Result<Backlink[]>> {
     const idx = getBacklinkIndex();
     return { ok: true, value: idx.get(id) ?? [] };
+  },
+
+  async attach_file(
+    entryPath: string,
+    name: string,
+    bytes: Uint8Array,
+  ): Promise<Result<AssetPath>> {
+    // Derive the entry's group from its path (e.g. "work/atlas/foo.md" → "work/atlas").
+    const dir = entryPath.includes("/") ? entryPath.slice(0, entryPath.lastIndexOf("/")) : "";
+    const assetsPrefix = dir ? `${dir}/_assets/` : "_assets/";
+
+    // Collision-safe naming: if the name is taken, append -2, -3, …
+    let candidate = assetsPrefix + name;
+    if (assetStore.has(candidate)) {
+      const dot = name.lastIndexOf(".");
+      const base = dot === -1 ? name : name.slice(0, dot);
+      const ext = dot === -1 ? "" : name.slice(dot);
+      let n = 2;
+      while (assetStore.has(`${assetsPrefix}${base}-${n}${ext}`)) n++;
+      candidate = `${assetsPrefix}${base}-${n}${ext}`;
+    }
+
+    // Guess MIME from extension.
+    const ext = candidate.slice(candidate.lastIndexOf(".") + 1).toLowerCase();
+    const mimeMap: Record<string, string> = {
+      png: "image/png",
+      jpg: "image/jpeg",
+      jpeg: "image/jpeg",
+      webp: "image/webp",
+      gif: "image/gif",
+      svg: "image/svg+xml",
+      pdf: "application/pdf",
+    };
+    const mime = mimeMap[ext] ?? "application/octet-stream";
+
+    assetStore.set(candidate, { bytes, mime });
+    console.log(`[mock ipc] attach_file → ${candidate}`);
+    return { ok: true, value: candidate };
+  },
+
+  async asset_url(assetPath: AssetPath): Promise<Result<string>> {
+    if (!assetStore.has(assetPath)) {
+      return { ok: false, error: { code: "not_found", message: `Asset not found: ${assetPath}` } };
+    }
+    return { ok: true, value: assetObjectUrl(assetPath) };
+  },
+
+  async asset_exists(assetPath: AssetPath): Promise<Result<boolean>> {
+    return { ok: true, value: assetStore.has(assetPath) };
+  },
+
+  async remove_asset(assetPath: AssetPath): Promise<Result<void>> {
+    if (!assetStore.has(assetPath)) {
+      return {
+        ok: false,
+        error: { code: "not_found", message: `Asset not found: ${assetPath}` },
+      };
+    }
+    // Revoke the object URL if one was created.
+    const cached = objectUrlCache.get(assetPath);
+    if (cached) {
+      URL.revokeObjectURL(cached);
+      objectUrlCache.delete(assetPath);
+    }
+    assetStore.delete(assetPath);
+    console.log(`[mock ipc] remove_asset → ${assetPath}`);
+    return { ok: true, value: undefined };
   },
 
   on<E extends IpcEventName>(
