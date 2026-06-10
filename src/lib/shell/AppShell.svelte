@@ -23,7 +23,10 @@
   import EntryList from "./EntryList.svelte";
   import { Editor } from "../editor/index.js";
   import PropertiesPanel from "../panel/PropertiesPanel.svelte";
-  import type { EntrySummary } from "../ipc/types.js";
+  import PersonView from "../people/PersonView.svelte";
+  import TagBrowser from "../tags/TagBrowser.svelte";
+  import CreatePersonDialog from "../people/CreatePersonDialog.svelte";
+  import type { EntrySummary, PersonMeta } from "../ipc/types.js";
   import type { GroupNode } from "./group-tree.js";
   import type { ChangeSpec } from "../panel/frontmatter-view.js";
   import themeMap from "../../styles/THEME-MAP.json";
@@ -75,6 +78,34 @@
     }
   }
 
+  // ── People ────────────────────────────────────────────────────────────────────
+
+  let people = $state<PersonMeta[]>([]);
+
+  async function loadPeople(): Promise<void> {
+    const result = await ipc.people_index();
+    if (result.ok) {
+      people = result.value;
+    } else {
+      console.error("[shell] people_index failed:", result.error.message);
+    }
+  }
+
+  // ── Main zone mode ────────────────────────────────────────────────────────────
+
+  /** Which main-zone content to show: editor, person view, or tag browser. */
+  type MainZone = "editor" | "person" | "tags";
+  let mainZone = $state<MainZone>("editor");
+
+  let selectedPersonSlug = $state<string | null>(null);
+  let selectedPersonMeta = $derived(
+    selectedPersonSlug ? (people.find((p) => p.slug === selectedPersonSlug) ?? null) : null,
+  );
+
+  // Create-person dialog (also wired from autocomplete onCreatePerson).
+  let showCreateDialog = $state(false);
+  let createDialogInitialSlug = $state("");
+
   // ── Entry list ────────────────────────────────────────────────────────────────
 
   let selectedGroupPath = $state<string | null>(null);
@@ -109,6 +140,7 @@
 
   function onGroupSelect(path: string | null): void {
     selectedGroupPath = path;
+    mainZone = "editor";
     loadEntries(path);
     if (narrow) {
       sidebarOpen = false;
@@ -169,14 +201,41 @@
     const unsub = ipc.on("index_changed", () => {
       loadEntries(selectedGroupPath);
       loadGroups();
+      loadPeople();
     });
     return unsub;
   });
 
-  // ── Chip interaction logging (development / later navigation) ─────────────────
+  // ── Chip interaction (spec 0005 — chip click opens side panel) ───────────────
 
   function onTokenClick(kind: "tag" | "mention", value: string): void {
-    console.log("[shell] chip click:", kind, value);
+    if (kind === "mention") {
+      // Open person view in main zone (spec 0005: non-navigational chip click).
+      selectedPersonSlug = value;
+      mainZone = "person";
+      if (narrow) mobileScreen = "editor";
+    } else {
+      // Tag chip click: open tag browser.
+      mainZone = "tags";
+      if (narrow) mobileScreen = "editor";
+    }
+  }
+
+  function onPersonSelect(slug: string): void {
+    selectedPersonSlug = slug;
+    mainZone = "person";
+    if (narrow) {
+      sidebarOpen = false;
+      mobileScreen = "editor";
+    }
+  }
+
+  function onTagsOpen(): void {
+    mainZone = "tags";
+    if (narrow) {
+      sidebarOpen = false;
+      mobileScreen = "editor";
+    }
   }
 
   function onNavigate(target: string): void {
@@ -184,7 +243,17 @@
   }
 
   function onCreatePerson(slug: string): void {
-    console.log("[shell] create person:", slug);
+    // Autocomplete "Create person" sentinel → open create dialog.
+    createDialogInitialSlug = slug;
+    showCreateDialog = true;
+  }
+
+  function onPersonCreated(slug: string): void {
+    showCreateDialog = false;
+    loadPeople();
+    // Immediately show the new person's view.
+    selectedPersonSlug = slug;
+    mainZone = "person";
   }
 
   // ── Group display name for entry list header ──────────────────────────────────
@@ -209,6 +278,7 @@
   $effect(() => {
     loadGroups();
     loadEntries(null);
+    loadPeople();
   });
 </script>
 
@@ -291,7 +361,16 @@
     {/if}
 
     <!-- Sidebar -->
-    <Sidebar tree={groupTree} selectedPath={selectedGroupPath} {onGroupSelect} />
+    <Sidebar
+      tree={groupTree}
+      selectedPath={selectedGroupPath}
+      {onGroupSelect}
+      {people}
+      {selectedPersonSlug}
+      {onPersonSelect}
+      {onTagsOpen}
+      tagsOpen={mainZone === "tags"}
+    />
 
     <!-- Entry list (hidden on mobile when in editor screen) -->
     {#if !narrow || mobileScreen === "list"}
@@ -305,10 +384,25 @@
       />
     {/if}
 
-    <!-- Editor (hidden on mobile when in list screen) -->
+    <!-- Editor / Person / Tags zone (hidden on mobile when in list screen) -->
     {#if !narrow || mobileScreen === "editor"}
       <main class="editor-zone" data-focus-zone="editor">
-        {#if selectedEntryId}
+        {#if mainZone === "person" && selectedPersonMeta}
+          <PersonView
+            person={selectedPersonMeta}
+            onEntrySelect={(id) => {
+              mainZone = "editor";
+              selectEntry(id);
+            }}
+            {onPersonCreated}
+          />
+        {:else if mainZone === "tags"}
+          <TagBrowser
+            onTagSelect={(name) => {
+              console.log("[shell] tag selected:", name);
+            }}
+          />
+        {:else if selectedEntryId}
           <Editor
             doc={editorText}
             {onDocChanged}
@@ -325,8 +419,8 @@
       </main>
     {/if}
 
-    <!-- Properties panel (desktop only when visible; not shown on mobile for now) -->
-    {#if !narrow && propertiesVisible}
+    <!-- Properties panel (desktop only when visible; not shown for person/tags views) -->
+    {#if !narrow && propertiesVisible && mainZone === "editor"}
       <aside class="properties-zone" data-focus-zone="properties">
         {#if selectedEntryId}
           <PropertiesPanel docText={editorText} onEdit={onPanelEdit} />
@@ -336,6 +430,15 @@
       </aside>
     {/if}
   </div>
+
+  <!-- Create-person dialog (from autocomplete onCreatePerson) -->
+  {#if showCreateDialog}
+    <CreatePersonDialog
+      initialSlug={createDialogInitialSlug}
+      onClose={() => (showCreateDialog = false)}
+      onCreated={onPersonCreated}
+    />
+  {/if}
 
   <!-- Status bar -->
   <footer class="statusbar">

@@ -136,6 +136,34 @@ export const real: Ipc = {
     return call<GroupMeta[]>("list_groups");
   },
 
+  // ── People mutation commands (issue #22) — stubs, refs #30 ────────────────────
+
+  set_person(): Promise<Result<void>> {
+    return notImpl("set_person");
+  },
+
+  delete_person(): Promise<Result<void>> {
+    return notImpl("delete_person");
+  },
+
+  async mentions_for(slug: string): Promise<Result<EntrySummary[]>> {
+    return call<EntrySummary[]>("mentions_for", { slug });
+  },
+
+  // ── Tag mutation commands (issue #22) — stubs, refs #30 ──────────────────────
+
+  rename_tag(): Promise<Result<void>> {
+    return notImpl("rename_tag");
+  },
+
+  merge_tag(): Promise<Result<void>> {
+    return notImpl("merge_tag");
+  },
+
+  delete_tag(): Promise<Result<void>> {
+    return notImpl("delete_tag");
+  },
+
   on<E extends IpcEventName>(
     event: E,
     handler: (payload: IpcEventPayload<E>) => void,

@@ -100,6 +100,12 @@ function stubIpc(overrides?: {
     remove_asset: vi.fn() as never,
     entry_titles: vi.fn() as never,
     list_groups: vi.fn() as never,
+    set_person: vi.fn() as never,
+    delete_person: vi.fn() as never,
+    mentions_for: vi.fn() as never,
+    rename_tag: vi.fn() as never,
+    merge_tag: vi.fn() as never,
+    delete_tag: vi.fn() as never,
     on: vi.fn(() => () => {}),
   };
 }

@@ -1,10 +1,12 @@
 <script lang="ts">
-  // Sidebar — group tree navigation (spec 0003, issue #18).
+  // Sidebar — group tree navigation (spec 0003, issue #18) + People section
+  // (spec 0005, issue #22) + Tags browser row.
   //
   // Renders:
-  //   • A "GROUPS" section heading (placeholder People/Saved headings for
-  //     future issues).
+  //   • A "GROUPS" section heading.
   //   • The collapsible group tree derived from ipc.list_groups().
+  //   • A People section (PeopleSection component).
+  //   • A Tags row that opens the tag browser.
   //   • A sync-status footer row.
   //
   // Selection: emits onGroupSelect(path) when the user clicks a group row.
@@ -15,6 +17,8 @@
   // count in faint monospace, section labels uppercase 10.5px.
 
   import type { GroupNode } from "./group-tree.js";
+  import type { PersonMeta } from "../ipc/types.js";
+  import PeopleSection from "../people/PeopleSection.svelte";
 
   interface Props {
     /** Root-level tree nodes (already sorted + aggregated). */
@@ -23,9 +27,28 @@
     selectedPath: string | null;
     /** Called when the user selects a group. */
     onGroupSelect: (path: string | null) => void;
+    /** People list from people_index() for the People section. */
+    people?: PersonMeta[];
+    /** Currently selected person slug (for People section). */
+    selectedPersonSlug?: string | null;
+    /** Called when a person row is clicked in the People section. */
+    onPersonSelect?: (slug: string) => void;
+    /** Called when the Tags row is clicked. */
+    onTagsOpen?: () => void;
+    /** Whether the Tags browser is currently open (for active highlight). */
+    tagsOpen?: boolean;
   }
 
-  let { tree, selectedPath, onGroupSelect }: Props = $props();
+  let {
+    tree,
+    selectedPath,
+    onGroupSelect,
+    people = [],
+    selectedPersonSlug = null,
+    onPersonSelect,
+    onTagsOpen,
+    tagsOpen = false,
+  }: Props = $props();
 
   // ── Per-node collapsed state ──────────────────────────────────────────────────
   // Start with top-level nodes open; children collapsed.
@@ -73,11 +96,29 @@
     {/each}
   </div>
 
-  <!-- People placeholder (issue #19) -->
-  <div class="sidebar-section-label sidebar-section-label--later">People</div>
-  <div class="sidebar-row sidebar-row--placeholder" aria-disabled="true">
-    <span class="sidebar-row-label sidebar-row-label--faint">Coming soon</span>
+  <!-- Tags row (opens TagBrowser in main zone) -->
+  <div class="sidebar-section-label">Browse</div>
+  <div
+    class="sidebar-row sidebar-row--nav"
+    class:sidebar-row--selected={tagsOpen}
+    role="button"
+    tabindex="0"
+    onclick={() => onTagsOpen?.()}
+    onkeydown={(e) => (e.key === "Enter" || e.key === " ") && onTagsOpen?.()}
+  >
+    {#if tagsOpen}
+      <span class="sidebar-row-accent-bar" aria-hidden="true"></span>
+    {/if}
+    <span class="sidebar-row-icon">🏷️</span>
+    <span class="sidebar-row-label">Tags</span>
   </div>
+
+  <!-- People section (issue #22) -->
+  <PeopleSection
+    {people}
+    selectedSlug={selectedPersonSlug}
+    onPersonSelect={(slug) => onPersonSelect?.(slug)}
+  />
 
   <!-- Footer -->
   <footer class="sidebar-footer">
@@ -157,11 +198,6 @@
     user-select: none;
   }
 
-  .sidebar-section-label--later {
-    padding-top: 20px;
-    opacity: 0.6;
-  }
-
   /* Tree area */
   .sidebar-tree {
     flex: 1;
@@ -214,14 +250,6 @@
     font-size: 13px;
   }
 
-  .sidebar-row--placeholder {
-    cursor: default;
-  }
-
-  .sidebar-row--placeholder:hover {
-    background: transparent;
-  }
-
   /* Active-indicator left bar */
   .sidebar-row-accent-bar {
     position: absolute;
@@ -268,11 +296,6 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-  }
-
-  .sidebar-row-label--faint {
-    color: var(--tnd-text-faint);
-    font-size: 12px;
   }
 
   /* Count */

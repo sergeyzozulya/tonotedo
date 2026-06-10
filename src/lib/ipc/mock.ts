@@ -12,6 +12,7 @@ import type {
   EntrySummary,
   TagMeta,
   PersonMeta,
+  PersonInput,
   GroupMeta,
   Backlink,
   GroupPath,
@@ -450,6 +451,18 @@ const TAG_COLORS: Record<string, ChipColor> = {
   people: "blue",
   onboarding: "teal",
   template: "slate",
+  demo: "slate",
+};
+
+// Declared tag metadata (would live in _tags.md).
+const TAG_META: Record<string, { description?: string; icon?: string }> = {
+  "project/atlas": { description: "Atlas next-gen search project.", icon: "🗺️" },
+  followup: { description: "Things to come back to within a week.", icon: "⏳" },
+  daily: { description: "Daily journal entries.", icon: "📅" },
+  engineering: { description: "Technical engineering notes." },
+  strategy: { description: "Strategic planning and direction." },
+  review: { description: "Periodic review items." },
+  books: { description: "Book notes and reading list.", icon: "📚" },
 };
 
 function defaultColor(tag: string): ChipColor {
@@ -458,24 +471,39 @@ function defaultColor(tag: string): ChipColor {
 
 function buildTagIndex(): TagMeta[] {
   const counts = new Map<string, number>();
-  for (const e of ENTRIES) {
+  for (const e of store.values()) {
     for (const t of e.tags) {
       counts.set(t, (counts.get(t) ?? 0) + 1);
     }
   }
   return Array.from(counts.entries())
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([name, count]) => ({ name, color: defaultColor(name), count }));
+    .map(([name, count]) => {
+      const m = TAG_META[name];
+      const tag: TagMeta = { name, color: defaultColor(name), count };
+      if (m?.description) tag.description = m.description;
+      if (m?.icon) tag.icon = m.icon;
+      return tag;
+    });
 }
 
 // ── People index ──────────────────────────────────────────────────────────────
+
+// Declared people: have entries in _people.md with metadata.
+// carol and david are declared but without color (minimal metadata).
+// sergey is NOT declared — used in entries but no _people.md record.
+const PEOPLE_DECLARED = new Set(["anna", "bob", "carol", "david"]);
 
 const PEOPLE_NAMES: Record<string, string> = {
   anna: "Anna K.",
   bob: "Bob T.",
   carol: "Carol M.",
   david: "David R.",
-  sergey: "Sergey Z.",
+};
+
+const PEOPLE_DESCRIPTIONS: Record<string, string> = {
+  anna: "Product lead, Atlas team.",
+  bob: "Infra engineer, distributed systems.",
 };
 
 const PEOPLE_COLORS: Record<string, ChipColor> = {
@@ -489,9 +517,23 @@ const PEOPLE_AVATAR_PATHS: Record<string, string> = {
   anna: "work/atlas/_assets/blueprint-cover.png",
 };
 
+/** Mutable people declaration store for set_person / delete_person. */
+const peopleStore = new Map<string, PersonInput>(
+  Array.from(PEOPLE_DECLARED).map((slug) => [
+    slug,
+    {
+      slug,
+      displayName: PEOPLE_NAMES[slug],
+      description: PEOPLE_DESCRIPTIONS[slug],
+      color: PEOPLE_COLORS[slug] as ChipColor | undefined,
+      avatarPath: PEOPLE_AVATAR_PATHS[slug],
+    },
+  ]),
+);
+
 function buildPeopleIndex(): PersonMeta[] {
   const counts = new Map<string, number>();
-  for (const e of ENTRIES) {
+  for (const e of store.values()) {
     for (const p of e.people) {
       counts.set(p, (counts.get(p) ?? 0) + 1);
     }
@@ -499,15 +541,45 @@ function buildPeopleIndex(): PersonMeta[] {
   return Array.from(counts.entries())
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([slug, count]) => {
+      const decl = peopleStore.get(slug);
       const meta: PersonMeta = {
         slug,
-        displayName: PEOPLE_NAMES[slug] ?? slug,
+        displayName: decl?.displayName ?? PEOPLE_NAMES[slug] ?? slug,
         count,
+        declared: peopleStore.has(slug),
+        description: decl?.description,
       };
-      if (PEOPLE_COLORS[slug]) meta.color = PEOPLE_COLORS[slug];
-      if (PEOPLE_AVATAR_PATHS[slug]) meta.avatarPath = PEOPLE_AVATAR_PATHS[slug];
+      if (decl?.color) meta.color = decl.color;
+      if (decl?.avatarPath) meta.avatarPath = decl.avatarPath;
       return meta;
     });
+}
+
+/** Extract @mention slugs from entry body text. */
+function extractMentions(text: string): string[] {
+  const slugs: string[] = [];
+  const re = /(?:^|[\s.,;:!?(\[{])@([\w-]+)/gm;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    slugs.push(m[1].toLowerCase());
+  }
+  return slugs;
+}
+
+function mentionsForSlug(slug: string): EntrySummary[] {
+  const results: EntrySummary[] = [];
+  for (const e of store.values()) {
+    // Union of both surfaces: frontmatter people array + body @mentions.
+    const inFrontmatter = e.people.includes(slug);
+    const bodyMentions = extractMentions(e.text);
+    const inBody = bodyMentions.includes(slug.toLowerCase());
+    if (inFrontmatter || inBody) {
+      results.push(toSummary(e));
+    }
+  }
+  // Most-recent first (spec 0005 §People view).
+  results.sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt));
+  return results;
 }
 
 // ── Backlinks ─────────────────────────────────────────────────────────────────
@@ -859,6 +931,72 @@ export const mock: Ipc = {
     return { ok: true, value: groups };
   },
 
+  // ── People mutation commands ───────────────────────────────────────────────────
+
+  async set_person(person: PersonInput): Promise<Result<void>> {
+    peopleStore.set(person.slug, { ...person });
+    invalidateCaches();
+    console.log(`[mock ipc] set_person → ${person.slug}`);
+    return { ok: true, value: undefined };
+  },
+
+  async delete_person(slug: string): Promise<Result<void>> {
+    if (!peopleStore.has(slug)) {
+      return { ok: false, error: { code: "not_found", message: `Person not found: ${slug}` } };
+    }
+    peopleStore.delete(slug);
+    invalidateCaches();
+    console.log(`[mock ipc] delete_person → ${slug}`);
+    return { ok: true, value: undefined };
+  },
+
+  async mentions_for(slug: string): Promise<Result<EntrySummary[]>> {
+    return { ok: true, value: mentionsForSlug(slug) };
+  },
+
+  // ── Tag mutation commands ──────────────────────────────────────────────────────
+
+  async rename_tag(oldName: string, newName: string): Promise<Result<void>> {
+    // Rewrite all entries in the store that reference oldName.
+    for (const [id, e] of store.entries()) {
+      const updated = e.tags.map((t) => (t === oldName ? newName : t));
+      if (updated.some((t, i) => t !== e.tags[i])) {
+        store.set(id, { ...e, tags: updated });
+      }
+    }
+    // Rewrite TAG_COLORS reference.
+    if (TAG_COLORS[oldName]) {
+      TAG_COLORS[newName] = TAG_COLORS[oldName];
+      delete TAG_COLORS[oldName];
+    }
+    invalidateCaches();
+    console.log(`[mock ipc] rename_tag ${oldName} → ${newName}`);
+    return { ok: true, value: undefined };
+  },
+
+  async merge_tag(sourceTag: string, targetTag: string): Promise<Result<void>> {
+    for (const [id, e] of store.entries()) {
+      const updated = e.tags.map((t) => (t === sourceTag ? targetTag : t));
+      // De-duplicate after rewrite.
+      const deduped = [...new Set(updated)];
+      if (deduped.join(",") !== e.tags.join(",")) {
+        store.set(id, { ...e, tags: deduped });
+      }
+    }
+    if (TAG_COLORS[sourceTag]) delete TAG_COLORS[sourceTag];
+    invalidateCaches();
+    console.log(`[mock ipc] merge_tag ${sourceTag} → ${targetTag}`);
+    return { ok: true, value: undefined };
+  },
+
+  async delete_tag(name: string): Promise<Result<void>> {
+    // Remove only from suggestions / metadata — do not touch entry text.
+    if (TAG_COLORS[name]) delete TAG_COLORS[name];
+    invalidateCaches();
+    console.log(`[mock ipc] delete_tag → ${name}`);
+    return { ok: true, value: undefined };
+  },
+
   on<E extends IpcEventName>(
     event: E,
     handler: (payload: IpcEventPayload<E>) => void,
@@ -873,5 +1011,5 @@ export const mock: Ipc = {
   },
 };
 
-// Export raw entry list for tests.
-export { ENTRIES };
+// Export raw data for tests.
+export { ENTRIES, PEOPLE_DECLARED, peopleStore };
