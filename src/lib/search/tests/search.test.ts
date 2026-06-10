@@ -361,4 +361,3 @@ describe("recents surface — empty query", () => {
     expect(result.value.items.length).toBeGreaterThanOrEqual(10);
   });
 });
-

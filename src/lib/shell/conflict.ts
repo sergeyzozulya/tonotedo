@@ -91,14 +91,18 @@ export async function onIndexChanged(
   eventEntryPath: string,
   eventSelfToken: string | undefined,
   readEntry: (id: string) => Promise<string | null>,
+  eventSelfOriginated = false,
 ): Promise<ConflictDecision> {
   if (!tracker.entryId) return { action: "ignore" };
 
+  // Self-originated batch: the real backend's reconciler consumed our write
+  // token and marked the whole batch self-originated; it does not echo the
+  // token itself (design-0001). Never a conflict for the open buffer.
+  if (eventSelfOriginated) return { action: "ignore" };
+
   // Check if this event is for the open entry (event carries a path; entry id
   // may differ by extension — normalise by stripping .md suffix).
-  const openPath = tracker.entryId.endsWith(".md")
-    ? tracker.entryId
-    : tracker.entryId + ".md";
+  const openPath = tracker.entryId.endsWith(".md") ? tracker.entryId : tracker.entryId + ".md";
   if (eventEntryPath !== openPath && eventEntryPath !== tracker.entryId) {
     return { action: "ignore" };
   }
@@ -169,7 +173,12 @@ export function diffLines(mine: string, disk: string): DiffLine[] {
 
   while (i < m || j < n) {
     if (i < m && j < n && mineLines[i] === diskLines[j]) {
-      result.push({ kind: "unchanged", text: mineLines[i], mineLine: mLineNum, diskLine: dLineNum });
+      result.push({
+        kind: "unchanged",
+        text: mineLines[i],
+        mineLine: mLineNum,
+        diskLine: dLineNum,
+      });
       i++;
       j++;
       mLineNum++;

@@ -361,6 +361,12 @@ export interface IndexChangedEvent {
    * token).  Absent for external changes (e.g. vim saves).
    */
   selfToken?: string;
+  /**
+   * True when ALL changes in this batch originated from the app's own writes
+   * (reconciler consumed the self-write token). The desktop backend sets this;
+   * it does not echo individual tokens (design-0001).
+   */
+  selfOriginated?: boolean;
 }
 
 export interface FileConflictEvent {

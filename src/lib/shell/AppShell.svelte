@@ -353,6 +353,7 @@
             const r = await ipc.read_entry(id);
             return r.ok ? r.value.text : null;
           },
+          event.selfOriginated,
         );
 
         if (decision.action === "reload") {

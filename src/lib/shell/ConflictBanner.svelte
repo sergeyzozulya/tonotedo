@@ -101,7 +101,7 @@
         <div class="conflict-diff-modal__empty">No differences found.</div>
       {:else}
         <div class="conflict-diff-gutter-wrap">
-          {#each diffResult as line}
+          {#each diffResult as line, i (i)}
             <div class="conflict-diff-line conflict-diff-line--{line.kind}">
               <span class="conflict-diff-line__gutter-mine">
                 {line.mineLine ?? ""}
@@ -124,17 +124,16 @@
         Keep mine
       </button>
       <button class="conflict-banner__btn" onclick={onUseDisk}> Use disk </button>
-      <button class="conflict-banner__btn conflict-banner__btn--dismiss" onclick={() => (showDiff = false)}>
+      <button
+        class="conflict-banner__btn conflict-banner__btn--dismiss"
+        onclick={() => (showDiff = false)}
+      >
         Close
       </button>
     </div>
   </div>
   <!-- backdrop -->
-  <div
-    class="conflict-diff-backdrop"
-    role="presentation"
-    onclick={() => (showDiff = false)}
-  ></div>
+  <div class="conflict-diff-backdrop" role="presentation" onclick={() => (showDiff = false)}></div>
 {/if}
 
 <style>

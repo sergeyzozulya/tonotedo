@@ -419,3 +419,19 @@ describe("mock.write_entry selfToken echo", () => {
     expect(evt.selfToken).toBe(writtenToken);
   });
 });
+
+describe("selfOriginated batch suppression (real-backend path, no token echo)", () => {
+  it("ignores a dirty-buffer event when the batch is selfOriginated", async () => {
+    let t = makeTracker();
+    t = onLoaded(t, "work/a.md", "original");
+    t = onEditorChange(t);
+    const decision = await onIndexChanged(
+      t,
+      "work/a.md",
+      undefined,
+      async () => "different disk content",
+      true,
+    );
+    expect(decision.action).toBe("ignore");
+  });
+});
