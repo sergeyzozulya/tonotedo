@@ -100,6 +100,7 @@ function stubIpc(overrides?: {
     remove_asset: vi.fn() as never,
     entry_titles: vi.fn() as never,
     list_groups: vi.fn() as never,
+    calendar_window: vi.fn() as never,
     on: vi.fn(() => () => {}),
   };
 }

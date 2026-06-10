@@ -141,6 +141,26 @@ export interface GroupMeta {
   color?: string;
 }
 
+// ── Calendar types (issue #21) ────────────────────────────────────────────────
+
+/** A single calendar item returned by calendar_window. */
+export interface CalendarWindowItem {
+  entryId: string;
+  title: string;
+  /** The primary-date property value as a string (YYYY-MM-DD / datetime / range). */
+  dateValue: string;
+  group: string;
+  groupColor?: string;
+  tags: string[];
+  /** ISO date YYYY-MM-DD for recurring occurrences; absent for non-recurring. */
+  occurrenceKey?: string;
+  isOccurrence: boolean;
+}
+
+export interface CalendarWindowResult {
+  items: CalendarWindowItem[];
+}
+
 // ── Command surface (design-0004 §Command surface) ────────────────────────────
 
 export interface IpcCommands {
@@ -217,6 +237,20 @@ export interface IpcCommands {
    * the UI performs the sort/tree-building itself.
    */
   list_groups(): Promise<Result<GroupMeta[]>>;
+
+  // ── Calendar facade (issue #21) ────────────────────────────────────────────
+
+  /**
+   * Return all calendar items (entries with a primary date property) whose
+   * placement overlaps [from, to] inclusive.  RRULE expansion is performed:
+   *   - Mock: minimal TS expansion (daily/weekly FREQ, COUNT, UNTIL, BYDAY).
+   *   - Real: stub returning not_implemented — full fidelity via Rust
+   *     core::recurrence in issue #23.
+   *
+   * `from` and `to` are ISO date strings "YYYY-MM-DD".
+   * `group` is an optional group filter (exact prefix match).
+   */
+  calendar_window(from: string, to: string, group?: string): Promise<Result<CalendarWindowResult>>;
 }
 
 // ── Event surface (core → UI, design-0004 §Event surface) ─────────────────────

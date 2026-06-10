@@ -28,6 +28,7 @@ import type {
   IpcEventPayload,
   IpcUnsubscribe,
   IpcError,
+  CalendarWindowResult,
 } from "./types.js";
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
@@ -134,6 +135,12 @@ export const real: Ipc = {
 
   async list_groups(): Promise<Result<GroupMeta[]>> {
     return call<GroupMeta[]>("list_groups");
+  },
+
+  // ── Calendar facade (issue #21) — Rust stub; full impl in #23 ─────────────
+
+  calendar_window(): Promise<Result<CalendarWindowResult>> {
+    return notImpl("calendar_window");
   },
 
   on<E extends IpcEventName>(

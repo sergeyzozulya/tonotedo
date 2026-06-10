@@ -23,6 +23,7 @@
   import EntryList from "./EntryList.svelte";
   import { Editor } from "../editor/index.js";
   import PropertiesPanel from "../panel/PropertiesPanel.svelte";
+  import CalendarView from "../calendar/CalendarView.svelte";
   import type { EntrySummary } from "../ipc/types.js";
   import type { GroupNode } from "./group-tree.js";
   import type { ChangeSpec } from "../panel/frontmatter-view.js";
@@ -109,7 +110,10 @@
 
   function onGroupSelect(path: string | null): void {
     selectedGroupPath = path;
-    loadEntries(path);
+    // If calendar is open, keep it open but pass the new group filter through.
+    if (!calendarOpen) {
+      loadEntries(path);
+    }
     if (narrow) {
       sidebarOpen = false;
       mobileScreen = "list";
@@ -204,6 +208,29 @@
 
   const groupDisplayName = $derived(resolveGroupName(selectedGroupPath, groupTree));
 
+  // ── Calendar zone ─────────────────────────────────────────────────────────────
+
+  let calendarOpen = $state(false);
+
+  function openCalendar(): void {
+    calendarOpen = true;
+    if (narrow) mobileScreen = "editor"; // reuse editor screen slot on mobile
+  }
+
+  function onCalendarSelectEntry(entryId: string): void {
+    // Open the selected entry's properties side panel.
+    selectEntry(entryId);
+    if (calendarOpen) propertiesVisible = true;
+  }
+
+  function onCalendarApplyEdit(entryId: string, change: ChangeSpec): void {
+    // Reflect a calendar drag-to-reschedule into the editor buffer if the entry
+    // is currently open.
+    if (selectedEntryId === entryId) {
+      onPanelEdit(change);
+    }
+  }
+
   // ── Initial load ──────────────────────────────────────────────────────────────
 
   $effect(() => {
@@ -291,7 +318,13 @@
     {/if}
 
     <!-- Sidebar -->
-    <Sidebar tree={groupTree} selectedPath={selectedGroupPath} {onGroupSelect} />
+    <Sidebar
+      tree={groupTree}
+      selectedPath={selectedGroupPath}
+      {onGroupSelect}
+      onCalendarOpen={openCalendar}
+      calendarActive={calendarOpen}
+    />
 
     <!-- Entry list (hidden on mobile when in editor screen) -->
     {#if !narrow || mobileScreen === "list"}
@@ -305,10 +338,16 @@
       />
     {/if}
 
-    <!-- Editor (hidden on mobile when in list screen) -->
+    <!-- Main zone: Calendar or Editor (hidden on mobile when in list screen) -->
     {#if !narrow || mobileScreen === "editor"}
       <main class="editor-zone" data-focus-zone="editor">
-        {#if selectedEntryId}
+        {#if calendarOpen}
+          <CalendarView
+            group={selectedGroupPath}
+            onSelectEntry={onCalendarSelectEntry}
+            onApplyEdit={onCalendarApplyEdit}
+          />
+        {:else if selectedEntryId}
           <Editor
             doc={editorText}
             {onDocChanged}

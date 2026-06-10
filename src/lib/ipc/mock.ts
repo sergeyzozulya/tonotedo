@@ -23,7 +23,18 @@ import type {
   IpcEventPayload,
   IpcUnsubscribe,
   ChipColor,
+  CalendarWindowResult,
+  CalendarWindowItem,
 } from "./types.js";
+import {
+  parseCalValue,
+  parseRRule,
+  expandRRule,
+  parseCalDate,
+  calDateToEpoch,
+  formatCalDate,
+} from "../calendar/date-math.js";
+import { extractProp, extractOverrides } from "../calendar/placement.js";
 
 // ── Mock data ─────────────────────────────────────────────────────────────────
 
@@ -75,7 +86,7 @@ Key stakeholders: @anna (lead) and @sergey (infra).
 title: Atlas Kickoff Meeting
 tags: [project/atlas, meeting]
 people: [anna, bob, sergey]
-date: 2026-05-10
+due: 2026-06-12T14:00+00:00
 ---
 
 # Atlas Kickoff Meeting
@@ -125,6 +136,7 @@ Tags used in this doc: #engineering, #architecture.
 title: Atlas Q3 Roadmap
 tags: [project/atlas, planning]
 people: [anna, bob]
+due: 2026-06-15..2026-06-19
 ---
 
 # Atlas Q3 Roadmap
@@ -286,6 +298,7 @@ Hunt & Thomas. Timeless craft advice.
 title: Follow-up with Anna
 tags: [followup, action]
 people: [anna]
+due: 2026-06-13
 ---
 
 # Follow-up with Anna
@@ -308,6 +321,7 @@ Need to confirm timeline with @anna before end of week.
     text: `---
 title: Ideas Backlog
 tags: [ideas, backlog]
+due: 2026-06-20
 ---
 
 # Ideas Backlog
@@ -389,6 +403,51 @@ Directory of key contacts.
 - @david — research
 
 #people.
+`,
+  },
+  // Recurring entry — weekly standup (for calendar RRULE demo, issue #21)
+  {
+    id: "work/atlas/standup",
+    path: "work/atlas/standup.md",
+    title: "Atlas Weekly Standup",
+    group: "work/atlas",
+    tags: ["project/atlas", "meeting"],
+    people: ["anna", "bob", "sergey"],
+    modifiedAt: "2026-06-01T00:00:00Z",
+    text: `---
+title: Atlas Weekly Standup
+tags: [project/atlas, meeting]
+people: [anna, bob, sergey]
+due: 2026-06-01
+repeat: "RRULE:FREQ=WEEKLY;BYDAY=MO"
+overrides:
+  "2026-06-08": "2026-06-09"
+---
+
+# Atlas Weekly Standup
+
+Weekly sync for the Atlas team.
+`,
+  },
+  // Recurring entry — daily journaling prompt (every weekday, COUNT=20)
+  {
+    id: "journal/daily-prompt",
+    path: "journal/daily-prompt.md",
+    title: "Daily Journaling Prompt",
+    group: "journal",
+    tags: ["daily", "template"],
+    people: [],
+    modifiedAt: "2026-06-01T00:00:00Z",
+    text: `---
+title: Daily Journaling Prompt
+tags: [daily, template]
+due: 2026-06-09
+repeat: "RRULE:FREQ=DAILY;BYDAY=MO,TU,WE,TH,FR;COUNT=20"
+---
+
+# Daily Journaling Prompt
+
+Three things I'm grateful for today.
 `,
   },
   {
@@ -832,6 +891,155 @@ export const mock: Ipc = {
       map[e.id] = e.title;
     }
     return { ok: true, value: map };
+  },
+
+  async calendar_window(
+    from: string,
+    to: string,
+    group?: string,
+  ): Promise<Result<CalendarWindowResult>> {
+    const fromDate = parseCalDate(from);
+    const toDate = parseCalDate(to);
+    if (!fromDate || !toDate) {
+      return {
+        ok: false,
+        error: { code: "invalid_argument", message: "Invalid date range" },
+      };
+    }
+
+    const GROUP_COLORS: Record<string, string> = {
+      "work/atlas": "#4a90d9",
+      journal: "#e8a050",
+      books: "#6ab06a",
+      inbox: "#9a70c8",
+    };
+    const winStartEpoch = calDateToEpoch(fromDate);
+    const winEndEpoch = calDateToEpoch(toDate);
+
+    const items: CalendarWindowItem[] = [];
+
+    for (const e of store.values()) {
+      if (group && e.group !== group && !e.group.startsWith(group + "/")) continue;
+
+      const rawDue = extractProp(e.text, "due");
+      if (!rawDue) continue;
+
+      const value = parseCalValue(rawDue);
+      if (!value) continue;
+
+      const color =
+        GROUP_COLORS[e.group] ??
+        Object.entries(GROUP_COLORS).find(([k]) => e.group.startsWith(k + "/"))?.[1];
+
+      const baseItem: Omit<CalendarWindowItem, "dateValue" | "occurrenceKey" | "isOccurrence"> = {
+        entryId: e.id,
+        title: e.title,
+        group: e.group,
+        groupColor: color,
+        tags: e.tags,
+      };
+
+      // Check for RRULE.
+      const rawRepeat = extractProp(e.text, "repeat");
+      if (rawRepeat) {
+        const rrule = parseRRule(rawRepeat.replace(/^["']|["']$/g, ""));
+        if (rrule && rrule.unsupported.length === 0) {
+          const startDate =
+            value.kind === "date"
+              ? value
+              : value.kind === "datetime"
+                ? (() => {
+                    const d = new Date(value.epochMs);
+                    return {
+                      kind: "date" as const,
+                      year: d.getFullYear(),
+                      month: d.getMonth() + 1,
+                      day: d.getDate(),
+                    };
+                  })()
+                : value.kind === "range"
+                  ? value.start.kind === "date"
+                    ? value.start
+                    : (() => {
+                        const d = new Date((value.start as { epochMs: number }).epochMs);
+                        return {
+                          kind: "date" as const,
+                          year: d.getFullYear(),
+                          month: d.getMonth() + 1,
+                          day: d.getDate(),
+                        };
+                      })()
+                  : fromDate;
+
+          const overrides = extractOverrides(e.text);
+          const occurrences = expandRRule(rrule, startDate, fromDate, toDate, overrides);
+          for (const occ of occurrences) {
+            const key = formatCalDate(occ);
+            items.push({
+              ...baseItem,
+              dateValue: key,
+              occurrenceKey: key,
+              isOccurrence: true,
+            });
+          }
+          continue;
+        }
+      }
+
+      // Single-date item: check window overlap.
+      const startDate =
+        value.kind === "date"
+          ? value
+          : value.kind === "datetime"
+            ? (() => {
+                const d = new Date(value.epochMs);
+                return {
+                  kind: "date" as const,
+                  year: d.getFullYear(),
+                  month: d.getMonth() + 1,
+                  day: d.getDate(),
+                };
+              })()
+            : value.start.kind === "date"
+              ? value.start
+              : (() => {
+                  const d = new Date((value.start as { epochMs: number }).epochMs);
+                  return {
+                    kind: "date" as const,
+                    year: d.getFullYear(),
+                    month: d.getMonth() + 1,
+                    day: d.getDate(),
+                  };
+                })();
+
+      const endDate =
+        value.kind === "range"
+          ? value.end.kind === "date"
+            ? value.end
+            : (() => {
+                const d = new Date((value.end as { epochMs: number }).epochMs);
+                return {
+                  kind: "date" as const,
+                  year: d.getFullYear(),
+                  month: d.getMonth() + 1,
+                  day: d.getDate(),
+                };
+              })()
+          : startDate;
+
+      if (calDateToEpoch(endDate) < winStartEpoch || calDateToEpoch(startDate) > winEndEpoch) {
+        continue;
+      }
+
+      items.push({
+        ...baseItem,
+        dateValue: rawDue,
+        occurrenceKey: undefined,
+        isOccurrence: false,
+      });
+    }
+
+    return { ok: true, value: { items } };
   },
 
   async list_groups(): Promise<Result<GroupMeta[]>> {

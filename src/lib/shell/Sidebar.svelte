@@ -23,9 +23,19 @@
     selectedPath: string | null;
     /** Called when the user selects a group. */
     onGroupSelect: (path: string | null) => void;
+    /** Called when the user clicks the Calendar nav row. */
+    onCalendarOpen?: () => void;
+    /** True when the calendar zone is active. */
+    calendarActive?: boolean;
   }
 
-  let { tree, selectedPath, onGroupSelect }: Props = $props();
+  let {
+    tree,
+    selectedPath,
+    onGroupSelect,
+    onCalendarOpen,
+    calendarActive = false,
+  }: Props = $props();
 
   // ── Per-node collapsed state ──────────────────────────────────────────────────
   // Start with top-level nodes open; children collapsed.
@@ -50,9 +60,19 @@
 </script>
 
 <nav class="sidebar" data-focus-zone="sidebar" aria-label="Group navigation">
-  <!-- Fixed nav rows (Calendar / Search — placeholders, no route yet) -->
+  <!-- Fixed nav rows (Calendar / Search) -->
   <div class="sidebar-fixed">
-    <div class="sidebar-row sidebar-row--nav" role="button" tabindex="0">
+    <div
+      class="sidebar-row sidebar-row--nav"
+      class:sidebar-row--selected={calendarActive}
+      role="button"
+      tabindex="0"
+      onclick={onCalendarOpen}
+      onkeydown={(e) => (e.key === "Enter" || e.key === " ") && onCalendarOpen?.()}
+    >
+      {#if calendarActive}
+        <span class="sidebar-row-accent-bar" aria-hidden="true"></span>
+      {/if}
       <span class="sidebar-row-icon">📅</span>
       <span class="sidebar-row-label">Calendar</span>
       <kbd class="sidebar-row-hint">⌘⌥M</kbd>
