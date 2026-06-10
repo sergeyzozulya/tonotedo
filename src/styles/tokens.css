@@ -82,6 +82,17 @@
   --tnd-editor-cursor: #b5613e; /* = accent */
   --tnd-editor-syntax: #9a4f30; /* = accent-text */
 
+  /* editor layout — theme-invariant; override per instance via EditorSettings.tokens */
+  --tnd-editor-font: ui-sans-serif, system-ui, sans-serif; /* derived */
+  --tnd-editor-font-size: 15px; /* derived */
+  --tnd-editor-line-height: 1.6; /* derived */
+  --tnd-editor-line-width: 42rem; /* derived */
+  --tnd-editor-code-font: ui-monospace, SFMono-Regular, Menlo, monospace; /* derived */
+
+  /* frontmatter fold widget — inline replacement chip */
+  --tnd-editor-frontmatter-fold-fg: #8c8475; /* derived: = text-muted */
+  --tnd-editor-frontmatter-fold-bg: rgba(60, 48, 28, 0.06); /* derived */
+
   /* chip: amber — design's explicit warm accent */
   --tnd-chip-amber-fg: #7a4b1a;
   --tnd-chip-amber-bg: rgba(169, 116, 42, 0.14);
@@ -135,6 +146,8 @@
   --tnd-editor-code-bg: #201c16; /* derived: bg darkened */
   --tnd-editor-cursor: #d98a66;
   --tnd-editor-syntax: #e7a484;
+  --tnd-editor-frontmatter-fold-fg: #9a9182; /* derived: = text-muted */
+  --tnd-editor-frontmatter-fold-bg: rgba(255, 245, 225, 0.06); /* derived */
 
   --tnd-chip-amber-fg: #e8b87a; /* derived: warm amber on dark bg */
   --tnd-chip-amber-bg: rgba(216, 155, 80, 0.16); /* derived */
@@ -181,6 +194,8 @@
   --tnd-editor-code-bg: #e8edf2; /* derived: panel2 darkened */
   --tnd-editor-cursor: #5277a6;
   --tnd-editor-syntax: #3e6595;
+  --tnd-editor-frontmatter-fold-fg: #69737e; /* derived: = text-muted */
+  --tnd-editor-frontmatter-fold-bg: rgba(30, 45, 65, 0.06); /* derived */
 
   /* chip: blue — accent is already blue, use directly */
   --tnd-chip-blue-fg: #3e6595; /* = accent-text */
@@ -235,6 +250,8 @@
   --tnd-editor-code-bg: #111519; /* derived */
   --tnd-editor-cursor: #7da2ce;
   --tnd-editor-syntax: #9fbee3;
+  --tnd-editor-frontmatter-fold-fg: #8995a2; /* derived: = text-muted */
+  --tnd-editor-frontmatter-fold-bg: rgba(150, 180, 210, 0.08); /* derived */
 
   --tnd-chip-blue-fg: #9fbee3;
   --tnd-chip-blue-bg: rgba(125, 162, 206, 0.16);
@@ -282,6 +299,8 @@
   --tnd-editor-code-bg: #e8e5db; /* derived */
   --tnd-editor-cursor: #3e7a52;
   --tnd-editor-syntax: #2f6342;
+  --tnd-editor-frontmatter-fold-fg: #7c7868; /* derived: = text-muted */
+  --tnd-editor-frontmatter-fold-bg: rgba(40, 38, 28, 0.08); /* derived */
 
   /* chip: green — accent IS the green token */
   --tnd-chip-green-fg: #2f6342; /* = accent-text */
@@ -336,6 +355,8 @@
   --tnd-editor-code-bg: #0d0f0c; /* derived */
   --tnd-editor-cursor: #73b083;
   --tnd-editor-syntax: #8fc79e;
+  --tnd-editor-frontmatter-fold-fg: #7e887a; /* derived: = text-muted */
+  --tnd-editor-frontmatter-fold-bg: rgba(150, 170, 150, 0.1); /* derived */
 
   /* chip: green */
   --tnd-chip-green-fg: #8fc79e; /* = accent-text */
@@ -390,6 +411,8 @@
   --tnd-editor-code-bg: #ebe9e0; /* derived */
   --tnd-editor-cursor: #933623;
   --tnd-editor-syntax: #933623;
+  --tnd-editor-frontmatter-fold-fg: #6e6a60; /* derived: = text-muted */
+  --tnd-editor-frontmatter-fold-bg: rgba(20, 18, 10, 0.06); /* derived */
 
   /* chip: red — accent IS a deep crimson/red token */
   --tnd-chip-red-fg: #933623; /* = accent */
@@ -444,6 +467,8 @@
   --tnd-editor-code-bg: #0f0e0c; /* derived */
   --tnd-editor-cursor: #ce6e58;
   --tnd-editor-syntax: #de8470;
+  --tnd-editor-frontmatter-fold-fg: #9a958a; /* derived: = text-muted */
+  --tnd-editor-frontmatter-fold-bg: rgba(236, 233, 225, 0.06); /* derived */
 
   /* chip: red — accent maps to red-orange */
   --tnd-chip-red-fg: #de8470; /* = accent-text */
@@ -498,6 +523,8 @@
   --tnd-editor-code-bg: #e8ede6; /* derived */
   --tnd-editor-cursor: #4f9168;
   --tnd-editor-syntax: #3c7b53;
+  --tnd-editor-frontmatter-fold-fg: #6c766c; /* derived: = text-muted */
+  --tnd-editor-frontmatter-fold-bg: rgba(30, 50, 35, 0.06); /* derived */
 
   /* chip: green — accent IS the green token */
   --tnd-chip-green-fg: #3c7b53; /* = accent-text */
@@ -552,6 +579,8 @@
   --tnd-editor-code-bg: #111411; /* derived */
   --tnd-editor-cursor: #79bb90;
   --tnd-editor-syntax: #95cea8;
+  --tnd-editor-frontmatter-fold-fg: #8a958a; /* derived: = text-muted */
+  --tnd-editor-frontmatter-fold-bg: rgba(160, 200, 170, 0.07); /* derived */
 
   /* chip: green */
   --tnd-chip-green-fg: #95cea8; /* = accent-text */

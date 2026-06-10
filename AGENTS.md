@@ -11,7 +11,7 @@ This repository is spec-first. The specs in `docs/` are the source of truth. Cod
 
 ## Tooling
 
-Package manager: pnpm. TS tests: vitest (+ `svelte-check` for types). Rust: `cargo test`, `cargo clippy`, `rustfmt`. Formatting: prettier + eslint for TS/Svelte. Run these before declaring work done; do not invent other commands.
+Package manager: pnpm. TS tests: vitest (+ `svelte-check` for types). Rust: `cargo test`, `cargo clippy`, `rustfmt`. Formatting: prettier + eslint for TS/Svelte. Run these before declaring work done; do not invent other commands. Every UI feature must keep the `#/dev` browser demo working against the mock IPC facade (`src/lib/ipc/`); new IPC consumers add mock implementations alongside real ones.
 
 ## Read order
 

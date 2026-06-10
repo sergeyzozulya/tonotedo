@@ -1,5 +1,22 @@
 <script lang="ts">
   import { Editor, type SelectionContext } from "./lib/editor/index.js";
+  import DevPage from "./lib/dev/DevPage.svelte";
+
+  // ── Hash-based routing: #/dev → DevPage, else demo ─────────────────────────
+
+  let hash = $state(window.location.hash);
+
+  $effect(() => {
+    function onHashChange() {
+      hash = window.location.hash;
+    }
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  });
+
+  const isDev = $derived(hash === "#/dev");
+
+  // ── Demo page state ─────────────────────────────────────────────────────────
 
   const sample = `---
 title: Phase 3 demo
@@ -26,18 +43,29 @@ const x = 1;
   let ctx = $state<SelectionContext>({ inFrontmatter: false, activeTokens: [] });
 </script>
 
-<main>
-  <header>
-    <h1>ToNoteDo — editor core</h1>
-    <small>
-      frontmatter: {ctx.inFrontmatter ? "yes" : "no"} · active tokens:
-      {ctx.activeTokens.map((t) => t.text).join(", ") || "none"}
-    </small>
-  </header>
-  <div class="editor">
-    <Editor doc={sample} settings={{ lineWidth: "44rem" }} onSelectionContext={(c) => (ctx = c)} />
-  </div>
-</main>
+{#if isDev}
+  <DevPage />
+{:else}
+  <main>
+    <header>
+      <h1>ToNoteDo — editor core</h1>
+      <small>
+        frontmatter: {ctx.inFrontmatter ? "yes" : "no"} · active tokens:
+        {ctx.activeTokens.map((t) => t.text).join(", ") || "none"}
+      </small>
+      <small style="margin-left: 1rem;">
+        <a href="#/dev" style="color: inherit; opacity: 0.5;">/dev</a>
+      </small>
+    </header>
+    <div class="editor">
+      <Editor
+        doc={sample}
+        settings={{ lineWidth: "44rem" }}
+        onSelectionContext={(c) => (ctx = c)}
+      />
+    </div>
+  </main>
+{/if}
 
 <style>
   main {
