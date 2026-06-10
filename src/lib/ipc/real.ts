@@ -17,6 +17,7 @@ import type {
   EntrySummary,
   TagMeta,
   PersonMeta,
+  GroupMeta,
   Backlink,
   Page,
   AssetPath,
@@ -129,6 +130,10 @@ export const real: Ipc = {
 
   async entry_titles(): Promise<Result<Record<string, string>>> {
     return call<Record<string, string>>("entry_titles");
+  },
+
+  async list_groups(): Promise<Result<GroupMeta[]>> {
+    return call<GroupMeta[]>("list_groups");
   },
 
   on<E extends IpcEventName>(

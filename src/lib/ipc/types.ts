@@ -122,6 +122,25 @@ export interface Backlink {
  */
 export type AssetPath = string;
 
+// ── Group types ───────────────────────────────────────────────────────────────
+
+/**
+ * Lightweight group descriptor returned by list_groups().
+ * `path` is the vault-relative folder path (e.g. "work/atlas").
+ * `name` is the display name (from _group.md or the folder name).
+ * `count` is the number of direct + descendant entries (non-archived).
+ * `order` mirrors the `order` frontmatter field from _group.md (0003).
+ */
+export interface GroupMeta {
+  path: GroupPath;
+  name: string;
+  count: number;
+  /** Explicit ordering hint from _group.md (0003). Absent if not set. */
+  order?: number;
+  /** Optional color hint from _group.md. */
+  color?: string;
+}
+
 // ── Command surface (design-0004 §Command surface) ────────────────────────────
 
 export interface IpcCommands {
@@ -189,6 +208,15 @@ export interface IpcCommands {
    * Used by the chips layer; callers should refresh on index_changed events.
    */
   entry_titles(): Promise<Result<Record<EntryId, string>>>;
+
+  /**
+   * Returns all groups in the library as a flat list.
+   * The sidebar builds the tree by splitting paths on "/".
+   * Sorted per spec 0003: explicit `order` first (ascending), then alphabetical
+   * within the same parent — but the mock returns a flat unsorted list;
+   * the UI performs the sort/tree-building itself.
+   */
+  list_groups(): Promise<Result<GroupMeta[]>>;
 }
 
 // ── Event surface (core → UI, design-0004 §Event surface) ─────────────────────
