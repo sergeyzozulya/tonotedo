@@ -30,6 +30,7 @@ import type {
   IpcUnsubscribe,
   IpcError,
   CalendarWindowResult,
+  PluginInfo,
 } from "./types.js";
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
@@ -180,6 +181,29 @@ export const real: Ipc = {
 
   calendar_window(): Promise<Result<CalendarWindowResult>> {
     return notImpl("calendar_window");
+  },
+
+  // ── Plugins (issue #25) ────────────────────────────────────────────────────
+
+  async plugins_list(): Promise<Result<PluginInfo[]>> {
+    return call<PluginInfo[]>("plugins_list");
+  },
+
+  async plugins_set_grant(plugin: string, perm: string, granted: boolean): Promise<Result<void>> {
+    return call<void>("plugins_set_grant", { plugin, perm, granted });
+  },
+
+  async plugins_invoke_command(
+    plugin: string,
+    commandId: string,
+    argsJson: string,
+  ): Promise<Result<string>> {
+    // Rust arg names are snake_case: command_id, args_json.
+    return call<string>("plugins_invoke_command", {
+      plugin,
+      commandId,
+      argsJson,
+    });
   },
 
   on<E extends IpcEventName>(

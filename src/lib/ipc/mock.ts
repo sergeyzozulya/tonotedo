@@ -27,6 +27,7 @@ import type {
   SavedSearch,
   CalendarWindowResult,
   CalendarWindowItem,
+  PluginInfo,
 } from "./types.js";
 import {
   parseCalValue,
@@ -806,6 +807,56 @@ function emit(event: string, payload: unknown): void {
   }
 }
 
+// ── Mock plugins (issue #25) ────────────────────────────────────────────────────
+//
+// Two fake plugins so the manager demo (#26) renders without a Tauri backend:
+//   - a Mermaid processor (render-code-block, no permissions) → active;
+//   - a Google Calendar provider (entries-owner + command) requesting read/write
+//     entries → permissions-pending (one permission granted, one still missing).
+
+const MOCK_PLUGINS: PluginInfo[] = [
+  {
+    id: "com.example.mermaid",
+    name: "Mermaid renderer",
+    version: "0.2.0",
+    status: "active",
+    shape: ["processor"],
+    capabilities: ["render-code-block"],
+    permissions: [],
+    granted: [],
+    settings: [
+      {
+        key: "theme",
+        type: "enum",
+        label: "Diagram theme",
+        options: ["default", "dark"],
+        default: "default",
+      },
+    ],
+    commands: [],
+    views: [],
+    strikes: 0,
+  },
+  {
+    id: "com.example.gcal",
+    name: "Google Calendar",
+    version: "1.0.0",
+    status: "permissions-pending",
+    shape: ["provider"],
+    capabilities: ["command", "entries-owner"],
+    permissions: ["read-entries", "write-entries", "network:www.googleapis.com"],
+    // One permission already granted; the rest keep the plugin pending.
+    granted: ["read-entries"],
+    settings: [{ key: "apiToken", type: "secret", label: "API token" }],
+    commands: [{ id: "com.example.gcal.sync", title: "Sync Google Calendar" }],
+    views: [],
+    strikes: 0,
+  },
+];
+
+/** Mutable copy so mock plugins_set_grant has an effect within a session. */
+const pluginStore: PluginInfo[] = MOCK_PLUGINS.map((p) => ({ ...p, granted: [...p.granted] }));
+
 // ── IPC implementation ────────────────────────────────────────────────────────
 
 export const mock: Ipc = {
@@ -1220,6 +1271,59 @@ export const mock: Ipc = {
     return { ok: true, value: undefined };
   },
 
+  // ── Plugins (issue #25) ─────────────────────────────────────────────────────
+
+  async plugins_list(): Promise<Result<PluginInfo[]>> {
+    return { ok: true, value: pluginStore.map((p) => ({ ...p, granted: [...p.granted] })) };
+  },
+
+  async plugins_set_grant(plugin: string, perm: string, granted: boolean): Promise<Result<void>> {
+    const p = pluginStore.find((x) => x.id === plugin);
+    if (!p) {
+      return { ok: false, error: { code: "not_found", message: `plugin ${plugin} not found` } };
+    }
+    if (!p.permissions.includes(perm)) {
+      return {
+        ok: false,
+        error: {
+          code: "invalid_argument",
+          message: `permission ${perm} not requested by ${plugin}`,
+        },
+      };
+    }
+    const has = p.granted.includes(perm);
+    if (granted && !has) p.granted.push(perm);
+    if (!granted && has) p.granted = p.granted.filter((x) => x !== perm);
+    // Re-derive status: active only when every requested permission is granted.
+    const allGranted = p.permissions.every((x) => p.granted.includes(x));
+    p.status = allGranted ? "active" : "permissions-pending";
+    console.log(`[mock ipc] plugins_set_grant ${plugin} ${perm}=${granted} → ${p.status}`);
+    return { ok: true, value: undefined };
+  },
+
+  async plugins_invoke_command(
+    plugin: string,
+    commandId: string,
+    argsJson: string,
+  ): Promise<Result<string>> {
+    const p = pluginStore.find((x) => x.id === plugin);
+    if (!p || p.status !== "active") {
+      return {
+        ok: false,
+        error: { code: "invalid_argument", message: `plugin ${plugin} is not active` },
+      };
+    }
+    if (!p.commands.some((c) => c.id === commandId)) {
+      return {
+        ok: false,
+        error: { code: "not_found", message: `command ${commandId} not registered` },
+      };
+    }
+    // The mock has no JS runtime — echo a deterministic result.
+    console.log(`[mock ipc] plugins_invoke_command ${commandId}(${argsJson})`);
+    return { ok: true, value: JSON.stringify({ ok: true, command: commandId }) };
+  },
+
   on<E extends IpcEventName>(
     event: E,
     handler: (payload: IpcEventPayload<E>) => void,
@@ -1235,4 +1339,4 @@ export const mock: Ipc = {
 };
 
 // Export raw data for tests.
-export { ENTRIES, PEOPLE_DECLARED, peopleStore };
+export { ENTRIES, PEOPLE_DECLARED, peopleStore, MOCK_PLUGINS };

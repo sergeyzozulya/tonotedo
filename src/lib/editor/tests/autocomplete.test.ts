@@ -109,6 +109,9 @@ function stubIpc(overrides?: {
     merge_tag: vi.fn() as never,
     delete_tag: vi.fn() as never,
     calendar_window: vi.fn() as never,
+    plugins_list: vi.fn() as never,
+    plugins_set_grant: vi.fn() as never,
+    plugins_invoke_command: vi.fn() as never,
     on: vi.fn(() => () => {}),
   };
 }
