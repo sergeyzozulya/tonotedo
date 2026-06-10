@@ -525,3 +525,15 @@ fn reserved_names_can_be_excluded_by_caller() {
     idx.upsert_entry("_group.md", "_group", "", &e, 0, 0, "h")
         .expect("index must accept any path — filtering is caller responsibility");
 }
+
+#[test]
+fn entries_in_group_does_not_match_sibling_prefix() {
+    let mut idx = Index::open_in_memory().unwrap();
+    let e1 = make_entry("id-w1", &[], &[], "in work");
+    let e2 = make_entry("id-w2", &[], &[], "in workshop");
+    upsert(&mut idx, "Work/note.md", "note", "Work", &e1);
+    upsert(&mut idx, "Workshop/note.md", "note", "Workshop", &e2);
+    let rows = idx.entries_in_group("Work").unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].group_path, "Work");
+}

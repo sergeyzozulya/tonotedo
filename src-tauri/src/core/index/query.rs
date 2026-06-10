@@ -122,21 +122,21 @@ fn recent_entries(conn: &Connection, limit: usize) -> Result<Vec<SearchResult>, 
 /// `prefix = ""` returns all entries.
 /// `prefix = "Work"` returns entries in Work and Work/Atlas etc.
 pub fn entries_in_group(conn: &Connection, prefix: &str) -> Result<Vec<EntryRow>, IndexError> {
-    // Match exact group_path or paths that start with "prefix/".
-    let pattern = if prefix.is_empty() {
-        "%".to_string()
+    // Match the group itself or true descendants ("Work" must not match "Workshop").
+    let (exact, pattern) = if prefix.is_empty() {
+        ("%".to_string(), "%".to_string())
     } else {
-        format!("{}%", prefix)
+        (prefix.to_string(), format!("{}/%", prefix))
     };
 
     let mut stmt = conn.prepare(
         "SELECT id, entry_id, path, slug, group_path, title, created, updated, archived
          FROM entries
-         WHERE group_path LIKE ?1
+         WHERE group_path = ?1 OR group_path LIKE ?2
          ORDER BY updated DESC",
     )?;
 
-    let rows = stmt.query_map(params![pattern], |r| {
+    let rows = stmt.query_map(params![exact, pattern], |r| {
         Ok(EntryRow {
             id: r.get(0)?,
             entry_id: r.get(1)?,
