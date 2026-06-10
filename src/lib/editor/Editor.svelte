@@ -26,8 +26,10 @@
   import { baseSetup, markdownExtension } from "./extensions/markdown.js";
   import { cursorReveal } from "./extensions/cursor-reveal.js";
   import { frontmatterFold } from "./extensions/frontmatter-fold.js";
+  import { chips } from "./extensions/chips.js";
   import { editorTheme } from "./theme.js";
   import { selectionContext, type SelectionContext } from "./selection-context.js";
+  import { ipc } from "../ipc/index.js";
 
   interface Props {
     /** Initial document text. The editor never mutates the buffer on its own. */
@@ -42,9 +44,35 @@
     onDocChanged?: (text: string) => void;
     /** Called on selection change with frontmatter / active-token context. */
     onSelectionContext?: (ctx: SelectionContext) => void;
+    /**
+     * Called when a tag or mention chip is clicked (non-navigational, per 0005).
+     * The caller can open a side panel or handle as needed.
+     */
+    onTokenClick?: (kind: "tag" | "mention", value: string) => void;
+    /**
+     * Called when a wikilink chip is clicked. The target is the raw wikilink
+     * target string (may be path-qualified). Actual navigation is the caller's
+     * responsibility.
+     */
+    onNavigate?: (target: string) => void;
+    /**
+     * Map of entryId → display title used to resolve wikilink chips.
+     * When provided, wikilinks whose target matches an entry id show the entry
+     * title and are styled as resolved; unmatched targets are styled as
+     * unresolved. When absent, all wikilinks render with their raw target text.
+     */
+    entryTitles?: Map<string, string>;
   }
 
-  let { doc = "", settings = {}, onDocChanged, onSelectionContext }: Props = $props();
+  let {
+    doc = "",
+    settings = {},
+    onDocChanged,
+    onSelectionContext,
+    onTokenClick,
+    onNavigate,
+    entryTitles = new Map(),
+  }: Props = $props();
 
   let host: HTMLDivElement;
   let view: EditorView | undefined;
@@ -71,10 +99,14 @@
       state: EditorState.create({
         doc,
         extensions: [
-          // Precedence (design-0003): frontmatter fold (layer 1) outranks
-          // cursor-reveal (layer 2); both sit above the base highlight. Earlier
-          // extensions win in CM6, so frontmatter fold is listed first.
+          // Precedence (design-0003):
+          //   layer 1: frontmatterFold (earliest = highest precedence in CM6)
+          //   layer 3: chips (above cursor-reveal so widget decos win for tokens)
+          //   layer 2: cursorReveal (plain marks for headings/emphasis; tokens
+          //             deferred to chips layer)
+          //   base:    markdownExtension, baseSetup, editorTheme
           frontmatterFold,
+          chips({ ipc, onTokenClick, onNavigate, entryTitles }),
           cursorReveal,
           markdownExtension,
           baseSetup,

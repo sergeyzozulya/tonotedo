@@ -1,4 +1,4 @@
-// Public surface of the editor-core module (issue #11). Chips (#12), checkbox
+// Public surface of the editor-core module (issues #11, #12). Checkbox
 // interactions (#13), autocomplete (#14), and the properties panel (#15) build
 // on these exports.
 
@@ -23,3 +23,16 @@ export {
 } from "./extensions/inline-tokens.js";
 export type { ScannedToken, TokenKind } from "./extensions/inline-tokens.js";
 export { editorTheme } from "./theme.js";
+export {
+  chips,
+  computeChipDecorations,
+  buildCache,
+  emptyCache,
+  chipsTheme,
+} from "./extensions/chips.js";
+export type {
+  ChipConfig,
+  ChipCallbacks,
+  ChipMetaCache,
+  ComputeChipsOptions,
+} from "./extensions/chips.js";

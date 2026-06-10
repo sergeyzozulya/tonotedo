@@ -1,8 +1,38 @@
 <script lang="ts">
+  import { SvelteMap } from "svelte/reactivity";
   import { ipc } from "../ipc/index.js";
   import { Editor } from "../editor/index.js";
   import themeMap from "../../styles/THEME-MAP.json";
   import type { EntrySummary } from "../ipc/types.js";
+
+  // ── Entry titles for wikilink chip resolution ───────────────────────────────
+
+  let entryTitles = new SvelteMap<string, string>();
+
+  async function loadEntryTitles(): Promise<void> {
+    // Load all known groups to build the entryId → title map for wikilinks.
+    const groups = ["work/atlas", "journal", "books", "inbox"];
+    for (const group of groups) {
+      const result = await ipc.entries_in_group(group);
+      if (result.ok) {
+        for (const e of result.value.items) {
+          entryTitles.set(e.id, e.title);
+        }
+      }
+    }
+  }
+
+  // ── Chip event log (shows last click in the topbar) ─────────────────────────
+
+  let lastChipEvent = $state<string | null>(null);
+
+  function onTokenClick(kind: "tag" | "mention", value: string): void {
+    lastChipEvent = `${kind}: ${value}`;
+  }
+
+  function onNavigate(target: string): void {
+    lastChipEvent = `navigate → ${target}`;
+  }
 
   // ── Theme switcher state ────────────────────────────────────────────────────
 
@@ -96,6 +126,7 @@
   // Load on mount
   $effect(() => {
     loadEntries();
+    loadEntryTitles();
   });
 </script>
 
@@ -105,6 +136,9 @@
     <span class="dev-topbar-title">ToNoteDo /dev</span>
 
     <div class="dev-topbar-controls">
+      {#if lastChipEvent}
+        <span class="dev-chip-event">chip click: {lastChipEvent}</span>
+      {/if}
       <label class="dev-label" for="theme-select">Theme</label>
       <select id="theme-select" class="dev-select" bind:value={selectedTheme}>
         {#each themeKeys as key (key)}
@@ -157,7 +191,7 @@
     <!-- Editor -->
     <main class="dev-main">
       {#if selectedId}
-        <Editor doc={editorText} {onDocChanged} />
+        <Editor doc={editorText} {onDocChanged} {onTokenClick} {onNavigate} {entryTitles} />
       {:else}
         <div class="dev-empty">Select an entry</div>
       {/if}
@@ -284,6 +318,19 @@
     min-width: 0;
     min-height: 0;
     background: var(--tnd-panel);
+  }
+
+  .dev-chip-event {
+    font-size: 0.7rem;
+    color: var(--tnd-text-muted);
+    background: var(--tnd-panel2);
+    border: 1px solid var(--tnd-line);
+    border-radius: 4px;
+    padding: 0.15rem 0.5rem;
+    white-space: nowrap;
+    max-width: 240px;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .dev-error {
