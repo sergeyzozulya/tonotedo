@@ -34,6 +34,7 @@
 // protects open/close.  For this first wave (single-user desktop, <500-entry
 // libraries) that is perfectly acceptable.
 
+pub mod commands2;
 mod tests;
 
 use std::path::{Path, PathBuf};

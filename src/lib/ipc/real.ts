@@ -25,6 +25,7 @@ import type {
   GroupPath,
   SearchQuery,
   SavedSearch,
+  PersonInput,
   IpcEventName,
   IpcEventPayload,
   IpcUnsubscribe,
@@ -60,17 +61,6 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
       };
     }
   }
-}
-
-/** Typed not-implemented error for commands awaiting their Rust side (refs #30). */
-function notImpl<T>(command: string): Promise<Result<T>> {
-  return Promise.resolve({
-    ok: false,
-    error: {
-      code: "not_implemented",
-      message: `${command} is not implemented in the desktop backend yet (refs #30)`,
-    },
-  });
 }
 
 // ── IPC implementation ────────────────────────────────────────────────────────
@@ -112,22 +102,26 @@ export const real: Ipc = {
     return call<Backlink[]>("backlinks", { id });
   },
 
-  // ── Asset commands (issue #13) — stubs, refs #30 ────────────────────────────
+  // ── Asset commands (issue #13) ───────────────────────────────────────────────
 
-  attach_file(): Promise<Result<AssetPath>> {
-    return notImpl("attach_file");
+  async attach_file(
+    entryPath: string,
+    name: string,
+    bytes: Uint8Array,
+  ): Promise<Result<AssetPath>> {
+    return call<AssetPath>("attach_file", { entryPath, name, bytes: Array.from(bytes) });
   },
 
-  asset_url(): Promise<Result<string>> {
-    return notImpl("asset_url");
+  async asset_url(assetPath: AssetPath): Promise<Result<string>> {
+    return call<string>("asset_url", { assetPath });
   },
 
-  asset_exists(): Promise<Result<boolean>> {
-    return notImpl("asset_exists");
+  async asset_exists(assetPath: AssetPath): Promise<Result<boolean>> {
+    return call<boolean>("asset_exists", { assetPath });
   },
 
-  remove_asset(): Promise<Result<void>> {
-    return notImpl("remove_asset");
+  async remove_asset(assetPath: AssetPath): Promise<Result<void>> {
+    return call<void>("remove_asset", { assetPath });
   },
 
   async entry_titles(): Promise<Result<Record<string, string>>> {
@@ -138,48 +132,52 @@ export const real: Ipc = {
     return call<GroupMeta[]>("list_groups");
   },
 
-  // ── Saved searches (spec 0009) — stubs, refs #20 ──────────────────────────
+  // ── Saved searches (spec 0009) ───────────────────────────────────────────────
 
-  saved_searches_get(): Promise<Result<SavedSearch[]>> {
-    return notImpl("saved_searches_get");
+  async saved_searches_get(): Promise<Result<SavedSearch[]>> {
+    return call<SavedSearch[]>("saved_searches_get");
   },
 
-  saved_searches_set(): Promise<Result<void>> {
-    return notImpl("saved_searches_set");
+  async saved_searches_set(searches: SavedSearch[]): Promise<Result<void>> {
+    return call<void>("saved_searches_set", { searches });
   },
 
-  // ── People mutation commands (issue #22) — stubs, refs #30 ────────────────────
+  // ── People mutation commands (issue #22) ─────────────────────────────────────
 
-  set_person(): Promise<Result<void>> {
-    return notImpl("set_person");
+  async set_person(person: PersonInput): Promise<Result<void>> {
+    return call<void>("set_person", { person });
   },
 
-  delete_person(): Promise<Result<void>> {
-    return notImpl("delete_person");
+  async delete_person(slug: string): Promise<Result<void>> {
+    return call<void>("delete_person", { slug });
   },
 
   async mentions_for(slug: string): Promise<Result<EntrySummary[]>> {
     return call<EntrySummary[]>("mentions_for", { slug });
   },
 
-  // ── Tag mutation commands (issue #22) — stubs, refs #30 ──────────────────────
+  // ── Tag mutation commands (issue #22) ────────────────────────────────────────
 
-  rename_tag(): Promise<Result<void>> {
-    return notImpl("rename_tag");
+  async rename_tag(oldName: string, newName: string): Promise<Result<void>> {
+    return call<void>("rename_tag", { oldName, newName });
   },
 
-  merge_tag(): Promise<Result<void>> {
-    return notImpl("merge_tag");
+  async merge_tag(sourceTag: string, targetTag: string): Promise<Result<void>> {
+    return call<void>("merge_tag", { sourceTag, targetTag });
   },
 
-  delete_tag(): Promise<Result<void>> {
-    return notImpl("delete_tag");
+  async delete_tag(name: string): Promise<Result<void>> {
+    return call<void>("delete_tag", { name });
   },
 
-  // ── Calendar facade (issue #21) — Rust stub; full impl in #23 ─────────────
+  // ── Calendar facade (issue #21) ───────────────────────────────────────────────
 
-  calendar_window(): Promise<Result<CalendarWindowResult>> {
-    return notImpl("calendar_window");
+  async calendar_window(
+    from: string,
+    to: string,
+    group?: string,
+  ): Promise<Result<CalendarWindowResult>> {
+    return call<CalendarWindowResult>("calendar_window", { from, to, group });
   },
 
   on<E extends IpcEventName>(
