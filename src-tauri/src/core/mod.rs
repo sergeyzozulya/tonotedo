@@ -2,4 +2,5 @@
 //! Each submodule maps to a Phase 2 issue; keep modules self-contained.
 
 pub mod frontmatter;
+pub mod index;
 pub mod recurrence;
