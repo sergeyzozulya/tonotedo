@@ -1,0 +1,16 @@
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
+
+
+# Node / Svelte (src/)
+node_modules/
+dist/
+
+# Rust / Tauri (src-tauri/)
+target/
+src-tauri/gen/
