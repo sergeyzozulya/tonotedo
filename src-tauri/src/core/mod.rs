@@ -3,3 +3,4 @@
 
 pub mod frontmatter;
 pub mod recurrence;
+pub mod trash;
