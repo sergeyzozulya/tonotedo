@@ -17,6 +17,7 @@
   // by theme-store.ts.  Issue #23 will formalise persistence.
 
   import { ipc } from "../ipc/index.js";
+  import { registry } from "../commands/index.js";
   import { buildGroupTree } from "./group-tree.js";
   import { themeStore } from "./theme-store.js";
   import Sidebar from "./Sidebar.svelte";
@@ -228,17 +229,16 @@
     searchOverlay?.restoreSavedSearch(s);
   }
 
-  // ── cmd+p keyboard shortcut ───────────────────────────────────────────────────
+  // ── cmd+p via the command registry ────────────────────────────────────────────
+  // The keymap engine (0007) owns all bindings; entry.search is seeded with
+  // cmd+p and a stub handler — re-register it pointing at the real overlay so
+  // there is exactly one owner of the binding (no parallel keydown listeners).
 
   $effect(() => {
-    function onKeydown(e: KeyboardEvent): void {
-      if ((e.metaKey || e.ctrlKey) && e.key === "p") {
-        e.preventDefault();
-        openSearch();
-      }
+    const seeded = registry.get("entry.search");
+    if (seeded) {
+      registry.register({ ...seeded, handler: () => openSearch() });
     }
-    window.addEventListener("keydown", onKeydown);
-    return () => window.removeEventListener("keydown", onKeydown);
   });
 
   // ── Initial load ──────────────────────────────────────────────────────────────
