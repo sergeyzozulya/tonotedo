@@ -46,6 +46,16 @@ pub fn run() {
             ipc::commands2::settings_set_user,
             ipc::commands2::settings_get_library,
             ipc::commands2::settings_set_library,
+            // Phase 6 — group management + trash IPC (issue #28)
+            ipc::groups::create_group,
+            ipc::groups::rename_group,
+            ipc::groups::move_group,
+            ipc::groups::move_entry,
+            ipc::groups::ipc_trash_entry,
+            ipc::groups::ipc_trash_group,
+            ipc::groups::trash_list,
+            ipc::groups::trash_restore,
+            ipc::groups::trash_purge,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

@@ -27,6 +27,9 @@ import type {
   SavedSearch,
   CalendarWindowResult,
   CalendarWindowItem,
+  TrashManifest,
+  TrashOpResult,
+  RestoreResult,
 } from "./types.js";
 import {
   parseCalValue,
@@ -734,6 +737,21 @@ function assetObjectUrl(path: AssetPath): string {
   return url;
 }
 
+// ── Trash store (phase 6 — in-memory for /dev demo) ──────────────────────────
+
+interface MockTrashSlot {
+  trashId: string;
+  originalRelPath: string;
+  trashedAt: string;
+  kind: "entry" | "group";
+  /** Present when kind === "entry". */
+  _entry?: MockEntry;
+  /** Present when kind === "group": all entries that were in the group. */
+  _entries?: Array<{ id: string; entry: MockEntry }>;
+}
+
+const trashStore = new Map<string, MockTrashSlot>();
+
 let tagIndexCache: TagMeta[] | null = null;
 let backlinkIndex: Map<EntryId, Backlink[]> | null = null;
 
@@ -828,18 +846,18 @@ export const mock: Ipc = {
   },
 
   async write_entry(id: EntryId, text: string): Promise<Result<{ selfToken: string }>> {
-    const e = store.get(id);
-    if (!e) {
-      return {
-        ok: false,
-        error: { code: "not_found", message: `Entry not found: ${id}` },
-      };
-    }
-    const updated = { ...e, text, modifiedAt: "2026-06-10T00:00:00Z" };
-    store.set(id, updated);
+    const existing = store.get(id);
+    const path = `${id}.md`;
+    // Upsert: create if not found (new entry), update if found.
+    const group = id.includes("/") ? id.split("/").slice(0, -1).join("/") : "";
+    const title = id.split("/").at(-1) ?? id;
+    const entry: MockEntry = existing
+      ? { ...existing, text, modifiedAt: new Date().toISOString() }
+      : { id, path, title, group, tags: [], people: [], modifiedAt: new Date().toISOString(), text };
+    store.set(id, entry);
     invalidateCaches();
     const newToken = `mock-tok-${id}-written`;
-    emit("index_changed", { paths: [e.path], kinds: ["modified"] });
+    emit("index_changed", { paths: [path], kinds: [existing ? "modified" : "created"] });
     return { ok: true, value: { selfToken: newToken } };
   },
 
@@ -1217,6 +1235,251 @@ export const mock: Ipc = {
     if (TAG_COLORS[name]) delete TAG_COLORS[name];
     invalidateCaches();
     console.log(`[mock ipc] delete_tag → ${name}`);
+    return { ok: true, value: undefined };
+  },
+
+  // ── Group mutation commands (phase 6) ─────────────────────────────────────
+
+  async create_group(path: GroupPath): Promise<Result<void>> {
+    // Reject reserved component names (start with _ or .)
+    const components = path.split("/").filter(Boolean);
+    for (const c of components) {
+      if (c.startsWith("_") || c.startsWith(".")) {
+        return {
+          ok: false,
+          error: {
+            code: "invalid_argument",
+            message: `Group name '${c}' is reserved (starts with '_' or '.').`,
+          },
+        };
+      }
+    }
+    // Check that at least the parent groups already exist.
+    const parentParts = components.slice(0, -1);
+    if (parentParts.length > 0) {
+      const parentPath = parentParts.join("/");
+      const parentExists = Array.from(store.values()).some(
+        (e) => e.group === parentPath || e.group.startsWith(parentPath + "/"),
+      );
+      if (!parentExists) {
+        return {
+          ok: false,
+          error: { code: "not_found", message: `Parent group not found: ${parentPath}` },
+        };
+      }
+    }
+    // Check collision: group already exists.
+    const already = Array.from(store.values()).some(
+      (e) => e.group === path || e.group.startsWith(path + "/"),
+    );
+    if (already) {
+      return {
+        ok: false,
+        error: { code: "conflict", message: `Group already exists: ${path}` },
+      };
+    }
+    // Insert a placeholder _group.md entry so the group appears in list_groups.
+    const placeholderEntry: MockEntry = {
+      id: `${path}/_group`,
+      path: `${path}/_group.md`,
+      title: path.split("/").at(-1) ?? path,
+      group: path,
+      tags: [],
+      people: [],
+      modifiedAt: new Date().toISOString(),
+      text: `---\n---\n`,
+    };
+    // We use a special sentinel so we can identify it as a group placeholder.
+    store.set(placeholderEntry.id, placeholderEntry);
+    invalidateCaches();
+    emit("index_changed", { paths: [path], kinds: ["created"] });
+    return { ok: true, value: undefined };
+  },
+
+  async rename_group(oldPath: GroupPath, newName: string): Promise<Result<void>> {
+    if (newName.startsWith("_") || newName.startsWith(".")) {
+      return {
+        ok: false,
+        error: {
+          code: "invalid_argument",
+          message: `Group name '${newName}' is reserved.`,
+        },
+      };
+    }
+    const parentPath = oldPath.includes("/")
+      ? oldPath.slice(0, oldPath.lastIndexOf("/"))
+      : "";
+    const newPath = parentPath ? `${parentPath}/${newName}` : newName;
+    // Check sibling collision.
+    const collision = Array.from(store.values()).some(
+      (e) => e.group === newPath || e.group.startsWith(newPath + "/"),
+    );
+    if (collision) {
+      return {
+        ok: false,
+        error: { code: "conflict", message: `Name already in use: ${newName}` },
+      };
+    }
+    // Rewrite all entries whose group starts with oldPath.
+    for (const [id, e] of store.entries()) {
+      if (e.group === oldPath || e.group.startsWith(oldPath + "/")) {
+        const newGroup = newPath + e.group.slice(oldPath.length);
+        const newEntryPath = e.path.replace(oldPath + "/", newPath + "/");
+        const newId = id.replace(oldPath + "/", newPath + "/");
+        store.delete(id);
+        store.set(newId, { ...e, id: newId, group: newGroup, path: newEntryPath });
+      }
+    }
+    invalidateCaches();
+    emit("index_changed", { paths: [oldPath, newPath], kinds: ["renamed", "renamed"] });
+    return { ok: true, value: undefined };
+  },
+
+  async move_group(srcPath: GroupPath, dstParent: GroupPath): Promise<Result<void>> {
+    // Circular check.
+    if (dstParent === srcPath || dstParent.startsWith(srcPath + "/")) {
+      return {
+        ok: false,
+        error: {
+          code: "invalid_argument",
+          message: `Cannot move '${srcPath}' into itself or a descendant.`,
+        },
+      };
+    }
+    const folderName = srcPath.split("/").at(-1) ?? srcPath;
+    const newPath = dstParent ? `${dstParent}/${folderName}` : folderName;
+    // Check collision.
+    const collision = Array.from(store.values()).some(
+      (e) => e.group === newPath || e.group.startsWith(newPath + "/"),
+    );
+    if (collision) {
+      return {
+        ok: false,
+        error: { code: "conflict", message: `Name already in use at destination: ${folderName}` },
+      };
+    }
+    for (const [id, e] of store.entries()) {
+      if (e.group === srcPath || e.group.startsWith(srcPath + "/")) {
+        const newGroup = newPath + e.group.slice(srcPath.length);
+        const newEntryPath = e.path.replace(srcPath + "/", newPath + "/");
+        const newId = id.replace(srcPath + "/", newPath + "/");
+        store.delete(id);
+        store.set(newId, { ...e, id: newId, group: newGroup, path: newEntryPath });
+      }
+    }
+    invalidateCaches();
+    emit("index_changed", { paths: [srcPath, newPath], kinds: ["renamed", "renamed"] });
+    return { ok: true, value: undefined };
+  },
+
+  async move_entry(path: string, dstGroup: GroupPath): Promise<Result<void>> {
+    const entryId = path.replace(/\.md$/, "");
+    const e = store.get(entryId);
+    if (!e) {
+      return { ok: false, error: { code: "not_found", message: `Entry not found: ${path}` } };
+    }
+    const fileName = path.split("/").at(-1) ?? path;
+    const newPath = dstGroup ? `${dstGroup}/${fileName}` : fileName;
+    const newId = newPath.replace(/\.md$/, "");
+    if (store.has(newId)) {
+      return {
+        ok: false,
+        error: { code: "conflict", message: `File already exists at destination: ${fileName}` },
+      };
+    }
+    store.delete(entryId);
+    store.set(newId, { ...e, id: newId, group: dstGroup, path: newPath });
+    invalidateCaches();
+    emit("index_changed", { paths: [path, newPath], kinds: ["renamed", "renamed"] });
+    return { ok: true, value: undefined };
+  },
+
+  // ── Trash commands (phase 6) ───────────────────────────────────────────────
+
+  async trash_entry(path: string): Promise<Result<TrashOpResult>> {
+    const entryId = path.replace(/\.md$/, "");
+    const e = store.get(entryId);
+    if (!e) {
+      return { ok: false, error: { code: "not_found", message: `Entry not found: ${path}` } };
+    }
+    const trashId = `mock-trash-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    trashStore.set(trashId, {
+      trashId,
+      originalRelPath: path,
+      trashedAt: new Date().toISOString(),
+      kind: "entry",
+      _entry: { ...e },
+    });
+    store.delete(entryId);
+    invalidateCaches();
+    emit("index_changed", { paths: [path], kinds: ["deleted"] });
+    return { ok: true, value: { trashId } };
+  },
+
+  async trash_group(path: GroupPath): Promise<Result<TrashOpResult>> {
+    // Collect all entries in the group.
+    const affected = Array.from(store.entries()).filter(
+      ([, e]) => e.group === path || e.group.startsWith(path + "/"),
+    );
+    const trashId = `mock-trash-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    trashStore.set(trashId, {
+      trashId,
+      originalRelPath: path,
+      trashedAt: new Date().toISOString(),
+      kind: "group",
+      _entries: affected.map(([id, e]) => ({ id, entry: { ...e } })),
+    });
+    for (const [id] of affected) {
+      store.delete(id);
+    }
+    invalidateCaches();
+    emit("index_changed", { paths: [path], kinds: ["deleted"] });
+    return { ok: true, value: { trashId } };
+  },
+
+  async trash_list(): Promise<Result<TrashManifest[]>> {
+    const items: TrashManifest[] = Array.from(trashStore.values())
+      .map(({ trashId, originalRelPath, trashedAt, kind }) => ({
+        trashId,
+        originalRelPath,
+        trashedAt,
+        kind,
+      }))
+      .sort((a, b) => b.trashedAt.localeCompare(a.trashedAt));
+    return { ok: true, value: items };
+  },
+
+  async trash_restore(id: string): Promise<Result<RestoreResult>> {
+    const slot = trashStore.get(id);
+    if (!slot) {
+      return { ok: false, error: { code: "not_found", message: `Trash slot not found: ${id}` } };
+    }
+    if (slot.kind === "entry" && slot._entry) {
+      const e = slot._entry;
+      const exists = store.has(e.id);
+      const finalId = exists ? `${e.id}-restored` : e.id;
+      store.set(finalId, { ...e, id: finalId });
+      trashStore.delete(id);
+      invalidateCaches();
+      emit("index_changed", { paths: [e.path], kinds: ["created"] });
+      return {
+        ok: true,
+        value: { path: finalId + ".md", hadCollision: exists },
+      };
+    } else if (slot.kind === "group" && slot._entries) {
+      for (const { id: entryId, entry } of slot._entries) {
+        store.set(entryId, { ...entry });
+      }
+      trashStore.delete(id);
+      invalidateCaches();
+      emit("index_changed", { paths: [slot.originalRelPath], kinds: ["created"] });
+      return { ok: true, value: { path: slot.originalRelPath, hadCollision: false } };
+    }
+    return { ok: false, error: { code: "io_error", message: "Malformed trash slot." } };
+  },
+
+  async trash_purge(id: string): Promise<Result<void>> {
+    trashStore.delete(id);
     return { ok: true, value: undefined };
   },
 

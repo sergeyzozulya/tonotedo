@@ -294,6 +294,7 @@ pub fn list_trash(library_root: &Path) -> Vec<TrashManifest> {
 }
 
 /// The outcome of a restore operation.
+#[derive(Debug)]
 pub struct RestoreOutcome {
     /// The final path (relative to library_root) where the item was restored.
     /// Usually equals `manifest.original_rel_path`; differs when the target was

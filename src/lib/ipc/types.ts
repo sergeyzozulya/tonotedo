@@ -198,6 +198,31 @@ export interface CalendarWindowResult {
   items: CalendarWindowItem[];
 }
 
+// ── Trash types (spec 0002 §Lifecycle, spec 0003 §Operations) ────────────────
+
+export type TrashItemKind = "entry" | "group";
+
+/** Metadata for a single item in the trash bin. */
+export interface TrashManifest {
+  trashId: string;
+  originalRelPath: string;
+  trashedAt: string; // ISO-8601 UTC
+  kind: TrashItemKind;
+}
+
+/** Result of a trash_entry or trash_group operation. */
+export interface TrashOpResult {
+  trashId: string;
+}
+
+/** Result of a trash_restore operation. */
+export interface RestoreResult {
+  /** The final path (relative to library root) where the item was restored. */
+  path: string;
+  /** True when a -restored-N suffix was added due to a collision. */
+  hadCollision: boolean;
+}
+
 // ── Command surface (design-0004 §Command surface) ────────────────────────────
 
 export interface IpcCommands {
@@ -333,6 +358,59 @@ export interface IpcCommands {
    */
   delete_tag(name: string): Promise<Result<void>>;
   // ── Calendar facade (issue #21) ────────────────────────────────────────────
+
+  // ── Group mutation commands (phase 6 / issue #28) ─────────────────────────
+
+  /**
+   * Create a new group folder at `path` (library-relative, single level).
+   * Returns conflict if the folder already exists; not_found if the parent
+   * doesn't exist; invalid_argument if any component is a reserved name.
+   */
+  create_group(path: GroupPath): Promise<Result<void>>;
+
+  /**
+   * Rename the last component of `oldPath` to `newName` (single component).
+   * Returns conflict on sibling collision; invalid_argument on reserved name.
+   */
+  rename_group(oldPath: GroupPath, newName: string): Promise<Result<void>>;
+
+  /**
+   * Move the group at `srcPath` under `dstParent` (library-relative, or ""
+   * for root). Rejects circular moves and sibling collisions.
+   */
+  move_group(srcPath: GroupPath, dstParent: GroupPath): Promise<Result<void>>;
+
+  /**
+   * Move the entry at `path` (library-relative .md path) into `dstGroup`.
+   * Entry id is unchanged; the reconciler handles index update via rename-detection.
+   */
+  move_entry(path: string, dstGroup: GroupPath): Promise<Result<void>>;
+
+  // ── Trash commands (phase 6 / issue #28) ──────────────────────────────────
+
+  /**
+   * Move a single entry (.md file) to the library trash.
+   * Returns the trash slot id.
+   */
+  trash_entry(path: string): Promise<Result<TrashOpResult>>;
+
+  /**
+   * Move an entire group folder (and all descendants) to the library trash.
+   * Returns the trash slot id.
+   */
+  trash_group(path: GroupPath): Promise<Result<TrashOpResult>>;
+
+  /** List all trashed items, newest first. */
+  trash_list(): Promise<Result<TrashManifest[]>>;
+
+  /**
+   * Restore a trashed item to its original location.
+   * If the original path is occupied, a -restored-N suffix is added.
+   */
+  trash_restore(id: string): Promise<Result<RestoreResult>>;
+
+  /** Permanently delete a single trash slot. Idempotent on missing id. */
+  trash_purge(id: string): Promise<Result<void>>;
 
   /**
    * Return all calendar items (entries with a primary date property) whose

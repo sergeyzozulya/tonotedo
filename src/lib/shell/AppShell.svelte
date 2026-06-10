@@ -34,6 +34,7 @@
   import CreatePersonDialog from "../people/CreatePersonDialog.svelte";
   import CalendarView from "../calendar/CalendarView.svelte";
   import SettingsView from "../settings/SettingsView.svelte";
+  import TrashView from "./TrashView.svelte";
   import type { EntrySummary, PersonMeta, TagMeta } from "../ipc/types.js";
   import type { GroupNode } from "./group-tree.js";
   import type { ChangeSpec } from "../panel/frontmatter-view.js";
@@ -203,8 +204,8 @@
 
   // ── Main zone mode ────────────────────────────────────────────────────────────
 
-  /** Which main-zone content to show: editor, person view, tag browser, or settings. */
-  type MainZone = "editor" | "person" | "tags" | "settings";
+  /** Which main-zone content to show: editor, person view, tag browser, settings, or trash. */
+  type MainZone = "editor" | "person" | "tags" | "settings" | "trash";
   let mainZone = $state<MainZone>("editor");
 
   let selectedPersonSlug = $state<string | null>(null);
@@ -355,6 +356,30 @@
     if (narrow) {
       sidebarOpen = false;
       mobilePush("tags");
+    }
+  }
+
+  function onTrashOpen(): void {
+    mainZone = "trash";
+    if (narrow) {
+      sidebarOpen = false;
+      mobilePush("tags"); // reuse the tags full-screen slot for trash on mobile
+    }
+  }
+
+  async function onTrashEntry(entryId: string): Promise<void> {
+    const path = entryId.endsWith(".md") ? entryId : `${entryId}.md`;
+    const res = await ipc.trash_entry(path);
+    if (res.ok) {
+      // Deselect if the trashed entry was open.
+      if (selectedEntryId === entryId) {
+        selectedEntryId = null;
+        editorText = "";
+      }
+      loadEntries(selectedGroupPath);
+      loadGroups();
+    } else {
+      console.error("[shell] trash_entry failed:", res.error.message);
     }
   }
 
@@ -509,6 +534,9 @@
           tagsOpen={mainZone === "tags"}
           onCalendarOpen={openCalendar}
           calendarActive={calendarOpen}
+          {onTrashOpen}
+          trashOpen={mainZone === "trash"}
+          onGroupsChanged={() => { loadGroups(); loadEntries(selectedGroupPath); }}
         />
       </div>
     {/if}
@@ -591,14 +619,18 @@
         </main>
       {/if}
 
-      <!-- tags screen (full-screen on mobile) -->
+      <!-- tags / trash screen (full-screen on mobile) -->
       {#if mobileScreen === "tags"}
         <main class="editor-zone" data-focus-zone="editor">
-          <TagBrowser
-            onTagSelect={(name) => {
-              console.log("[shell] tag selected:", name);
-            }}
-          />
+          {#if mainZone === "trash"}
+            <TrashView onRestored={() => { loadGroups(); loadEntries(selectedGroupPath); }} />
+          {:else}
+            <TagBrowser
+              onTagSelect={(name) => {
+                console.log("[shell] tag selected:", name);
+              }}
+            />
+          {/if}
         </main>
       {/if}
 
@@ -649,7 +681,7 @@
         closeActionSheet();
       }}
       onTrash={(id) => {
-        console.log("[shell] trash entry:", id);
+        void onTrashEntry(id);
         closeActionSheet();
       }}
     />
@@ -757,6 +789,9 @@
         tagsOpen={mainZone === "tags"}
         onCalendarOpen={openCalendar}
         calendarActive={calendarOpen}
+        {onTrashOpen}
+        trashOpen={mainZone === "trash"}
+        onGroupsChanged={() => { loadGroups(); loadEntries(selectedGroupPath); }}
       />
 
       <!-- Entry list -->
@@ -794,6 +829,8 @@
           />
         {:else if mainZone === "settings"}
           <SettingsView onClose={() => (mainZone = "editor")} />
+        {:else if mainZone === "trash"}
+          <TrashView onRestored={() => { loadGroups(); loadEntries(selectedGroupPath); }} />
         {:else if selectedEntryId}
           <Editor
             doc={editorText}
