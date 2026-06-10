@@ -3,5 +3,6 @@
 
 pub mod frontmatter;
 pub mod fswrite;
+pub mod index;
 pub mod recurrence;
 pub mod trash;

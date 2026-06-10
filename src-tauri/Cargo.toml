@@ -27,6 +27,10 @@ jiff = "0.2"
 # requirement, so we use the raw saphyr API.
 saphyr = "0.0.6"
 
+# SQLite index: rusqlite with bundled SQLite and the FTS5 extension enabled.
+# WAL mode + single-writer design per design-0001.
+rusqlite = { version = "0.36", features = ["bundled", "bundled-full"] }
+
 # Date/time: jiff provides civil dates, zoned/offset datetimes, and good parsing
 # of ISO 8601. It has explicit-offset support (Timestamp + TimeZone::fixed) which
 # matches the spec's "stored with explicit offset" requirement, and separately
