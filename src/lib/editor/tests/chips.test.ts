@@ -348,9 +348,57 @@ describe("buildCache", () => {
     expect(cache.people.get("anna")?.displayName).toBe("Anna K.");
   });
 
+  it("maps people with optional color and avatarPath", () => {
+    const people: PersonMeta[] = [
+      {
+        slug: "anna",
+        displayName: "Anna K.",
+        count: 3,
+        color: "violet",
+        avatarPath: "_assets/anna.jpg",
+      },
+    ];
+    const cache = buildCache([], people);
+    const anna = cache.people.get("anna");
+    expect(anna?.color).toBe("violet");
+    expect(anna?.avatarPath).toBe("_assets/anna.jpg");
+  });
+
+  it("maps people without optional fields (undefined)", () => {
+    const people: PersonMeta[] = [{ slug: "bob", displayName: "Bob T.", count: 1 }];
+    const cache = buildCache([], people);
+    expect(cache.people.get("bob")?.color).toBeUndefined();
+    expect(cache.people.get("bob")?.avatarPath).toBeUndefined();
+  });
+
   it("emptyCache returns maps with no entries", () => {
     const c = emptyCache();
     expect(c.tags.size).toBe(0);
     expect(c.people.size).toBe(0);
+  });
+});
+
+// ── Tests: PersonMeta color wiring in chip widget (chip style) ────────────────
+
+describe("chip decoration — mention chip color from PersonMeta", () => {
+  // Trailing " x" keeps cursor past @anna's range.
+  const doc = "@anna x";
+
+  it("mention chip uses person's color when set (chip is emitted regardless)", () => {
+    // Color affects the DOM, not the decoration set structure. We verify that
+    // the chip is still emitted with a colored PersonMeta in the cache.
+    const people: PersonMeta[] = [
+      { slug: "anna", displayName: "Anna K.", count: 2, color: "violet" },
+    ];
+    const cache = buildCache([], people);
+    const d = chips(doc, { head: doc.length, cache });
+    expect(d.filter((x) => x.kind === "widget-replace")).toHaveLength(1);
+  });
+
+  it("mention chip falls back gracefully when color is absent", () => {
+    const people: PersonMeta[] = [{ slug: "anna", displayName: "Anna K.", count: 2 }];
+    const cache = buildCache([], people);
+    const d = chips(doc, { head: doc.length, cache });
+    expect(d.filter((x) => x.kind === "widget-replace")).toHaveLength(1);
   });
 });

@@ -24,6 +24,7 @@ pub fn run() {
             ipc::people_index,
             ipc::entries_in_group,
             ipc::backlinks,
+            ipc::entry_titles,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

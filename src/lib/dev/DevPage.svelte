@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { SvelteMap } from "svelte/reactivity";
   import { ipc } from "../ipc/index.js";
   import { Editor } from "../editor/index.js";
   import PropertiesPanel from "../panel/PropertiesPanel.svelte";
@@ -7,22 +6,8 @@
   import type { EntrySummary } from "../ipc/types.js";
   import type { ChangeSpec } from "../panel/frontmatter-view.js";
 
-  // ── Entry titles for wikilink chip resolution ───────────────────────────────
-
-  let entryTitles = new SvelteMap<string, string>();
-
-  async function loadEntryTitles(): Promise<void> {
-    // Load all known groups to build the entryId → title map for wikilinks.
-    const groups = ["work/atlas", "journal", "books", "inbox"];
-    for (const group of groups) {
-      const result = await ipc.entries_in_group(group);
-      if (result.ok) {
-        for (const e of result.value.items) {
-          entryTitles.set(e.id, e.title);
-        }
-      }
-    }
-  }
+  // Entry titles for wikilink resolution are now loaded by the chips plugin
+  // via ipc.entry_titles() — no manual loading needed here.
 
   // ── Chip event log (shows last click in the topbar) ─────────────────────────
 
@@ -157,7 +142,6 @@
       const blocksDemo = entries.find((e) => e.id === "work/atlas/blocks-demo");
       if (blocksDemo) selectEntry(blocksDemo.id);
     });
-    loadEntryTitles();
   });
 </script>
 
@@ -228,7 +212,6 @@
           {onTokenClick}
           {onNavigate}
           {onCreatePerson}
-          {entryTitles}
           entryPath={selectedId}
           {blockCallbacks}
           externalChange={panelChange}

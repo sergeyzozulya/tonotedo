@@ -468,9 +468,16 @@ fn do_upsert(
         return Vec::new();
     }
 
+    // Emit Created for brand-new paths (no prior ledger row), Modified for updates.
+    let is_new = ledger.is_none();
+    let kind = if is_new && !self_originated {
+        ChangeKind::Created
+    } else {
+        ChangeKind::Modified
+    };
     let mut events = vec![ChangeEvent {
         path: abs_path.to_path_buf(),
-        kind: ChangeKind::Modified,
+        kind,
         self_originated: self_originated || final_bytes_for_self,
     }];
 

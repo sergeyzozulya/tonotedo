@@ -127,6 +127,10 @@ export const real: Ipc = {
     return notImpl("remove_asset");
   },
 
+  async entry_titles(): Promise<Result<Record<string, string>>> {
+    return call<Record<string, string>>("entry_titles");
+  },
+
   on<E extends IpcEventName>(
     event: E,
     handler: (payload: IpcEventPayload<E>) => void,

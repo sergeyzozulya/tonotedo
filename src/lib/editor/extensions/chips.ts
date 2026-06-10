@@ -76,6 +76,8 @@ export interface ChipConfig extends ChipCallbacks {
 export interface ChipMetaCache {
   tags: Map<string, TagMeta>;
   people: Map<string, PersonMeta>;
+  /** Pre-resolved avatar URLs keyed by person slug. Populated async by the plugin. */
+  avatarUrls?: Map<string, string>;
 }
 
 export function emptyCache(): ChipMetaCache {
@@ -193,10 +195,8 @@ class MentionChipWidget extends WidgetType {
   }
 
   toDOM(): HTMLElement {
-    // PersonMeta only carries slug/displayName/count in the current IPC type.
-    // Color support can be added when the backend exposes it; for now use
-    // the default mention blue chip color.
-    const color = "blue";
+    // Use the person's color token when available, otherwise fall back to blue.
+    const color = this.meta?.color ?? "blue";
     const { fg, bg } = chipStyle(color);
 
     const el = document.createElement("span");
@@ -371,13 +371,13 @@ export function computeChipDecorations(
           // Literal is `@slug`.
           const slug = literal.startsWith("@") ? literal.slice(1) : literal;
           const meta = cache.people.get(slug);
-          // Avatar support: PersonMeta does not currently carry avatarPath; we
-          // pass undefined here and the widget falls back to the initial circle.
-          // When the backend adds `avatarPath` to PersonMeta, wire it here.
+          // avatarSrc is pre-resolved from PersonMeta.avatarPath by the plugin;
+          // see ChipsPlugin.resolveAvatarUrls().
+          const avatarSrc = cache.avatarUrls?.get(slug);
           const widget = new MentionChipWidget(
             slug,
             meta,
-            undefined, // avatarSrc — not yet in PersonMeta
+            avatarSrc,
             callbacks.onTokenClick
               ? (s: string) => callbacks.onTokenClick!("mention", s)
               : undefined,
@@ -449,13 +449,27 @@ class ChipsPlugin {
     const cfg = this.getConfig();
     if (!cfg?.ipc) return;
     try {
-      const [tagResult, peopleResult] = await Promise.all([
+      const [tagResult, peopleResult, titlesResult] = await Promise.all([
         cfg.ipc.tag_index(),
         cfg.ipc.people_index(),
+        cfg.ipc.entry_titles(),
       ]);
       const tags = tagResult.ok ? tagResult.value : [];
       const people = peopleResult.ok ? peopleResult.value : [];
-      this.cache = buildCache(tags, people);
+      const newCache = buildCache(tags, people);
+
+      // Resolve avatar URLs for people that have an avatarPath (async, best-effort).
+      const avatarUrls = await this.resolveAvatarUrls(cfg, people);
+      newCache.avatarUrls = avatarUrls;
+      this.cache = newCache;
+
+      // Merge IPC-loaded titles with any caller-supplied entryTitles override.
+      if (titlesResult.ok) {
+        const callerOverride = cfg.entryTitles ?? new Map<string, string>();
+        const merged = new Map<string, string>(Object.entries(titlesResult.value));
+        for (const [k, v] of callerOverride) merged.set(k, v);
+        this.entryTitles = merged;
+      }
     } catch {
       // On failure keep the previous cache — never block rendering.
     }
@@ -467,6 +481,28 @@ class ChipsPlugin {
         this.rebuild(this.view);
       },
     });
+  }
+
+  /** Resolve avatarPath → object URL for each person that declares one. */
+  private async resolveAvatarUrls(
+    cfg: ChipConfig,
+    people: PersonMeta[],
+  ): Promise<Map<string, string>> {
+    const urls = new Map<string, string>();
+    if (!cfg.ipc) return urls;
+    await Promise.all(
+      people
+        .filter((p) => p.avatarPath)
+        .map(async (p) => {
+          try {
+            const res = await cfg.ipc.asset_url(p.avatarPath!);
+            if (res.ok) urls.set(p.slug, res.value);
+          } catch {
+            // Broken avatar → keep initial fallback; do nothing.
+          }
+        }),
+    );
+    return urls;
   }
 
   private subscribeToChanges(): void {
@@ -488,6 +524,13 @@ class ChipsPlugin {
   }
 
   update(update: ViewUpdate): void {
+    // Re-merge caller-supplied entryTitles override when the facet value changes.
+    if (update.startState.facet(chipConfig) !== update.state.facet(chipConfig)) {
+      const callerOverride = this.getConfig().entryTitles;
+      if (callerOverride) {
+        for (const [k, v] of callerOverride) this.entryTitles.set(k, v);
+      }
+    }
     if (update.docChanged || update.selectionSet || update.viewportChanged) {
       this.rebuild(update.view);
     }

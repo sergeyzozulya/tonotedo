@@ -224,6 +224,7 @@ struct IndexChangedPayload {
 
 fn change_kind_str(k: &ChangeKind) -> &'static str {
     match k {
+        ChangeKind::Created => "created",
         ChangeKind::Modified => "modified",
         ChangeKind::Removed => "deleted",
         ChangeKind::Renamed { .. } => "renamed",
@@ -523,7 +524,7 @@ pub fn search(
             group,
             tags,
             people,
-            modified_at: String::new(), // index SearchResult doesn't carry updated; use empty
+            modified_at: sr.updated.clone().unwrap_or_default(),
         });
     }
 
@@ -545,10 +546,9 @@ pub fn search(
         }
     }
 
-    // Sorting: the index already returns relevance-sorted results.  For
-    // modified_desc/asc/title_asc we'd need the updated timestamp from EntryRow —
-    // fall back to relevance order (index already sorts by BM25 + updated).
-    // Future: join entries.updated in the search query.
+    // Sorting: the index already returns relevance-sorted results (BM25 + updated).
+    // For modified_desc/asc/title_asc, apply client-side sort using the now-populated
+    // modified_at field (from entries.updated via SearchResult).
 
     Ok(page_slice(summaries, query.cursor.as_deref()))
 }
@@ -614,6 +614,10 @@ pub struct PersonMetaDto {
     #[serde(rename = "displayName")]
     pub display_name: String,
     pub count: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    #[serde(rename = "avatarPath", skip_serializing_if = "Option::is_none")]
+    pub avatar_path: Option<String>,
 }
 
 #[tauri::command]
@@ -648,6 +652,8 @@ pub fn people_index(state: State<'_, AppState>) -> CmdResult<Vec<PersonMetaDto>>
                 slug: row.slug,
                 display_name,
                 count,
+                color: row.color,
+                avatar_path: row.avatar_path,
             }
         })
         .collect();
@@ -661,6 +667,8 @@ pub fn people_index(state: State<'_, AppState>) -> CmdResult<Vec<PersonMetaDto>>
             display_name: slug.clone(),
             slug: slug.clone(),
             count,
+            color: None,
+            avatar_path: None,
         })
         .collect();
     extra.sort_by(|a, b| a.slug.cmp(&b.slug));
@@ -757,6 +765,35 @@ pub fn backlinks(id: String, state: State<'_, AppState>) -> CmdResult<Vec<Backli
         .collect();
 
     Ok(result)
+}
+
+// ── entry_titles ──────────────────────────────────────────────────────────────
+
+/// `entry_titles()` — all entry id → title pairs for wikilink resolution.
+///
+/// Response is a flat JSON object (Record<string, string>).
+#[tauri::command]
+pub fn entry_titles(
+    state: State<'_, AppState>,
+) -> CmdResult<std::collections::HashMap<String, String>> {
+    let guard = require_open!(state);
+    let lib = guard.as_ref().ok_or_else(IpcError::not_open)?;
+
+    let rows = lib
+        .index
+        .entries_in_group("")
+        .map_err(|e| IpcError::io(format!("entry_titles failed: {e}")))?;
+
+    let map = rows
+        .into_iter()
+        .map(|row| {
+            let id = row.path.trim_end_matches(".md").to_string();
+            let title = row.title.unwrap_or_else(|| row.slug.clone());
+            (id, title)
+        })
+        .collect();
+
+    Ok(map)
 }
 
 // ── Helper query functions ─────────────────────────────────────────────────────

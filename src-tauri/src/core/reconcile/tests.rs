@@ -55,7 +55,12 @@ fn create_file_indexes_entry() {
 
     let events = rec.reconcile_path(std::path::Path::new("note.md"));
     assert_eq!(events.len(), 1, "create should emit one event");
-    assert!(matches!(events[0].kind, ChangeKind::Modified));
+    // A brand-new path (not yet in the ledger) must emit Created, not Modified.
+    assert!(
+        matches!(events[0].kind, ChangeKind::Created),
+        "new path should emit Created, got {:?}",
+        events[0].kind
+    );
 
     let entries = rec.index().entries_in_group("").unwrap();
     assert_eq!(entries.len(), 1);
@@ -501,6 +506,31 @@ fn watcher_smoke_test() {
 
     drop(event_rx);
     // Watcher dropped with the handle.
+}
+
+// ── item 2: ChangeKind::Created for new-to-ledger paths ──────────────────────
+
+#[test]
+fn second_reconcile_of_same_file_emits_modified_not_created() {
+    // A create (new ledger row) emits Created; a subsequent modify emits Modified.
+    let (dir, mut rec) = setup();
+    write_file(&dir, "note.md", &entry_bytes("id-sc", "# First\n"));
+    let events1 = rec.reconcile_path(std::path::Path::new("note.md"));
+    assert_eq!(events1.len(), 1);
+    assert!(
+        matches!(events1[0].kind, ChangeKind::Created),
+        "first reconcile must emit Created"
+    );
+
+    // Change the file and reconcile again — must be Modified.
+    write_file(&dir, "note.md", &entry_bytes("id-sc", "# First\nExtra.\n"));
+    let events2 = rec.reconcile_path(std::path::Path::new("note.md"));
+    assert_eq!(events2.len(), 1, "second reconcile should emit one event");
+    assert!(
+        matches!(events2[0].kind, ChangeKind::Modified),
+        "subsequent reconcile must emit Modified, got {:?}",
+        events2[0].kind
+    );
 }
 
 // ── Group path helper tests ───────────────────────────────────────────────────

@@ -190,7 +190,7 @@ impl Fixture {
                     group,
                     tags,
                     people,
-                    modified_at: String::new(),
+                    modified_at: sr.updated.clone().unwrap_or_default(),
                 }
             })
             .collect();
@@ -253,6 +253,8 @@ impl Fixture {
                     slug: row.slug,
                     display_name,
                     count,
+                    color: row.color,
+                    avatar_path: row.avatar_path,
                 }
             })
             .collect();
@@ -263,6 +265,8 @@ impl Fixture {
                 display_name: slug.clone(),
                 slug: slug.clone(),
                 count,
+                color: None,
+                avatar_path: None,
             })
             .collect();
         extra.sort_by(|a, b| a.slug.cmp(&b.slug));
@@ -562,4 +566,119 @@ fn library_close_clears_state() {
     let result = fix.read_entry("anything");
     assert!(result.is_err());
     assert_eq!(result.unwrap_err().code, "invalid_argument");
+}
+
+// ── item 1: people_index carries color + avatar_path ─────────────────────────
+
+#[test]
+fn people_index_includes_color_and_avatar_path() {
+    let fix = Fixture::new();
+    // Write a _people.md projection with color and avatar_path declared.
+    let content = b"---\npeople:\n  - slug: alice\n    full_name: Alice A.\n    color: violet\n    avatar_path: _assets/alice.jpg\n---\n";
+    std::fs::write(fix.root.join("_people.md"), content).unwrap();
+    {
+        let mut guard = fix.state.0.lock().unwrap();
+        if let Some(lib) = guard.as_mut() {
+            use crate::core::index::PeopleRow;
+            lib.index
+                .set_people(&[PeopleRow {
+                    slug: "alice".to_string(),
+                    full_name: Some("Alice A.".to_string()),
+                    color: Some("violet".to_string()),
+                    avatar_path: Some("_assets/alice.jpg".to_string()),
+                }])
+                .unwrap();
+        }
+    }
+    let people = fix.people_index_inner().expect("people_index");
+    let alice = people.iter().find(|p| p.slug == "alice").expect("alice");
+    assert_eq!(alice.color.as_deref(), Some("violet"));
+    assert_eq!(alice.avatar_path.as_deref(), Some("_assets/alice.jpg"));
+}
+
+// ── item 3: search modifiedAt is non-empty ────────────────────────────────────
+
+#[test]
+fn search_result_has_modified_at_when_updated_set() {
+    let fix = Fixture::new();
+    // Include an `updated:` frontmatter field so entries.updated is populated.
+    fix.write_md(
+        "notes/dated.md",
+        "---\nid: dated\nupdated: \"2026-06-10T00:00:00Z\"\n---\n# Dated Note\n\nuniqkeyxqz\n",
+    );
+    let page = fix.search_inner("uniqkeyxqz").expect("search");
+    assert!(!page.items.is_empty(), "search should find the entry");
+    let dated = page.items.iter().find(|s| s.id == "notes/dated");
+    assert!(dated.is_some(), "notes/dated should be in results");
+    // modifiedAt populated from entries.updated via the join.
+    assert_eq!(
+        dated.unwrap().modified_at,
+        "2026-06-10T00:00:00Z",
+        "modifiedAt should reflect the frontmatter updated field"
+    );
+}
+
+#[test]
+fn search_result_modified_at_empty_when_no_updated_field() {
+    let fix = Fixture::new();
+    // No `updated:` field — entries.updated is NULL → modifiedAt = "".
+    fix.write_md(
+        "notes/plain.md",
+        "---\nid: plain\n---\n# Plain Note\n\nuniqplainxqz\n",
+    );
+    let page = fix.search_inner("uniqplainxqz").expect("search");
+    assert!(!page.items.is_empty(), "search should find the entry");
+    // modifiedAt is empty because entries.updated is NULL (no frontmatter field).
+    let plain = page.items.iter().find(|s| s.id == "notes/plain");
+    assert!(plain.is_some());
+    // This is the expected current behaviour — null maps to empty string.
+    assert_eq!(plain.unwrap().modified_at, "");
+}
+
+// ── item 4: entry_titles returns id → title map ────────────────────────────────
+
+fn entry_titles_inner(
+    fix: &Fixture,
+) -> Result<std::collections::HashMap<String, String>, super::IpcError> {
+    let guard = fix.state.0.lock().unwrap();
+    let lib = guard.as_ref().ok_or_else(super::IpcError::not_open)?;
+    let rows = lib
+        .index
+        .entries_in_group("")
+        .map_err(|e| super::IpcError::io(format!("entry_titles: {e}")))?;
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            let id = row.path.trim_end_matches(".md").to_string();
+            let title = row.title.unwrap_or_else(|| row.slug.clone());
+            (id, title)
+        })
+        .collect())
+}
+
+#[test]
+fn entry_titles_returns_id_to_title_map() {
+    let fix = Fixture::new();
+    fix.write_md(
+        "notes/hello.md",
+        "---\nid: hello\n---\n# Hello World\n\nBody.\n",
+    );
+    fix.write_md(
+        "notes/world.md",
+        "---\nid: world\n---\n# World Note\n\nBody.\n",
+    );
+
+    let titles = entry_titles_inner(&fix).expect("entry_titles");
+    assert!(
+        titles.contains_key("notes/hello"),
+        "notes/hello must be in entry_titles"
+    );
+    assert_eq!(
+        titles.get("notes/hello").map(String::as_str),
+        Some("Hello World")
+    );
+    assert!(
+        titles.contains_key("notes/world"),
+        "notes/world must be in entry_titles"
+    );
 }

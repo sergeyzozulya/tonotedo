@@ -477,6 +477,17 @@ const PEOPLE_NAMES: Record<string, string> = {
   sergey: "Sergey Z.",
 };
 
+const PEOPLE_COLORS: Record<string, ChipColor> = {
+  anna: "violet",
+  bob: "teal",
+  carol: "pink",
+};
+
+// anna has a mock avatar stored in the asset store (added below).
+const PEOPLE_AVATAR_PATHS: Record<string, string> = {
+  anna: "work/atlas/_assets/blueprint-cover.png",
+};
+
 function buildPeopleIndex(): PersonMeta[] {
   const counts = new Map<string, number>();
   for (const e of ENTRIES) {
@@ -486,11 +497,16 @@ function buildPeopleIndex(): PersonMeta[] {
   }
   return Array.from(counts.entries())
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([slug, count]) => ({
-      slug,
-      displayName: PEOPLE_NAMES[slug] ?? slug,
-      count,
-    }));
+    .map(([slug, count]) => {
+      const meta: PersonMeta = {
+        slug,
+        displayName: PEOPLE_NAMES[slug] ?? slug,
+        count,
+      };
+      if (PEOPLE_COLORS[slug]) meta.color = PEOPLE_COLORS[slug];
+      if (PEOPLE_AVATAR_PATHS[slug]) meta.avatarPath = PEOPLE_AVATAR_PATHS[slug];
+      return meta;
+    });
 }
 
 // ── Backlinks ─────────────────────────────────────────────────────────────────
@@ -807,6 +823,14 @@ export const mock: Ipc = {
     assetStore.delete(assetPath);
     console.log(`[mock ipc] remove_asset → ${assetPath}`);
     return { ok: true, value: undefined };
+  },
+
+  async entry_titles(): Promise<Result<Record<EntryId, string>>> {
+    const map: Record<string, string> = {};
+    for (const e of store.values()) {
+      map[e.id] = e.title;
+    }
+    return { ok: true, value: map };
   },
 
   on<E extends IpcEventName>(

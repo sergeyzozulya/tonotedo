@@ -243,3 +243,126 @@ describe("mock IPC command surface", () => {
     }
   });
 });
+
+// ── Item 1: PersonMeta color + avatarPath ─────────────────────────────────────
+
+describe("PersonMeta color + avatarPath (issue #31 item 1)", () => {
+  it("people_index returns PersonMeta with color for declared people", async () => {
+    const { mock } = await import("../lib/ipc/mock.js");
+    const result = await mock.people_index();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // anna has color: violet in PEOPLE_COLORS
+    const anna = result.value.find((p) => p.slug === "anna");
+    expect(anna).toBeDefined();
+    expect(anna?.color).toBe("violet");
+  });
+
+  it("people_index returns PersonMeta with avatarPath for anna", async () => {
+    const { mock } = await import("../lib/ipc/mock.js");
+    const result = await mock.people_index();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const anna = result.value.find((p) => p.slug === "anna");
+    expect(anna?.avatarPath).toMatch(/blueprint-cover\.png$/);
+  });
+
+  it("people_index returns PersonMeta without color for undeclared people", async () => {
+    const { mock } = await import("../lib/ipc/mock.js");
+    const result = await mock.people_index();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // sergey has no color entry
+    const sergey = result.value.find((p) => p.slug === "sergey");
+    expect(sergey).toBeDefined();
+    expect(sergey?.color).toBeUndefined();
+  });
+
+  it("anna's avatarPath references a mock asset that exists", async () => {
+    const { mock } = await import("../lib/ipc/mock.js");
+    const peopleResult = await mock.people_index();
+    expect(peopleResult.ok).toBe(true);
+    if (!peopleResult.ok) return;
+    const anna = peopleResult.value.find((p) => p.slug === "anna");
+    expect(anna?.avatarPath).toBeDefined();
+    const existsResult = await mock.asset_exists(anna!.avatarPath!);
+    expect(existsResult.ok).toBe(true);
+    if (existsResult.ok) expect(existsResult.value).toBe(true);
+  });
+});
+
+// ── Item 3: search modifiedAt via entries.updated ─────────────────────────────
+
+describe("search EntrySummary.modifiedAt (issue #31 item 3)", () => {
+  it("mock search returns non-empty modifiedAt on matching entries", async () => {
+    const { mock } = await import("../lib/ipc/mock.js");
+    const result = await mock.search({ text: "atlas" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    for (const item of result.value.items) {
+      expect(typeof item.modifiedAt).toBe("string");
+      expect(item.modifiedAt.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("mock search returns ISO-8601 modifiedAt", async () => {
+    const { mock } = await import("../lib/ipc/mock.js");
+    const result = await mock.search({ text: "" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.items.length).toBeGreaterThan(0);
+    for (const item of result.value.items) {
+      // ISO-8601 date strings contain 'T' separator
+      expect(item.modifiedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    }
+  });
+});
+
+// ── Item 4: entry_titles facade ───────────────────────────────────────────────
+
+describe("entry_titles facade (issue #31 item 4)", () => {
+  it("returns a non-empty record of id → title", async () => {
+    const { mock } = await import("../lib/ipc/mock.js");
+    const result = await mock.entry_titles();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const titles = result.value;
+    expect(Object.keys(titles).length).toBeGreaterThan(0);
+  });
+
+  it("contains the known entry ids", async () => {
+    const { mock } = await import("../lib/ipc/mock.js");
+    const result = await mock.entry_titles();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value["work/atlas/project-overview"]).toBe("Project Atlas — Overview");
+    expect(result.value["books/deep-work"]).toBe("Deep Work — Cal Newport");
+  });
+
+  it("all values are non-empty strings", async () => {
+    const { mock } = await import("../lib/ipc/mock.js");
+    const result = await mock.entry_titles();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    for (const [id, title] of Object.entries(result.value)) {
+      expect(typeof id).toBe("string");
+      expect(title.length).toBeGreaterThan(0);
+    }
+  });
+});
+
+// ── Item 2: IndexChangedKind 'created' ────────────────────────────────────────
+
+describe("IndexChangedKind 'created' in types (issue #31 item 2)", () => {
+  it("mock write_entry emits 'modified' (not 'created') for index_changed event", async () => {
+    const { mock } = await import("../lib/ipc/mock.js");
+    const events: unknown[] = [];
+    const unsub = mock.on("index_changed", (e) => events.push(e));
+    await mock.write_entry("work/atlas/tech-decisions", "# Updated\n", "tok");
+    unsub();
+    expect(events.length).toBeGreaterThan(0);
+    // write_entry emits modified (existing entry)
+    const ev = events[0] as { kinds: string[] };
+    expect(ev.kinds).toContain("modified");
+  });
+});
