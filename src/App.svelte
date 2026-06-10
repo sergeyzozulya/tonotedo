@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { onMount } from "svelte";
+  import Spike from "./Spike.svelte";
 
   let coreVersion = $state<string | null>(null);
 
@@ -14,6 +15,7 @@
   {#if coreVersion !== null}
     <p>Core version: {coreVersion}</p>
   {/if}
+  <Spike />
 </main>
 
 <style>
