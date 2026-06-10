@@ -11,6 +11,7 @@
   //   - Active entry: left-border 3px accent + accent-soft background.
 
   import type { EntrySummary } from "../ipc/types.js";
+  import { startLongPress } from "./mobile-gestures.js";
 
   interface Props {
     /** Display name of the selected group (shown in the header). */
@@ -25,9 +26,12 @@
     error: string | null;
     /** Called when the user selects an entry. */
     onEntrySelect: (id: string) => void;
+    /** Called when the user long-presses an entry row (touch). */
+    onLongPress?: (id: string, title: string) => void;
   }
 
-  let { groupName, entries, selectedId, loading, error, onEntrySelect }: Props = $props();
+  let { groupName, entries, selectedId, loading, error, onEntrySelect, onLongPress }: Props =
+    $props();
 
   // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -49,6 +53,20 @@
     } catch {
       return iso.slice(0, 10);
     }
+  }
+
+  // Long-press handling for touch (spec 0013).
+  function handlePointerDown(e: PointerEvent, entry: EntrySummary): void {
+    if (!onLongPress || e.pointerType !== "touch") return;
+    const handle = startLongPress(() => onLongPress!(entry.id, entry.title || entry.id));
+    const el = e.currentTarget as HTMLElement;
+    const up = () => {
+      handle.cancel();
+      el.removeEventListener("pointerup", up);
+      el.removeEventListener("pointercancel", up);
+    };
+    el.addEventListener("pointerup", up);
+    el.addEventListener("pointercancel", up);
   }
 
   /** Trim to max 120 chars, at a word boundary. */
@@ -104,6 +122,7 @@
             tabindex="0"
             onclick={() => onEntrySelect(entry.id)}
             onkeydown={(e) => (e.key === "Enter" || e.key === " ") && onEntrySelect(entry.id)}
+            onpointerdown={(e) => handlePointerDown(e, entry)}
           >
             {#if selected}
               <span class="entry-item-accent-bar" aria-hidden="true"></span>
