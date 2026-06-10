@@ -21,6 +21,16 @@ const SURFACE_TOKENS = [
   "shadow",
 ] as const;
 
+// Editor color tokens (phase-3-dev-harness: derived from surface tokens).
+const EDITOR_COLOR_TOKENS = [
+  "editorHeading",
+  "editorCodeBg",
+  "editorCursor",
+  "editorSyntax",
+  "editorFrontmatterFoldFg",
+  "editorFrontmatterFoldBg",
+] as const;
+
 const MODES = ["light", "dark"] as const;
 
 /**
@@ -125,5 +135,33 @@ describe("THEME-MAP", () => {
   it("theme keys match expected design names", () => {
     const keys = themeMap.themes.map((t) => t.key);
     expect(keys).toEqual(expect.arrayContaining(["paper", "fog", "mono", "editorial", "soft"]));
+  });
+
+  it("every theme defines all derived editor color tokens in both modes", () => {
+    for (const theme of themeMap.themes) {
+      for (const mode of MODES) {
+        const bag = theme.tokens[mode] as Record<string, unknown>;
+        for (const token of EDITOR_COLOR_TOKENS) {
+          expect(
+            bag[token],
+            `${theme.key}/${mode} missing derived editor token "${token}"`,
+          ).toBeDefined();
+        }
+      }
+    }
+  });
+
+  it("all derived editor color token values are valid CSS colors", () => {
+    for (const theme of themeMap.themes) {
+      for (const mode of MODES) {
+        const bag = theme.tokens[mode] as unknown as Record<string, string>;
+        for (const token of EDITOR_COLOR_TOKENS) {
+          expect(
+            isValidCSSColor(bag[token]),
+            `${theme.key}/${mode} editor "${token}"="${bag[token]}" is not a valid CSS color`,
+          ).toBe(true);
+        }
+      }
+    }
   });
 });
