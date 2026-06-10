@@ -15,7 +15,7 @@ import {
   isAllDay,
 } from "./date-math.js";
 import type { CalDate, CalItem, CalValue } from "./types.js";
-import { PRIMARY_DATE_PROP } from "./types.js";
+import { primaryDateProp } from "./types.js";
 
 // ── Frontmatter parser (lightweight, for placement layer) ─────────────────────
 
@@ -96,7 +96,7 @@ export function buildCalItems(
   windowStart: CalDate,
   windowEnd: CalDate,
 ): CalItem[] {
-  const rawDue = extractProp(docText, PRIMARY_DATE_PROP);
+  const rawDue = extractProp(docText, primaryDateProp());
   if (!rawDue) return [];
 
   const value = parseCalValue(rawDue);

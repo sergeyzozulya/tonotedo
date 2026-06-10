@@ -4,9 +4,13 @@
 // Stubs are marked with a comment. The registry grows with features.
 //
 // Call seedCommands() once at app startup (before mounting the shell).
+// Call seedThemeCommands(themeStore) from AppShell/settings init to wire
+// view.theme-* and view.mode-* handlers through themeStore, fixing the gap
+// where direct DOM setAttribute bypassed the store (issue #23).
 
 import { registry, type Command } from "./registry.js";
 import { setZone } from "./zones.js";
+import type { themeStore as ThemeStoreType } from "../shell/theme-store.js";
 
 // ── palette / app ──────────────────────────────────────────────────────────────
 
@@ -183,6 +187,8 @@ const COMMANDS: Command[] = [
     when: "",
     handler: noop, // wired by Cheatsheet.svelte
   },
+  // Theme commands — handlers are stubs here; seedThemeCommands() re-registers
+  // them through themeStore so command + UI stay in sync (issue #23 theme sync fix).
   {
     id: "view.theme-paper",
     name: "Theme: Paper",
@@ -190,9 +196,7 @@ const COMMANDS: Command[] = [
     category: "View",
     defaultBindings: [],
     when: "",
-    handler: () => {
-      document.documentElement.setAttribute("data-tnd-theme", "paper");
-    },
+    handler: noop,
   },
   {
     id: "view.theme-fog",
@@ -201,9 +205,7 @@ const COMMANDS: Command[] = [
     category: "View",
     defaultBindings: [],
     when: "",
-    handler: () => {
-      document.documentElement.setAttribute("data-tnd-theme", "fog");
-    },
+    handler: noop,
   },
   {
     id: "view.theme-mono",
@@ -212,9 +214,7 @@ const COMMANDS: Command[] = [
     category: "View",
     defaultBindings: [],
     when: "",
-    handler: () => {
-      document.documentElement.setAttribute("data-tnd-theme", "mono");
-    },
+    handler: noop,
   },
   {
     id: "view.theme-editorial",
@@ -223,9 +223,7 @@ const COMMANDS: Command[] = [
     category: "View",
     defaultBindings: [],
     when: "",
-    handler: () => {
-      document.documentElement.setAttribute("data-tnd-theme", "editorial");
-    },
+    handler: noop,
   },
   {
     id: "view.theme-soft",
@@ -234,9 +232,7 @@ const COMMANDS: Command[] = [
     category: "View",
     defaultBindings: [],
     when: "",
-    handler: () => {
-      document.documentElement.setAttribute("data-tnd-theme", "soft");
-    },
+    handler: noop,
   },
   {
     id: "view.mode-light",
@@ -245,9 +241,7 @@ const COMMANDS: Command[] = [
     category: "View",
     defaultBindings: [],
     when: "",
-    handler: () => {
-      document.documentElement.setAttribute("data-tnd-mode", "light");
-    },
+    handler: noop,
   },
   {
     id: "view.mode-dark",
@@ -256,9 +250,16 @@ const COMMANDS: Command[] = [
     category: "View",
     defaultBindings: [],
     when: "",
-    handler: () => {
-      document.documentElement.setAttribute("data-tnd-mode", "dark");
-    },
+    handler: noop,
+  },
+  {
+    id: "view.mode-system",
+    name: "Mode: System",
+    description: "Follow the OS appearance preference",
+    category: "View",
+    defaultBindings: [],
+    when: "",
+    handler: noop,
   },
 
   // ── Navigation / Focus ─────────────────────────────────────────────────────
@@ -314,5 +315,41 @@ const COMMANDS: Command[] = [
 export function seedCommands(): void {
   for (const cmd of COMMANDS) {
     registry.register(cmd);
+  }
+}
+
+/**
+ * Wire theme/mode command handlers through themeStore so that invoking a
+ * view.theme-* or view.mode-* command from the palette (or a keybinding) updates
+ * the store — keeping command + UI in sync (issue #23 fix).
+ *
+ * Call once after themeStore is initialised (in AppShell $effect or settings init).
+ * Safe to call multiple times; re-registers the same commands.
+ */
+export function seedThemeCommands(store: typeof ThemeStoreType): void {
+  const themeIds: Array<[string, string]> = [
+    ["view.theme-paper", "paper"],
+    ["view.theme-fog", "fog"],
+    ["view.theme-mono", "mono"],
+    ["view.theme-editorial", "editorial"],
+    ["view.theme-soft", "soft"],
+  ];
+  for (const [id, key] of themeIds) {
+    const existing = registry.get(id);
+    if (existing) {
+      registry.register({ ...existing, handler: () => store.setTheme(key) });
+    }
+  }
+
+  const modeIds: Array<[string, "light" | "dark" | "system"]> = [
+    ["view.mode-light", "light"],
+    ["view.mode-dark", "dark"],
+    ["view.mode-system", "system"],
+  ];
+  for (const [id, mode] of modeIds) {
+    const existing = registry.get(id);
+    if (existing) {
+      registry.register({ ...existing, handler: () => store.setMode(mode) });
+    }
   }
 }
