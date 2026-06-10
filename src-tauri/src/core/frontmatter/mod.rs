@@ -1,0 +1,25 @@
+// Frontmatter parser and entry file model — spec docs/spec/0002-entries.md, issue #4.
+//
+// Public API surface:
+//   - `Entry`          — parsed .md file (properties + body)
+//   - `Value`          — typed property value
+//   - `generate_id`    — ULID ID generation
+//   - `is_reserved`    — reserved-name predicate
+//   - `is_openable_reserved`
+
+mod entry;
+mod id;
+mod parse;
+mod reserved;
+mod serialize;
+mod value;
+
+pub use entry::Entry;
+pub use id::generate_id;
+pub use reserved::{is_openable_reserved, is_reserved};
+pub use serialize::{serialize_frontmatter, BUILTIN_ORDER};
+pub use value::{DatetimeValue, RangeEndpoint, RangeValue, Value};
+
+// Re-export parse utilities used by the reconciler (design-0001).
+pub use parse::{infer_value, parse_date, parse_datetime, parse_range};
+pub use serialize::{format_date, format_datetime, format_range};
