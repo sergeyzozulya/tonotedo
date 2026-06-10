@@ -38,6 +38,15 @@ saphyr = "0.0.6"
 # ulid crate is the de-facto standard Rust implementation.
 ulid = "1"
 
+# Content hashing for the atomic write path and reconciler (issue #7, design-0001).
+# xxhash-rust provides xxh3-128 in pure Rust (no C build step → easier iOS/Android
+# cross-compilation).  The `xxh3` feature flag enables the 128-bit variant used by
+# content_hash().  See src/core/fswrite/hash.rs for the algorithm-choice rationale.
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+
+# tempfile is used in tests for temp-directory creation.
+tempfile = "3"
+
 [profile.release]
 codegen-units = 1
 lto = true
