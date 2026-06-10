@@ -29,6 +29,7 @@ import type {
   IpcEventPayload,
   IpcUnsubscribe,
   IpcError,
+  CalendarWindowResult,
 } from "./types.js";
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
@@ -173,6 +174,12 @@ export const real: Ipc = {
 
   delete_tag(): Promise<Result<void>> {
     return notImpl("delete_tag");
+  },
+
+  // ── Calendar facade (issue #21) — Rust stub; full impl in #23 ─────────────
+
+  calendar_window(): Promise<Result<CalendarWindowResult>> {
+    return notImpl("calendar_window");
   },
 
   on<E extends IpcEventName>(

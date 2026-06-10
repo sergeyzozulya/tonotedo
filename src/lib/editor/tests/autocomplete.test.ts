@@ -108,6 +108,7 @@ function stubIpc(overrides?: {
     rename_tag: vi.fn() as never,
     merge_tag: vi.fn() as never,
     delete_tag: vi.fn() as never,
+    calendar_window: vi.fn() as never,
     on: vi.fn(() => () => {}),
   };
 }

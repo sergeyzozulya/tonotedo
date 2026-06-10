@@ -29,6 +29,7 @@
   import PersonView from "../people/PersonView.svelte";
   import TagBrowser from "../tags/TagBrowser.svelte";
   import CreatePersonDialog from "../people/CreatePersonDialog.svelte";
+  import CalendarView from "../calendar/CalendarView.svelte";
   import type { EntrySummary, PersonMeta } from "../ipc/types.js";
   import type { GroupNode } from "./group-tree.js";
   import type { ChangeSpec } from "../panel/frontmatter-view.js";
@@ -144,7 +145,9 @@
 
   function onGroupSelect(path: string | null): void {
     selectedGroupPath = path;
-    mainZone = "editor";
+    // Calendar stays open across group changes (the group filter passes through);
+    // any other non-editor view returns to the editor.
+    if (!calendarOpen) mainZone = "editor";
     loadEntries(path);
     if (narrow) {
       sidebarOpen = false;
@@ -310,6 +313,30 @@
     }
   });
 
+  // ── Calendar zone ─────────────────────────────────────────────────────────────
+
+  let calendarOpen = $state(false);
+
+  function openCalendar(): void {
+    calendarOpen = true;
+    mainZone = "editor";
+    if (narrow) mobileScreen = "editor"; // reuse editor screen slot on mobile
+  }
+
+  function onCalendarSelectEntry(entryId: string): void {
+    // Open the selected entry's properties side panel.
+    selectEntry(entryId);
+    if (calendarOpen) propertiesVisible = true;
+  }
+
+  function onCalendarApplyEdit(entryId: string, change: ChangeSpec): void {
+    // Reflect a calendar drag-to-reschedule into the editor buffer if the entry
+    // is currently open.
+    if (selectedEntryId === entryId) {
+      onPanelEdit(change);
+    }
+  }
+
   // ── Initial load ──────────────────────────────────────────────────────────────
 
   $effect(() => {
@@ -410,6 +437,8 @@
       {onPersonSelect}
       {onTagsOpen}
       tagsOpen={mainZone === "tags"}
+      onCalendarOpen={openCalendar}
+      calendarActive={calendarOpen}
     />
 
     <!-- Entry list (hidden on mobile when in editor screen) -->
@@ -427,7 +456,13 @@
     <!-- Editor / Person / Tags zone (hidden on mobile when in list screen) -->
     {#if !narrow || mobileScreen === "editor"}
       <main class="editor-zone" data-focus-zone="editor">
-        {#if mainZone === "person" && selectedPersonMeta}
+        {#if calendarOpen && mainZone === "editor"}
+          <CalendarView
+            group={selectedGroupPath}
+            onSelectEntry={onCalendarSelectEntry}
+            onApplyEdit={onCalendarApplyEdit}
+          />
+        {:else if mainZone === "person" && selectedPersonMeta}
           <PersonView
             person={selectedPersonMeta}
             onEntrySelect={(id) => {
