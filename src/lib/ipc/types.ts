@@ -223,6 +223,61 @@ export interface RestoreResult {
   hadCollision: boolean;
 }
 
+// ── Plugins (issue #25, spec 0010, design-0002) ───────────────────────────────
+
+/** Lifecycle status surfaced to the plugin manager (#26). */
+export type PluginStatus = "active" | "permissions-pending" | "failed" | "suspended";
+
+/** Typed setting field kinds (0010 §"Settings"). */
+export type PluginSettingType = "string" | "boolean" | "number" | "enum" | "secret";
+
+/** A single declared settings field. */
+export interface PluginSettingField {
+  key: string;
+  type: PluginSettingType;
+  label: string;
+  description?: string;
+  default?: string;
+  /** Allowed values for `enum` fields. */
+  options?: string[];
+}
+
+/** A palette command a plugin registered (namespaced id). */
+export interface PluginCommand {
+  id: string;
+  title: string;
+}
+
+/** A view a plugin registered (namespaced name). */
+export interface PluginView {
+  name: string;
+}
+
+/** A plugin descriptor for the manager UI (`plugins_list`). */
+export interface PluginInfo {
+  id: string;
+  name: string;
+  version: string;
+  status: PluginStatus;
+  /** provider / processor (a plugin can be both). */
+  shape: string[];
+  /** Declared capabilities (closed v1 set). */
+  capabilities: string[];
+  /** All permission entries the manifest requests. */
+  permissions: string[];
+  /** The subset of `permissions` currently granted by the user. */
+  granted: string[];
+  settings: PluginSettingField[];
+  /** Namespaced command ids registered (empty unless active). */
+  commands: PluginCommand[];
+  /** Namespaced view names registered (empty unless active). */
+  views: PluginView[];
+  /** Failure strikes this session (0 unless something failed). */
+  strikes: number;
+  /** Activation-failure detail, when `status === "failed"`. */
+  failure?: string;
+}
+
 // ── Command surface (design-0004 §Command surface) ────────────────────────────
 
 export interface IpcCommands {
@@ -423,6 +478,40 @@ export interface IpcCommands {
    * `group` is an optional group filter (exact prefix match).
    */
   calendar_window(from: string, to: string, group?: string): Promise<Result<CalendarWindowResult>>;
+
+  // ── Plugins (issue #25; serve the #26 manager UI) ──────────────────────────
+
+  /**
+   * The plugin inventory for the open library: id, name, version, status,
+   * declared capabilities/permissions, the granted subset, registrations, and
+   * per-plugin warnings. Empty when no library is open.
+   */
+  plugins_list(): Promise<Result<PluginInfo[]>>;
+
+  /**
+   * Re-discover plugin manifests and reconcile grants for the open library, then
+   * return the refreshed inventory. Used by the manager's reload affordance; picks
+   * up newly-dropped plugin folders and version changes without a restart.
+   */
+  plugins_reload(): Promise<Result<PluginInfo[]>>;
+
+  /**
+   * Grant or revoke a single permission for a plugin. Granting the last missing
+   * permission activates the plugin; revoking a live one knocks it back to
+   * permissions-pending (its capabilities stop immediately).
+   */
+  plugins_set_grant(plugin: string, perm: string, granted: boolean): Promise<Result<void>>;
+
+  /**
+   * Invoke a registered command on an active plugin. `argsJson` is a JSON string
+   * passed to the plugin's handler; the result is the handler's JSON return value
+   * as a string. Errors (deadline, exception, suspended, …) come back as IpcError.
+   */
+  plugins_invoke_command(
+    plugin: string,
+    commandId: string,
+    argsJson: string,
+  ): Promise<Result<string>>;
 }
 
 // ── Event surface (core → UI, design-0004 §Event surface) ─────────────────────

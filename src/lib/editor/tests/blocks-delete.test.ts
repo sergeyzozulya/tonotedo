@@ -24,14 +24,10 @@
 // The test below documents this contract explicitly.  If the spec requires the
 // editor itself to perform link removal, that is currently unimplemented.
 
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect } from "vitest";
 import { EditorState, EditorSelection } from "@codemirror/state";
 import { markdownExtension } from "../extensions/markdown.js";
-import {
-  extractBlockSpecs,
-  isAttachmentPath,
-  type BlockCallbacks,
-} from "../extensions/blocks.js";
+import { extractBlockSpecs, isAttachmentPath, type BlockCallbacks } from "../extensions/blocks.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -162,7 +158,7 @@ describe("attachment delete — link text removal (caller responsibility)", () =
 
     let callbackFired = false;
     const callbacks: BlockCallbacks = {
-      onAttachmentAction(_path, _action) {
+      onAttachmentAction() {
         callbackFired = true;
         // blocks.ts does NOT dispatch a text edit here — it only fires the callback.
       },

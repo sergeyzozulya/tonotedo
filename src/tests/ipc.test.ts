@@ -351,6 +351,86 @@ describe("entry_titles facade (issue #31 item 4)", () => {
   });
 });
 
+// ── Plugins facade (issue #25) ────────────────────────────────────────────────
+
+describe("plugins facade (issue #25)", () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  it("plugins_list returns 2 mock plugins, one permissions-pending", async () => {
+    const { mock } = await import("../lib/ipc/mock.js");
+    const result = await mock.plugins_list();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.length).toBe(2);
+    const pending = result.value.filter((p) => p.status === "permissions-pending");
+    expect(pending.length).toBe(1);
+    expect(pending[0].id).toBe("com.example.gcal");
+    // The active one is the Mermaid processor.
+    const active = result.value.find((p) => p.status === "active");
+    expect(active?.id).toBe("com.example.mermaid");
+  });
+
+  it("granting the last missing permission activates the plugin", async () => {
+    const { mock } = await import("../lib/ipc/mock.js");
+    // gcal is pending: read-entries granted, write-entries + network missing.
+    await mock.plugins_set_grant("com.example.gcal", "write-entries", true);
+    await mock.plugins_set_grant("com.example.gcal", "network:www.googleapis.com", true);
+    const result = await mock.plugins_list();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const gcal = result.value.find((p) => p.id === "com.example.gcal");
+    expect(gcal?.status).toBe("active");
+    expect(gcal?.granted).toContain("write-entries");
+  });
+
+  it("plugins_set_grant rejects an undeclared permission", async () => {
+    const { mock } = await import("../lib/ipc/mock.js");
+    const result = await mock.plugins_set_grant("com.example.mermaid", "network", true);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("invalid_argument");
+  });
+
+  it("plugins_invoke_command errors for a non-active plugin", async () => {
+    const { mock } = await import("../lib/ipc/mock.js");
+    // gcal starts pending in a fresh module → not active.
+    const result = await mock.plugins_invoke_command(
+      "com.example.gcal",
+      "com.example.gcal.sync",
+      "{}",
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("invalid_argument");
+  });
+
+  it("real.ts plugins_list returns io_error when Tauri is absent", async () => {
+    const { real } = await import("../lib/ipc/real.js");
+    const result = await real.plugins_list();
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("io_error");
+  });
+
+  it("plugins_reload returns the refreshed inventory (mock)", async () => {
+    const { mock } = await import("../lib/ipc/mock.js");
+    const result = await mock.plugins_reload();
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      // Same shape as plugins_list: a PluginInfo[] with the known mock plugins.
+      const listed = await mock.plugins_list();
+      expect(listed.ok).toBe(true);
+      if (listed.ok) expect(result.value.length).toBe(listed.value.length);
+    }
+  });
+
+  it("real.ts plugins_reload returns io_error when Tauri is absent", async () => {
+    const { real } = await import("../lib/ipc/real.js");
+    const result = await real.plugins_reload();
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("io_error");
+  });
+});
+
 // ── Item 2: IndexChangedKind 'created' ────────────────────────────────────────
 
 describe("IndexChangedKind 'created' in types (issue #31 item 2)", () => {

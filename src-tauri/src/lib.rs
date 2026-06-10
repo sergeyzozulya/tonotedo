@@ -1,7 +1,16 @@
 pub mod core;
 pub mod ipc;
+pub mod plugins;
+
+use std::path::PathBuf;
+use std::sync::Mutex;
+
+use serde::Serialize;
+use tauri::{AppHandle, Manager, State};
 
 use ipc::AppState;
+use plugins::error::PluginError;
+use plugins::{PluginHost, PluginHostState, PluginInfo};
 
 /// Returns the version of this crate as a string.
 #[tauri::command]
@@ -9,10 +18,156 @@ fn core_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
+// ── Plugin host commands (issue #25; serve the #26 manager UI) ──────────────────
+//
+// These delegate to `plugins::PluginHost`. The host is built lazily for the currently
+// open library's root and cached in `PluginHostState`; it is rebuilt when the open
+// library's root changes (e.g. the user opened a different library). The plugin host is
+// kept in its own managed state, separate from `AppState`, so the IPC module (sibling
+// scope) and the plugin module stay decoupled.
+
+/// Error payload for plugin commands. Mirrors `PluginError` (and its TS facade type).
+#[derive(Debug, Serialize)]
+struct PluginCmdError {
+    code: plugins::error::PluginErrorCode,
+    message: String,
+}
+
+impl From<PluginError> for PluginCmdError {
+    fn from(e: PluginError) -> Self {
+        PluginCmdError {
+            code: e.code,
+            message: e.message,
+        }
+    }
+}
+
+/// Resolve the currently-open library root, or an error if none is open.
+fn current_library_root(app_state: &AppState) -> Result<PathBuf, PluginCmdError> {
+    let guard = app_state.0.lock().map_err(|_| PluginCmdError {
+        code: plugins::error::PluginErrorCode::HostInternal,
+        message: "app state lock poisoned".into(),
+    })?;
+    guard
+        .as_ref()
+        .map(|lib| lib.root.clone())
+        .ok_or_else(|| PluginCmdError {
+            code: plugins::error::PluginErrorCode::NotActive,
+            message: "no library is open".into(),
+        })
+}
+
+/// Resolve the device-local, app-private directory plugin grants persist under (review C2).
+/// This is the OS app-config dir; it never lives inside the synced library.
+fn grants_dir(app: &AppHandle) -> Result<PathBuf, PluginCmdError> {
+    app.path().app_config_dir().map_err(|e| PluginCmdError {
+        code: plugins::error::PluginErrorCode::HostInternal,
+        message: format!("cannot resolve app config dir for plugin grants: {e}"),
+    })
+}
+
+/// Ensure the plugin host is loaded for `root`, rebuilding if the root changed.
+/// Returns a guard holding the loaded host.
+fn ensure_host<'a>(
+    host_state: &'a PluginHostState,
+    root: &std::path::Path,
+    grants_dir: &std::path::Path,
+) -> Result<std::sync::MutexGuard<'a, Option<PluginHost>>, PluginCmdError> {
+    let mut guard = host_state.0.lock().map_err(|_| PluginCmdError {
+        code: plugins::error::PluginErrorCode::HostInternal,
+        message: "plugin host lock poisoned".into(),
+    })?;
+    let needs_reload = guard.as_ref().map(|h| h.root() != root).unwrap_or(true);
+    if needs_reload {
+        *guard = Some(PluginHost::load(
+            root.to_path_buf(),
+            grants_dir.to_path_buf(),
+        ));
+    }
+    Ok(guard)
+}
+
+/// `plugins_list()` — the manager's plugin inventory (id, name, version, status,
+/// declared caps/perms, granted set, registrations, warnings).
+#[tauri::command]
+fn plugins_list(
+    app: AppHandle,
+    app_state: State<'_, AppState>,
+    host_state: State<'_, PluginHostState>,
+) -> Result<Vec<PluginInfo>, PluginCmdError> {
+    let root = current_library_root(&app_state)?;
+    let gdir = grants_dir(&app)?;
+    let guard = ensure_host(&host_state, &root, &gdir)?;
+    Ok(guard.as_ref().map(|h| h.list()).unwrap_or_default())
+}
+
+/// `plugins_reload()` — re-discover manifests and reconcile grants for the open library,
+/// then return the refreshed inventory. Used by the manager's reload affordance (#26).
+#[tauri::command]
+fn plugins_reload(
+    app: AppHandle,
+    app_state: State<'_, AppState>,
+    host_state: State<'_, PluginHostState>,
+) -> Result<Vec<PluginInfo>, PluginCmdError> {
+    let root = current_library_root(&app_state)?;
+    let gdir = grants_dir(&app)?;
+    let mut guard = host_state.0.lock().map_err(|_| PluginCmdError {
+        code: plugins::error::PluginErrorCode::HostInternal,
+        message: "plugin host lock poisoned".into(),
+    })?;
+    // Unconditional rebuild: re-scan the plugins dir and reconcile the device-local grants.
+    *guard = Some(PluginHost::load(root, gdir));
+    Ok(guard.as_ref().map(|h| h.list()).unwrap_or_default())
+}
+
+/// `plugins_set_grant(plugin, perm, granted)` — grant/revoke a permission and (re)activate
+/// or suspend the plugin accordingly.
+#[tauri::command]
+fn plugins_set_grant(
+    plugin: String,
+    perm: String,
+    granted: bool,
+    app: AppHandle,
+    app_state: State<'_, AppState>,
+    host_state: State<'_, PluginHostState>,
+) -> Result<(), PluginCmdError> {
+    let root = current_library_root(&app_state)?;
+    let gdir = grants_dir(&app)?;
+    let mut guard = ensure_host(&host_state, &root, &gdir)?;
+    let host = guard.as_mut().ok_or_else(|| PluginCmdError {
+        code: plugins::error::PluginErrorCode::HostInternal,
+        message: "plugin host missing after load".into(),
+    })?;
+    host.set_grant(&plugin, &perm, granted).map_err(Into::into)
+}
+
+/// `plugins_invoke_command(plugin, command_id, args_json)` — run a registered command.
+/// Returns the command's JSON result string.
+#[tauri::command]
+fn plugins_invoke_command(
+    plugin: String,
+    command_id: String,
+    args_json: String,
+    app: AppHandle,
+    app_state: State<'_, AppState>,
+    host_state: State<'_, PluginHostState>,
+) -> Result<String, PluginCmdError> {
+    let root = current_library_root(&app_state)?;
+    let gdir = grants_dir(&app)?;
+    let guard = ensure_host(&host_state, &root, &gdir)?;
+    let host = guard.as_ref().ok_or_else(|| PluginCmdError {
+        code: plugins::error::PluginErrorCode::HostInternal,
+        message: "plugin host missing after load".into(),
+    })?;
+    host.invoke_command(&plugin, &command_id, &args_json)
+        .map_err(Into::into)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
-        .manage(AppState(std::sync::Mutex::new(None)))
+        .manage(AppState(Mutex::new(None)))
+        .manage(PluginHostState::empty())
         .invoke_handler(tauri::generate_handler![
             core_version,
             ipc::library_open,
@@ -56,6 +211,10 @@ pub fn run() {
             ipc::groups::trash_list,
             ipc::groups::trash_restore,
             ipc::groups::trash_purge,
+            plugins_list,
+            plugins_reload,
+            plugins_set_grant,
+            plugins_invoke_command,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

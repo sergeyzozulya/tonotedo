@@ -22,4 +22,7 @@ pub use value::{DatetimeValue, RangeEndpoint, RangeValue, Value};
 
 // Re-export parse utilities used by the reconciler (design-0001).
 pub use parse::{infer_value, parse_date, parse_datetime, parse_range};
+// Raw frontmatter split — used by the plugin host (design-0002) to parse a plugin
+// manifest's `plugin.md` frontmatter directly (its schema differs from an entry's).
+pub use parse::{split_frontmatter, RawSplit};
 pub use serialize::{format_date, format_datetime, format_range};

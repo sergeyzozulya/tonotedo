@@ -62,6 +62,17 @@ crossbeam-channel = "0.5"
 # NFC; without normalization the same file can appear as both absent and present
 # depending on which form is compared. Small, no C build step, no serde dep.
 unicode-normalization = "0.1"
+# Plugin sandbox engine (adr-0005, design-0002). rquickjs is the Rust binding to
+# QuickJS-ng. Pinned to 0.9 (not 0.12) deliberately: 0.9 is a stable release whose
+# `Runtime::set_memory_limit` + `Runtime::set_interrupt_handler` API gives the host the
+# memory-cap and deadline-interrupt primitives the design requires, and which the 0.10+
+# line reshuffled. Bundling the C source means no system QuickJS dependency and identical
+# behaviour on all five targets (adr-0005 "interpreter-only on iOS"). `bindgen` stays off
+# so no libclang build dependency is needed — the crate ships pre-generated bindings.
+# `allocator`: a custom tracking allocator records the per-call high-water memory mark so a
+# catchable OOM still accrues a memory strike (review M2 — QuickJS's `memory_used_size`
+# reports only live tracked-object bytes after GC, so it cannot detect a brushed ceiling).
+rquickjs = { version = "0.9", default-features = false, features = ["allocator"] }
 
 [profile.release]
 codegen-units = 1

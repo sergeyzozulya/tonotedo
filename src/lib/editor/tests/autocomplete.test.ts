@@ -119,6 +119,10 @@ function stubIpc(overrides?: {
     trash_list: vi.fn() as never,
     trash_restore: vi.fn() as never,
     trash_purge: vi.fn() as never,
+    plugins_list: vi.fn() as never,
+    plugins_reload: vi.fn() as never,
+    plugins_set_grant: vi.fn() as never,
+    plugins_invoke_command: vi.fn() as never,
     on: vi.fn(() => () => {}),
   };
 }

@@ -100,7 +100,6 @@ function extractCSSVar(theme: string, mode: string, varName: string): string | n
   return varMatch[1].trim();
 }
 
-
 // ── Tests: chip token values change between light and dark modes ───────────────
 
 describe("theme token re-resolution — chip tokens swap on mode switch", () => {
@@ -127,8 +126,8 @@ describe("theme token re-resolution — chip tokens swap on mode switch", () => 
     const fogTheme = themeMap.themes.find((t) => t.key === "fog")!;
     const lightBlue = (fogTheme.tokens.light.chips as Record<string, { fg: string; bg: string }>)
       .blue.fg;
-    const darkBlue = (fogTheme.tokens.dark.chips as Record<string, { fg: string; bg: string }>)
-      .blue.fg;
+    const darkBlue = (fogTheme.tokens.dark.chips as Record<string, { fg: string; bg: string }>).blue
+      .fg;
     expect(normColor(lightBlue)).not.toBe(normColor(darkBlue));
   });
 
@@ -140,10 +139,7 @@ describe("theme token re-resolution — chip tokens swap on mode switch", () => 
       };
       const lightFg = chips.light.chips.slate.fg;
       const darkFg = chips.dark.chips.slate.fg;
-      expect(normColor(lightFg)).not.toBe(
-        normColor(darkFg),
-        `${theme.key}/slate/fg must differ between light and dark`,
-      );
+      expect(normColor(lightFg)).not.toBe(normColor(darkFg));
     }
   });
 });
@@ -152,14 +148,22 @@ describe("theme token re-resolution — chip tokens swap on mode switch", () => 
 
 describe("theme token re-resolution — hex values stay hex across modes", () => {
   it("Paper light accent token is a hex color", () => {
-    const accent = (themeMap.themes.find((t) => t.key === "paper")!.tokens.light as unknown as Record<string, string>)
-      .accent;
+    const accent = (
+      themeMap.themes.find((t) => t.key === "paper")!.tokens.light as unknown as Record<
+        string,
+        string
+      >
+    ).accent;
     expect(isHexColor(accent)).toBe(true);
   });
 
   it("Paper dark accent token is also a hex color", () => {
-    const accent = (themeMap.themes.find((t) => t.key === "paper")!.tokens.dark as unknown as Record<string, string>)
-      .accent;
+    const accent = (
+      themeMap.themes.find((t) => t.key === "paper")!.tokens.dark as unknown as Record<
+        string,
+        string
+      >
+    ).accent;
     expect(isHexColor(accent)).toBe(true);
   });
 
@@ -167,14 +171,8 @@ describe("theme token re-resolution — hex values stay hex across modes", () =>
     for (const theme of themeMap.themes) {
       const light = theme.tokens.light as unknown as Record<string, string>;
       const dark = theme.tokens.dark as unknown as Record<string, string>;
-      expect(isHexColor(light.accent)).toBe(
-        true,
-        `${theme.key}/light accent="${light.accent}" must be hex`,
-      );
-      expect(isHexColor(dark.accent)).toBe(
-        true,
-        `${theme.key}/dark accent="${dark.accent}" must be hex`,
-      );
+      expect(isHexColor(light.accent)).toBe(true);
+      expect(isHexColor(dark.accent)).toBe(true);
     }
   });
 
@@ -187,17 +185,26 @@ describe("theme token re-resolution — hex values stay hex across modes", () =>
         light: { chips: Record<string, { fg: string; bg: string }> };
         dark: { chips: Record<string, { fg: string; bg: string }> };
       };
-      for (const chipName of ["slate", "red", "amber", "green", "teal", "blue", "violet", "pink"] as const) {
+      for (const chipName of [
+        "slate",
+        "red",
+        "amber",
+        "green",
+        "teal",
+        "blue",
+        "violet",
+        "pink",
+      ] as const) {
         const lFg = chips.light.chips[chipName].fg;
         const dFg = chips.dark.chips[chipName].fg;
         // Each chip fg in THEME-MAP is a hex color.
-        expect(isHexColor(lFg)).toBe(true, `${theme.key}/light/${chipName}/fg="${lFg}" must be hex`);
-        expect(isHexColor(dFg)).toBe(true, `${theme.key}/dark/${chipName}/fg="${dFg}" must be hex`);
+        expect(isHexColor(lFg)).toBe(true);
+        expect(isHexColor(dFg)).toBe(true);
         // chip bg values are rgba() — not hex (they are transparency tints).
         const lBg = chips.light.chips[chipName].bg;
         const dBg = chips.dark.chips[chipName].bg;
-        expect(isRgbaColor(lBg)).toBe(true, `${theme.key}/light/${chipName}/bg="${lBg}" must be rgba`);
-        expect(isRgbaColor(dBg)).toBe(true, `${theme.key}/dark/${chipName}/bg="${dBg}" must be rgba`);
+        expect(isRgbaColor(lBg)).toBe(true);
+        expect(isRgbaColor(dBg)).toBe(true);
       }
     }
   });
@@ -235,20 +242,14 @@ describe("theme token re-resolution — THEME-MAP.json and tokens.css agree", ()
       expect(jsonFg.trim().length).toBeGreaterThan(0);
       expect(cssFg!.trim().length).toBeGreaterThan(0);
       // Normalised values must match.
-      expect(normColor(cssFg!)).toBe(
-        normColor(jsonFg),
-        `${chipName}/fg: tokens.css="${cssFg}" vs THEME-MAP.json="${jsonFg}"`,
-      );
+      expect(normColor(cssFg!)).toBe(normColor(jsonFg));
     });
 
     it(`Paper/light ${chipName}/bg: THEME-MAP and tokens.css agree`, () => {
       const jsonBg = chipMap[chipName].bg;
       const cssBg = extractCSSVar("paper", "light", `chip-${chipName}-bg`);
       expect(cssBg).not.toBeNull();
-      expect(normColor(cssBg!)).toBe(
-        normColor(jsonBg),
-        `${chipName}/bg: tokens.css="${cssBg}" vs THEME-MAP.json="${jsonBg}"`,
-      );
+      expect(normColor(cssBg!)).toBe(normColor(jsonBg));
     });
   }
 
@@ -286,7 +287,7 @@ describe("theme token re-resolution — CSS variable presence", () => {
       it(`tokens.css defines --tnd-accent for ${theme}/${mode}`, () => {
         const val = extractCSSVar(theme, mode, "accent");
         expect(val).not.toBeNull();
-        expect(isHexColor(val!)).toBe(true, `${theme}/${mode} accent="${val}" must be hex`);
+        expect(isHexColor(val!)).toBe(true);
       });
     }
   }
