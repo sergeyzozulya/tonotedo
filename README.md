@@ -32,6 +32,10 @@ Spec-first: the v1 specs and tech ADRs are accepted; implementation is starting 
 
 Stack: Tauri 2 (Rust core) · Svelte 5 · CodeMirror 6 · SQLite index · QuickJS plugin sandbox.
 
+## Building & running
+
+See [BUILD.md](BUILD.md) — browser demo (no Rust needed), desktop app, mobile, and the check suite.
+
 ## Docs
 
 - [docs/spec/](docs/spec/) — product specs (vision, features)
