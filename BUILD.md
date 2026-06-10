@@ -103,6 +103,76 @@ Gotchas:
 - NDK 30-beta works; if a future NDK breaks the Rust cross-compile, install the
   newest stable via `sdkmanager` and point `NDK_HOME` at it.
 
+## Benchmarks (issue #16 exit gate)
+
+### What and why
+
+Spec 0006 sets these budgets for the markdown editor:
+
+| Metric | Budget |
+|---|---|
+| Typing input-to-paint p95 | < 16 ms (60 fps) |
+| Open time (mount to first paint) | < 100 ms |
+| Entry switch time | < 50 ms |
+
+Spec 0013 requires the same budgets on a mid-range phone.
+
+These are **paint-round-trip** measurements — they need a real browser or
+device. A headless CI-runnable proxy suite exists (see below) but it does not
+replace running on real hardware.
+
+### Part 1 — Interactive browser/device benchmark (`/#/bench`)
+
+```sh
+pnpm dev
+# Desktop: open http://localhost:1420/#/bench
+# Phone:   run `pnpm dev --host` and open the LAN URL on the device
+```
+
+1. The page mounts the **full production editor** (all extensions, mock IPC)
+   with a deterministic ~10 000-word markdown document (seed `0xdeadbeef`).
+2. Click **Run benchmark** — the harness executes 300 scripted keystrokes at
+   realistic positions (middle half of document), measuring each via
+   `performance.now()` + double-rAF (transaction → next painted frame).
+3. Results (p50/p95/max typing latency, open-time, switch-time) appear
+   on-page, are `console.table`'d, and can be downloaded as JSON.
+
+The JSON report includes `meta.userAgent` so desktop vs phone results can be
+distinguished. For the Phase 3 exit gate, collect results on:
+- **Desktop**: `pnpm tauri dev` (native Tauri WebView) or any Chromium build
+- **Mid-range phone** (spec 0013): connect to `pnpm dev --host` URL in the
+  device browser, or use `pnpm tauri ios/android dev`
+
+### Part 2 — CI proxy benchmarks (vitest, DOM-free)
+
+```sh
+pnpm vitest run src/lib/editor/tests/bench.test.ts
+```
+
+These exercise `EditorState.create`, `state.update` (transaction apply),
+`computeRevealDecorations`, `computeChipDecorations`, and `detectFrontmatter`
+on the same 10 000-word document — no DOM, no rAF, no paint.
+
+**What they catch**: gross algorithmic regressions (an O(n²) loop, a full
+re-parse on every keystroke, etc.).
+
+**What they do not catch**: rendering performance, DOM layout costs,
+Svelte reactivity overhead, mobile GPU/memory pressure.
+
+Thresholds (last measured 2026-06-11 on M2 Mac, ≥ 3× headroom):
+
+| Test | Threshold | Measured p95 |
+|---|---|---|
+| `state.create` (10k doc) | < 25 ms p95 | ~7 ms |
+| `tx apply` (300 insertions) | < 4 ms p95 | ~0.007 ms |
+| `computeRevealDecorations` | < 8 ms p95 | ~0.09 ms |
+| `computeChipDecorations` | < 8 ms p95 | ~0.09 ms |
+| `detectFrontmatter` | < 2 ms p95 | ~0.002 ms |
+| Combined apply+reveal+chips | < 8 ms p95 | ~0.12 ms |
+
+If a threshold trips in CI, investigate the regression; do not simply raise
+the number without a measured justification.
+
 ## Repo layout & conventions
 
 See [AGENTS.md](AGENTS.md) (layout, tooling contract, the `#/dev` convention) and
