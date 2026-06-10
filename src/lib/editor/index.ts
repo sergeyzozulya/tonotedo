@@ -36,3 +36,14 @@ export type {
   ChipMetaCache,
   ComputeChipsOptions,
 } from "./extensions/chips.js";
+export {
+  blocksPlugin,
+  blocksTheme,
+  pasteDropHandlers,
+  extractBlockSpecs,
+  headInRange as blockHeadInRange,
+  isImagePath,
+  isAttachmentPath,
+  toggleCheckbox,
+} from "./extensions/blocks.js";
+export type { BlockCallbacks, AttachmentAction } from "./extensions/blocks.js";

@@ -29,6 +29,12 @@
   import { chips } from "./extensions/chips.js";
   import { editorTheme } from "./theme.js";
   import { selectionContext, type SelectionContext } from "./selection-context.js";
+  import {
+    blocksPlugin,
+    blocksTheme,
+    pasteDropHandlers,
+    type BlockCallbacks,
+  } from "./extensions/blocks.js";
   import { ipc } from "../ipc/index.js";
 
   interface Props {
@@ -62,6 +68,10 @@
      * unresolved. When absent, all wikilinks render with their raw target text.
      */
     entryTitles?: Map<string, string>;
+    /** Vault-relative path of the currently open entry (for asset resolution). */
+    entryPath?: string;
+    /** Block-layer callbacks (open attachment, relink/remove broken). */
+    blockCallbacks?: BlockCallbacks;
   }
 
   let {
@@ -72,6 +82,8 @@
     onTokenClick,
     onNavigate,
     entryTitles = new Map(),
+    entryPath = "",
+    blockCallbacks = {},
   }: Props = $props();
 
   let host: HTMLDivElement;
@@ -108,9 +120,12 @@
           frontmatterFold,
           chips({ ipc, onTokenClick, onNavigate, entryTitles }),
           cursorReveal,
+          blocksPlugin(ipc, blockCallbacks),
+          pasteDropHandlers(ipc, () => entryPath),
           markdownExtension,
           baseSetup,
           editorTheme,
+          blocksTheme,
           updateListener,
         ],
       }),

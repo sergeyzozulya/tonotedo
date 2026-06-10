@@ -110,6 +110,14 @@ export interface Backlink {
   linkText: string;
 }
 
+// ── Asset types (issue #13 — attachment/image blocks) ────────────────────────
+
+/**
+ * A vault-relative asset path, e.g. "work/atlas/_assets/report.pdf".
+ * Always starts from the vault root (same form as EntryId).
+ */
+export type AssetPath = string;
+
 // ── Command surface (design-0004 §Command surface) ────────────────────────────
 
 export interface IpcCommands {
@@ -139,6 +147,38 @@ export interface IpcCommands {
 
   /** Returns the Rust core version string. The only command implemented today. */
   core_version(): Promise<Result<string>>;
+
+  // ── Asset commands (issue #13) ─────────────────────────────────────────────
+
+  /**
+   * Copy `bytes` into the entry's `_assets/` folder under the given `name`
+   * (collision-safe rename is handled by the implementation). Returns the
+   * vault-relative AssetPath of the stored file.
+   *
+   * In the browser/mock implementation this keeps the bytes in memory so the
+   * /dev demo works fully without Tauri.
+   */
+  attach_file(entryPath: string, name: string, bytes: Uint8Array): Promise<Result<AssetPath>>;
+
+  /**
+   * Returns a URL that can be used in an <img src="…"> to render the asset.
+   * Real: a Tauri asset protocol URL (asset:// or convertFileSrc).
+   * Mock: an object URL or data URL constructed from in-memory bytes.
+   */
+  asset_url(assetPath: AssetPath): Promise<Result<string>>;
+
+  /**
+   * Returns true when the asset file exists on disk / in mock memory.
+   * Used by the attachment block to detect broken state.
+   */
+  asset_exists(assetPath: AssetPath): Promise<Result<boolean>>;
+
+  /**
+   * Remove the asset file from disk / mock memory.
+   * Called by the editor when the user confirms deleting an attachment.
+   * refs #30 for Rust implementation.
+   */
+  remove_asset(assetPath: AssetPath): Promise<Result<void>>;
 }
 
 // ── Event surface (core → UI, design-0004 §Event surface) ─────────────────────
