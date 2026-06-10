@@ -236,3 +236,109 @@ pub fn entry_id_for_path(conn: &Connection, path: &str) -> Result<Option<i64>, I
         Err(e) => Err(e.into()),
     }
 }
+
+// ── entry_id_for_frontmatter_id ───────────────────────────────────────────────
+
+/// Look up the integer row-id and path of an entry by its frontmatter `id` string.
+///
+/// Used by rename detection: when a file disappears and a new one appears with
+/// the same frontmatter id, the reconciler can detect a rename rather than a
+/// delete+create pair.
+pub fn entry_by_frontmatter_id(
+    conn: &Connection,
+    frontmatter_id: &str,
+) -> Result<Option<(i64, String)>, IndexError> {
+    let result: rusqlite::Result<(i64, String)> = conn.query_row(
+        "SELECT id, path FROM entries WHERE entry_id = ?1",
+        params![frontmatter_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    );
+    match result {
+        Ok(row) => Ok(Some(row)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+// ── entries_by_slug ───────────────────────────────────────────────────────────
+
+/// All entries with the given slug.  Used for link resolution (spec 0006):
+/// - exactly one match → resolve; zero or two+ → leave NULL (ambiguous).
+///
+/// Returns (rowid, group_path) pairs.
+pub fn entries_by_slug(conn: &Connection, slug: &str) -> Result<Vec<(i64, String)>, IndexError> {
+    let mut stmt =
+        conn.prepare("SELECT id, group_path FROM entries WHERE slug = ?1 ORDER BY id")?;
+    let rows = stmt.query_map(params![slug], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+// ── resolve_links ─────────────────────────────────────────────────────────────
+
+/// Resolve wikilink `target_raw` values to `resolved_entry_id` for all
+/// unresolved links (where `resolved_entry_id IS NULL`).
+///
+/// Resolution rules (spec 0006):
+/// - `[[slug]]`             → find by bare slug; unique → resolve; ambiguous → NULL.
+/// - `[[group/path/slug]]`  → find by exact (group_path, slug) pair; unique → resolve.
+///
+/// Any currently-resolved link whose target no longer exists is NULLed out.
+/// This function is a full re-resolution pass — called after a batch of upserts.
+///
+/// Invariant: callers should call this after every batch to keep links consistent.
+/// The full pass is O(#unresolved_links × index_lookup); acceptable for small
+/// post-upsert batches.  A global re-resolve is done at startup rescan completion.
+pub fn resolve_links(conn: &Connection) -> Result<(), IndexError> {
+    // Collect all link rows that need resolution.
+    let links: Vec<(i64, String)> = {
+        let mut stmt = conn.prepare("SELECT id, target_raw FROM links")?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+
+    for (link_id, target_raw) in links {
+        let resolved = resolve_one(conn, &target_raw)?;
+        conn.execute(
+            "UPDATE links SET resolved_entry_id = ?1, resolved_group_path = NULL WHERE id = ?2",
+            params![resolved, link_id],
+        )?;
+    }
+    Ok(())
+}
+
+/// Resolve a single `target_raw` string to an entry row-id or None.
+///
+/// Formats handled:
+/// - `slug` — bare slug; unique entry match required.
+/// - `group/path/slug` — path-qualified; last component is slug, everything
+///   before is the group_path prefix.
+fn resolve_one(conn: &Connection, target_raw: &str) -> Result<Option<i64>, IndexError> {
+    // Strip leading/trailing whitespace that may appear in hand-written wikilinks.
+    let target = target_raw.trim();
+
+    // Determine if this is a path-qualified target.
+    if let Some(slash_pos) = target.rfind('/') {
+        // Path-qualified: `group_path/slug`
+        let group_path = &target[..slash_pos];
+        let slug = &target[slash_pos + 1..];
+        let result: rusqlite::Result<i64> = conn.query_row(
+            "SELECT id FROM entries WHERE group_path = ?1 AND slug = ?2",
+            params![group_path, slug],
+            |r| r.get(0),
+        );
+        return match result {
+            Ok(id) => Ok(Some(id)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        };
+    }
+
+    // Bare slug: look up all entries with this slug.
+    let matches = entries_by_slug(conn, target)?;
+    if matches.len() == 1 {
+        Ok(Some(matches[0].0))
+    } else {
+        // Zero or more than one match → leave unresolved (NULL).
+        Ok(None)
+    }
+}

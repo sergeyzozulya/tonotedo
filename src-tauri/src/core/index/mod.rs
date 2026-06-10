@@ -104,6 +104,27 @@ impl Index {
         Ok(())
     }
 
+    /// Update (or insert) the `files` ledger row for a path without touching
+    /// the `entries` row.
+    ///
+    /// Used for reserved / projection files that have a ledger row but no
+    /// entry row.  This lets the rescan skip re-reading unchanged projection
+    /// files.
+    pub fn upsert_files_row(
+        &mut self,
+        path: &str,
+        mtime: i64,
+        size: i64,
+        content_hash: &str,
+    ) -> Result<(), IndexError> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO files (path, mtime, size, content_hash)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![path, mtime, size, content_hash],
+        )?;
+        Ok(())
+    }
+
     /// Rename an entry in place, preserving its id and all derived rows.
     ///
     /// Updates `files.path`, `entries.path`, `entries.slug`, `entries.group_path`
@@ -178,6 +199,81 @@ impl Index {
     pub fn entry_id_for_path(&self, path: &str) -> Result<Option<i64>, IndexError> {
         query::entry_id_for_path(&self.conn, path)
     }
+
+    // ── Link-resolution helpers (reconciler use) ─────────────────────────────
+
+    /// Look up an entry by its frontmatter `id` string.
+    ///
+    /// Returns `(row_id, path)` if found.  Used by rename detection in the reconciler:
+    /// a file that disappeared and a new file that carries the same frontmatter id
+    /// → this is a rename, not a delete+create pair.
+    pub fn entry_by_frontmatter_id(&self, fmid: &str) -> Result<Option<(i64, String)>, IndexError> {
+        query::entry_by_frontmatter_id(&self.conn, fmid)
+    }
+
+    /// Re-resolve all wikilink `target_raw` values to `resolved_entry_id`.
+    ///
+    /// Called after every batch of upserts so that links added or changed in that
+    /// batch get resolved immediately.  Ambiguous (multiple slug matches) stays NULL.
+    ///
+    /// Invariant: this is idempotent — calling it multiple times is safe.
+    pub fn resolve_links(&mut self) -> Result<(), IndexError> {
+        query::resolve_links(&self.conn)
+    }
+
+    /// All entries with a given slug; used internally by the reconciler tests.
+    #[cfg(test)]
+    pub fn entries_by_slug(&self, slug: &str) -> Result<Vec<(i64, String)>, IndexError> {
+        query::entries_by_slug(&self.conn, slug)
+    }
+
+    /// Look up `(rowid, group_path)` pairs for a slug. Public for reconciler.
+    pub fn slug_matches(&self, slug: &str) -> Result<Vec<(i64, String)>, IndexError> {
+        query::entries_by_slug(&self.conn, slug)
+    }
+
+    // ── Ledger helpers (reconciler use) ──────────────────────────────────────
+
+    /// Fetch the `files` ledger row for a library-relative path.
+    ///
+    /// Returns `None` when the path is not yet in the ledger.
+    pub fn ledger_row(&self, rel_path: &str) -> Result<Option<LedgerRow>, IndexError> {
+        let result: rusqlite::Result<(i64, i64, String)> = self.conn.query_row(
+            "SELECT mtime, size, content_hash FROM files WHERE path = ?1",
+            params![rel_path],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        );
+        match result {
+            Ok((mtime, size, content_hash)) => Ok(Some(LedgerRow {
+                mtime,
+                size,
+                content_hash,
+            })),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// All library-relative paths currently in the `files` ledger.
+    ///
+    /// Used by `full_rescan` to detect deletions (paths in the ledger but no
+    /// longer on disk).
+    pub fn all_ledger_paths(&self) -> Result<Vec<String>, IndexError> {
+        let mut stmt = self.conn.prepare("SELECT path FROM files ORDER BY path")?;
+        let rows = stmt.query_map([], |r| r.get(0))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+}
+
+/// A row from the `files` reconciliation ledger.
+///
+/// Defined here (in the index module) rather than in the reconciler so that
+/// the index does not depend on the reconciler module.
+#[derive(Debug, Clone)]
+pub struct LedgerRow {
+    pub mtime: i64,
+    pub size: i64,
+    pub content_hash: String,
 }
 
 /// Tag metadata row (mirrors `tag_meta` table).
