@@ -5,5 +5,6 @@ pub mod frontmatter;
 pub mod fswrite;
 pub mod index;
 pub mod journal;
+pub mod reconcile;
 pub mod recurrence;
 pub mod trash;

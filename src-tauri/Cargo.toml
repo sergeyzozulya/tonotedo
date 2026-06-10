@@ -48,6 +48,14 @@ ulid = "1"
 # content_hash().  See src/core/fswrite/hash.rs for the algorithm-choice rationale.
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 
+# File watcher: `notify` crate for cross-platform filesystem event watching
+# (FSEvents / inotify / ReadDirectoryChangesW).  Uses the recommended-watcher
+# API (platform-best) per design-0001 §"Watcher".  `crossbeam-channel` provides
+# the MPMC channel between the notify callback and the reconcile worker thread;
+# it is chosen over std::sync::mpsc because notify's callback closure requires
+# Send and crossbeam channels are fully Send+Sync without Arc overhead.
+notify = "8"
+crossbeam-channel = "0.5"
 
 [profile.release]
 codegen-units = 1
