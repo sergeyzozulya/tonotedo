@@ -35,6 +35,7 @@
 // libraries) that is perfectly acceptable.
 
 pub mod commands2;
+pub mod groups;
 mod tests;
 
 use std::path::{Path, PathBuf};

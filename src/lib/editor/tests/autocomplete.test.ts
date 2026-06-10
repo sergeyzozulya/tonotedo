@@ -109,6 +109,16 @@ function stubIpc(overrides?: {
     merge_tag: vi.fn() as never,
     delete_tag: vi.fn() as never,
     calendar_window: vi.fn() as never,
+    // Phase-6 group + trash commands — not used by autocomplete.
+    create_group: vi.fn() as never,
+    rename_group: vi.fn() as never,
+    move_group: vi.fn() as never,
+    move_entry: vi.fn() as never,
+    trash_entry: vi.fn() as never,
+    trash_group: vi.fn() as never,
+    trash_list: vi.fn() as never,
+    trash_restore: vi.fn() as never,
+    trash_purge: vi.fn() as never,
     on: vi.fn(() => () => {}),
   };
 }

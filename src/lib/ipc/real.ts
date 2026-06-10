@@ -31,6 +31,9 @@ import type {
   IpcUnsubscribe,
   IpcError,
   CalendarWindowResult,
+  TrashManifest,
+  TrashOpResult,
+  RestoreResult,
 } from "./types.js";
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
@@ -168,6 +171,46 @@ export const real: Ipc = {
 
   async delete_tag(name: string): Promise<Result<void>> {
     return call<void>("delete_tag", { name });
+  },
+
+  // ── Group mutation commands (phase 6) ────────────────────────────────────────
+
+  async create_group(path: GroupPath): Promise<Result<void>> {
+    return call<void>("create_group", { path });
+  },
+
+  async rename_group(oldPath: GroupPath, newName: string): Promise<Result<void>> {
+    return call<void>("rename_group", { oldPath, newName });
+  },
+
+  async move_group(srcPath: GroupPath, dstParent: GroupPath): Promise<Result<void>> {
+    return call<void>("move_group", { srcPath, dstParent });
+  },
+
+  async move_entry(path: string, dstGroup: GroupPath): Promise<Result<void>> {
+    return call<void>("move_entry", { path, dstGroup });
+  },
+
+  // ── Trash commands (phase 6) ──────────────────────────────────────────────────
+
+  async trash_entry(path: string): Promise<Result<TrashOpResult>> {
+    return call<TrashOpResult>("ipc_trash_entry", { path });
+  },
+
+  async trash_group(path: GroupPath): Promise<Result<TrashOpResult>> {
+    return call<TrashOpResult>("ipc_trash_group", { path });
+  },
+
+  async trash_list(): Promise<Result<TrashManifest[]>> {
+    return call<TrashManifest[]>("trash_list");
+  },
+
+  async trash_restore(id: string): Promise<Result<RestoreResult>> {
+    return call<RestoreResult>("trash_restore", { id });
+  },
+
+  async trash_purge(id: string): Promise<Result<void>> {
+    return call<void>("trash_purge", { id });
   },
 
   // ── Calendar facade (issue #21) ───────────────────────────────────────────────
