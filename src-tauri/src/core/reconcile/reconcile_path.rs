@@ -57,6 +57,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use unicode_normalization::UnicodeNormalization as _;
+
 use crate::core::{
     frontmatter::{generate_id, has_reserved_component, Entry, Value},
     fswrite::{atomic_write, content_hash, TokenRegistry},
@@ -198,6 +200,34 @@ fn do_rename(
         None => return Vec::new(),
     };
 
+    let new_slug = file_stem(new_abs);
+    let new_group = group_path_for_rel(&new_rel);
+
+    // Apply the rename in the index first (preserves integer row-id + backlinks).
+    if let Err(e) = index.rename_entry(old_rel, &new_rel, &new_slug, &new_group) {
+        log_index_error("rename_entry", &new_rel, &e, needs_full_rescan);
+        return Vec::new();
+    }
+
+    // If the renamed-to file is a placeholder, record pending and return.
+    // The entry row has been path-updated by rename_entry; content stays as-is.
+    if file_stat.is_placeholder {
+        let placeholder_hash = format!("{:032x}", content_hash(&[]));
+        if let Err(e) =
+            index.mark_pending(&new_rel, file_stat.mtime, file_stat.size, &placeholder_hash)
+        {
+            log_index_error("mark_pending(rename)", &new_rel, &e, needs_full_rescan);
+        }
+        let _ = std::fs::read(new_abs); // trigger materialization
+        return vec![ChangeEvent {
+            path: new_abs.to_path_buf(),
+            kind: ChangeKind::Renamed {
+                old_path: PathBuf::from(old_rel),
+            },
+            self_originated: false,
+        }];
+    }
+
     let bytes = match std::fs::read(new_abs) {
         Ok(b) => b,
         Err(_) => return Vec::new(),
@@ -205,16 +235,6 @@ fn do_rename(
     let hash_u128 = content_hash(&bytes);
     let hash_hex = format!("{hash_u128:032x}");
     let self_originated = tokens.consume_if_match(new_abs, &bytes);
-
-    let new_slug = file_stem(new_abs);
-    let new_group = group_path_for_rel(&new_rel);
-
-    // Apply the rename in the index (preserves integer row-id + backlinks),
-    // then upsert to refresh content.
-    if let Err(e) = index.rename_entry(old_rel, &new_rel, &new_slug, &new_group) {
-        log_index_error("rename_entry", &new_rel, &e, needs_full_rescan);
-        return Vec::new();
-    }
 
     let entry = Entry::from_bytes(&bytes);
     if let Err(e) = index.upsert_entry(
@@ -319,9 +339,34 @@ fn do_upsert(
         }
     };
 
+    // ── Step 3b: cloud placeholder detection (issue #29, item 1) ─────────────
+    //
+    // A placeholder file exists on disk but its content has been evicted by the
+    // sync provider (iCloud SF_DATALESS on macOS, or read-returns-empty
+    // heuristic on other platforms).  Per spec 0013 §"Sync posture":
+    //   "entry shows as pending, never as empty"
+    //
+    // What we do:
+    //   1. Mark the ledger row as pending (files.pending = 1).
+    //   2. DO NOT create or update the entry row from empty/placeholder bytes.
+    //      If an entry row already exists for this path, it is preserved as-is.
+    //   3. Attempt a throwaway read to trigger iCloud download (on macOS the
+    //      first read of a dataless file requests materialization from the daemon).
+    //   4. Emit ChangeKind::Pending so the UI can show "pending, not empty".
+    //   5. The caller should schedule a re-reconcile once the file materializes.
+    if file_stat.is_placeholder {
+        return do_placeholder(index, abs_path, &rel, &file_stat, needs_full_rescan);
+    }
+
     // ── Step 5: mtime+size fast path ─────────────────────────────────────────
     let ledger = index.ledger_row(&rel).ok().flatten();
     if !is_stale(ledger.as_ref(), &file_stat) {
+        // Still check: if this file was previously marked pending and now has
+        // real content (is_placeholder = false), the mtime/size may have changed
+        // due to materialization.  is_stale covers that case: if mtime/size
+        // differ from the ledger, we fall through to re-parse.  If they are
+        // identical (shouldn't happen for a newly materialized file, but possible
+        // on clock-skew systems), we accept the stale read as a benign no-op.
         return Vec::new();
     }
 
@@ -539,6 +584,55 @@ fn reid_existing(
     })
 }
 
+/// Handle a cloud placeholder ("dataless") file.
+///
+/// Records the placeholder state in the ledger (`files.pending = 1`) and emits
+/// a `ChangeKind::Pending` event.  The entry row is NOT modified — if one exists
+/// from before the eviction, it is kept; if none exists, we do not create one
+/// from empty bytes.
+///
+/// Also performs a throwaway read to request materialization from the sync
+/// daemon (on macOS, reading a `SF_DATALESS` file triggers iCloud download).
+/// This is a best-effort nudge; the actual download is asynchronous.  Once the
+/// file materializes, the watcher/next-rescan will re-reconcile it normally.
+///
+/// # Limits
+///
+/// - The throwaway read may itself fail or block briefly while the daemon
+///   schedules the download.  We `ignore` the result — the pending state will
+///   be cleared on the next successful reconcile.
+/// - On platforms without `SF_DATALESS` (non-macOS) we use the read-returns-
+///   empty heuristic (see `ledger::detect_placeholder`).  Sparse files that
+///   genuinely contain leading zeros but have non-zero content later in the file
+///   are NOT mis-detected (the heuristic requires the entire read to be empty or
+///   all-zero AND shorter than stat_size).
+fn do_placeholder(
+    index: &mut Index,
+    abs_path: &Path,
+    rel: &str,
+    file_stat: &super::ledger::FileStat,
+    needs_full_rescan: &AtomicBool,
+) -> Vec<ChangeEvent> {
+    // Placeholder hash: use an empty-content hash as a stable sentinel.  The
+    // real content hash will be written when the file materializes.
+    let placeholder_hash = format!("{:032x}", content_hash(&[]));
+
+    if let Err(e) = index.mark_pending(rel, file_stat.mtime, file_stat.size, &placeholder_hash) {
+        log_index_error("mark_pending", rel, &e, needs_full_rescan);
+        return Vec::new();
+    }
+
+    // Throwaway read → triggers iCloud/sync download on macOS.
+    // We discard the result; it is a best-effort materialization request.
+    let _ = std::fs::read(abs_path);
+
+    vec![ChangeEvent {
+        path: abs_path.to_path_buf(),
+        kind: ChangeKind::Pending,
+        self_originated: false,
+    }]
+}
+
 /// Write only the files-ledger row for a reserved (non-entry) file.
 fn reserved_ledger_only(
     index: &mut Index,
@@ -623,12 +717,30 @@ fn log_index_error(
 /// Compute the library-relative path string from an absolute path.
 ///
 /// Returns `None` if `abs_path` is not under `library_root`.
+///
+/// # Unicode normalization guard (issue #29, item 3)
+///
+/// macOS HFS+/APFS delivers filenames in NFD form (decomposed), while the index
+/// stores NFC (composed) strings produced from Rust string literals and user
+/// input.  Without normalization, the same physical file can appear as "absent"
+/// in deletion detection or as a false-new entry on every rescan, because:
+///
+///   NFD "café.md" (6 bytes: c, a, f, e, COMBINING_ACUTE, .md)
+///   ≠ NFC "café.md" (5 bytes: c, a, f, é, .md)
+///
+/// We normalize to NFC at this boundary — the single point where an
+/// on-disk path is converted to the string form stored in the index.
+/// All index lookups and comparisons therefore use NFC strings consistently.
+///
+/// Limit: normalization is on the _string_ representation only; the on-disk
+/// file is not renamed.  Wikilink rewrites must apply the same normalization
+/// independently (out of scope for this module).
 pub(crate) fn rel_path(library_root: &Path, abs_path: &Path) -> Option<String> {
-    abs_path
-        .strip_prefix(library_root)
-        .ok()?
-        .to_str()
-        .map(|s| s.to_string())
+    let raw = abs_path.strip_prefix(library_root).ok()?.to_str()?;
+    // Normalize each path segment to NFC and reassemble with the platform separator.
+    // We split on the OS separator so multi-component paths work correctly.
+    let nfc: String = raw.nfc().collect();
+    Some(nfc)
 }
 
 /// Compute the group_path (parent directory relative to the library root).

@@ -6,13 +6,25 @@
 // is a no-op.
 //
 // All table definitions here are v1 per design-0001 §Model.
+//
+// ## v2 — cloud placeholder support (issue #29, item 1)
+//
+// Adds a nullable `pending` INTEGER column to `files`.  When non-NULL and
+// non-zero, the path is a cloud placeholder ("dataless" file): the on-disk file
+// exists but its content has been evicted by the sync provider.  The entry row
+// for that path is preserved (or not created from empty bytes); the reconciler
+// emits a `ChangeKind::Pending` event instead of `Created`/`Modified`.
+//
+// The column is added via `ALTER TABLE … ADD COLUMN` which is safe on existing
+// databases — the new column defaults to NULL on pre-existing rows, and the
+// migration is idempotent (the `ADD COLUMN` is wrapped in a check).
 
 use rusqlite::Connection;
 
 use super::IndexError;
 
 /// Current target schema version.
-const CURRENT_VERSION: i64 = 1;
+const CURRENT_VERSION: i64 = 2;
 
 /// Apply all pending migrations.
 pub fn run(conn: &mut Connection) -> Result<(), IndexError> {
@@ -31,6 +43,9 @@ pub fn run(conn: &mut Connection) -> Result<(), IndexError> {
 
     if version < 1 {
         apply_v1(conn)?;
+    }
+    if version < 2 {
+        apply_v2(conn)?;
     }
 
     Ok(())
@@ -167,6 +182,38 @@ fn apply_v1(conn: &mut Connection) -> Result<(), IndexError> {
     Ok(())
 }
 
+/// v2: add `pending` column to `files`.
+///
+/// `pending` is nullable INTEGER: NULL → not a placeholder; 1 → cloud placeholder
+/// detected (dataless/evicted file).  Existing rows keep NULL (= not pending).
+///
+/// Uses `ALTER TABLE … ADD COLUMN` for in-place upgrade; wrapped in a "column
+/// already exists" guard so the migration is idempotent.
+fn apply_v2(conn: &mut Connection) -> Result<(), IndexError> {
+    let tx = conn.transaction()?;
+
+    // Check whether the column already exists (idempotency guard).
+    let col_exists: bool = tx
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('files') WHERE name='pending'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
+        > 0;
+
+    if !col_exists {
+        tx.execute_batch("ALTER TABLE files ADD COLUMN pending INTEGER;")?;
+    }
+
+    tx.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?1)",
+        rusqlite::params![CURRENT_VERSION.to_string()],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -209,6 +256,19 @@ mod tests {
             )
             .unwrap();
         assert_eq!(fts_count, 1, "fts virtual table must exist");
+
+        // v2: files.pending column exists.
+        let pending_col: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('files') WHERE name='pending'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            pending_col, 1,
+            "files.pending column must exist after v2 migration"
+        );
     }
 
     #[test]
@@ -226,5 +286,50 @@ mod tests {
             )
             .unwrap();
         assert_eq!(ver, CURRENT_VERSION);
+    }
+
+    #[test]
+    fn v2_migration_is_idempotent_on_existing_v1_database() {
+        // Simulate a v1 database (no `pending` column) and verify v2 can be
+        // applied twice without error (idempotency guard).
+        //
+        // We bootstrap the meta table manually (as run() does) then call
+        // apply_v1 directly to create a v1 schema, then downgrade the recorded
+        // version to 1 so run() will apply v2.
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        // Bootstrap meta table (normally done by run() before apply_v1).
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+        )
+        .unwrap();
+        apply_v1(&mut conn).expect("v1 migration must succeed");
+        // Force version back to 1 so run() will detect v2 is missing and apply it.
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '1')",
+            [],
+        )
+        .unwrap();
+        run(&mut conn).expect("v2 migration on top of v1 must succeed");
+        run(&mut conn).expect("second run (v2 already applied) must be a no-op");
+
+        let ver: i64 = conn
+            .query_row(
+                "SELECT CAST(value AS INTEGER) FROM meta WHERE key='schema_version'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(ver, 2, "schema_version must be 2 after v2 migration");
+
+        // pending column must exist exactly once.
+        let col_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('files') WHERE name='pending'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(col_count, 1, "pending column must exist exactly once");
     }
 }

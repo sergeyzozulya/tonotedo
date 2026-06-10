@@ -23,6 +23,18 @@ pub enum ChangeKind {
     /// An entry was renamed (same frontmatter id, different path).
     /// Preserves backlinks — the integer row-id is unchanged.
     Renamed { old_path: PathBuf },
+    /// The file is a cloud placeholder (dataless/evicted).
+    ///
+    /// The ledger row records the placeholder state with `pending = 1`.  Any
+    /// existing entry row is preserved; no entry row is created from empty bytes.
+    /// Downstream UI should show the entry as "pending" — never as empty.
+    ///
+    /// A materialization request (throwaway read) has been attempted; the caller
+    /// should schedule a re-reconcile once the file is expected to be available.
+    ///
+    /// Spec ref: design-0001 §"Failure modes — Cloud placeholder", 0013 §"Sync
+    /// posture" ("entry shows as pending, never as empty").
+    Pending,
 }
 
 /// A coalesced change event emitted after a reconcile batch.

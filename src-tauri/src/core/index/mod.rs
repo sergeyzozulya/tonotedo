@@ -276,20 +276,52 @@ impl Index {
     ///
     /// Returns `None` when the path is not yet in the ledger.
     pub fn ledger_row(&self, rel_path: &str) -> Result<Option<LedgerRow>, IndexError> {
-        let result: rusqlite::Result<(i64, i64, String)> = self.conn.query_row(
-            "SELECT mtime, size, content_hash FROM files WHERE path = ?1",
+        let result: rusqlite::Result<(i64, i64, String, Option<i64>)> = self.conn.query_row(
+            "SELECT mtime, size, content_hash, pending FROM files WHERE path = ?1",
             params![rel_path],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         );
         match result {
-            Ok((mtime, size, content_hash)) => Ok(Some(LedgerRow {
+            Ok((mtime, size, content_hash, pending)) => Ok(Some(LedgerRow {
                 mtime,
                 size,
                 content_hash,
+                pending: pending.unwrap_or(0) != 0,
             })),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e.into()),
         }
+    }
+
+    /// Mark a ledger row as a cloud placeholder (pending).
+    ///
+    /// Creates or updates the `files` row for `path` with `pending = 1` and the
+    /// provided `mtime`/`size`/`content_hash` values.  The entry row is NOT
+    /// touched — existing entry content is preserved while the placeholder is active.
+    pub fn mark_pending(
+        &mut self,
+        path: &str,
+        mtime: i64,
+        size: i64,
+        content_hash: &str,
+    ) -> Result<(), IndexError> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO files (path, mtime, size, content_hash, pending)
+             VALUES (?1, ?2, ?3, ?4, 1)",
+            params![path, mtime, size, content_hash],
+        )?;
+        Ok(())
+    }
+
+    /// Clear the pending flag on a ledger row (file has been materialized).
+    ///
+    /// Used when a subsequent reconcile reads actual content from the file.
+    pub fn clear_pending(&mut self, path: &str) -> Result<(), IndexError> {
+        self.conn.execute(
+            "UPDATE files SET pending = NULL WHERE path = ?1",
+            params![path],
+        )?;
+        Ok(())
     }
 
     /// All library-relative paths currently in the `files` ledger.
@@ -312,6 +344,9 @@ pub struct LedgerRow {
     pub mtime: i64,
     pub size: i64,
     pub content_hash: String,
+    /// Whether this path is a cloud placeholder (dataless/evicted file).
+    /// NULL in the database is represented as `false` here.
+    pub pending: bool,
 }
 
 /// Tag metadata row (mirrors `tag_meta` table).
