@@ -2,5 +2,6 @@
 //! Each submodule maps to a Phase 2 issue; keep modules self-contained.
 
 pub mod frontmatter;
+pub mod fswrite;
 pub mod recurrence;
 pub mod trash;
