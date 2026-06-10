@@ -19,6 +19,25 @@ tauri = { version = "2.11.2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# YAML parsing: saphyr is the maintained fork of yaml-rust, YAML 1.2 compliant,
+# no serde dependency so we control serialization directly (needed for round-trip
+# byte-exact opaque-value preservation). serde_yaml is archived; serde-saphyr is
+# available but serde forces lossy type coercions that break the opaque round-trip
+# requirement, so we use the raw saphyr API.
+saphyr = "0.0.6"
+
+# Date/time: jiff provides civil dates, zoned/offset datetimes, and good parsing
+# of ISO 8601. It has explicit-offset support (Timestamp + TimeZone::fixed) which
+# matches the spec's "stored with explicit offset" requirement, and separately
+# represents offset-less civil datetimes for the zone-naive case allowed by 0002.
+jiff = "0.2"
+
+# ID generation: ULID is lexicographically sortable (good for SQLite index
+# ordering), monotonic, URL-safe, and opaque to users. UUID v7 would also be
+# sortable but ULID is more compact (26 chars vs 36) and the spec says "opaque".
+# ulid crate is the de-facto standard Rust implementation.
+ulid = "1"
+
 [profile.release]
 codegen-units = 1
 lto = true
