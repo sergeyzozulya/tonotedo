@@ -100,6 +100,8 @@ function stubIpc(overrides?: {
     remove_asset: vi.fn() as never,
     entry_titles: vi.fn() as never,
     list_groups: vi.fn() as never,
+    saved_searches_get: vi.fn() as never,
+    saved_searches_set: vi.fn() as never,
     on: vi.fn(() => () => {}),
   };
 }

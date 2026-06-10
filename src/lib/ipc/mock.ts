@@ -23,6 +23,7 @@ import type {
   IpcEventPayload,
   IpcUnsubscribe,
   ChipColor,
+  SavedSearch,
 } from "./types.js";
 
 // ── Mock data ─────────────────────────────────────────────────────────────────
@@ -546,6 +547,9 @@ function buildBacklinkIndex(): Map<EntryId, Backlink[]> {
 /** Mutable copy of entries so write_entry works during a session. */
 const store = new Map<EntryId, MockEntry>(ENTRIES.map((e) => [e.id, { ...e }]));
 
+/** In-memory saved-search list (mirrors _searches.md frontmatter shape). */
+let savedSearchStore: SavedSearch[] = [];
+
 // ── Asset store (issue #13 — in-memory for /dev demo) ────────────────────────
 
 // Two tiny sample images as base64 data URIs so the /dev demo shows inline
@@ -857,6 +861,17 @@ export const mock: Ipc = {
       count: counts.get(path) ?? 0,
     }));
     return { ok: true, value: groups };
+  },
+
+  // ── Saved searches (spec 0009) ────────────────────────────────────────────────
+
+  async saved_searches_get(): Promise<Result<SavedSearch[]>> {
+    return { ok: true, value: [...savedSearchStore] };
+  },
+
+  async saved_searches_set(searches: SavedSearch[]): Promise<Result<void>> {
+    savedSearchStore = searches.map((s) => ({ ...s, filters: s.filters.map((f) => ({ ...f })) }));
+    return { ok: true, value: undefined };
   },
 
   on<E extends IpcEventName>(

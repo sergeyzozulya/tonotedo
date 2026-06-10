@@ -23,9 +23,12 @@
   import EntryList from "./EntryList.svelte";
   import { Editor } from "../editor/index.js";
   import PropertiesPanel from "../panel/PropertiesPanel.svelte";
+  import SearchOverlay from "../search/SearchOverlay.svelte";
+  import { savedSearchesStore } from "../search/saved-searches-store.js";
   import type { EntrySummary } from "../ipc/types.js";
   import type { GroupNode } from "./group-tree.js";
   import type { ChangeSpec } from "../panel/frontmatter-view.js";
+  import type { SavedSearch } from "../search/saved-searches-store.js";
   import themeMap from "../../styles/THEME-MAP.json";
 
   // ── Theme switcher (minimal; #23 will formalise) ────────────────────────────
@@ -204,11 +207,46 @@
 
   const groupDisplayName = $derived(resolveGroupName(selectedGroupPath, groupTree));
 
+  // ── Search overlay ────────────────────────────────────────────────────────────
+
+  let searchOverlay = $state<
+    | {
+        openSearch(): void;
+        restoreSavedSearch(s: {
+          text: string;
+          filters: import("../ipc/types.js").SavedSearchFilter[];
+        }): void;
+      }
+    | undefined
+  >();
+
+  function openSearch(): void {
+    searchOverlay?.openSearch();
+  }
+
+  function onSelectSavedSearch(s: SavedSearch): void {
+    searchOverlay?.restoreSavedSearch(s);
+  }
+
+  // ── cmd+p keyboard shortcut ───────────────────────────────────────────────────
+
+  $effect(() => {
+    function onKeydown(e: KeyboardEvent): void {
+      if ((e.metaKey || e.ctrlKey) && e.key === "p") {
+        e.preventDefault();
+        openSearch();
+      }
+    }
+    window.addEventListener("keydown", onKeydown);
+    return () => window.removeEventListener("keydown", onKeydown);
+  });
+
   // ── Initial load ──────────────────────────────────────────────────────────────
 
   $effect(() => {
     loadGroups();
     loadEntries(null);
+    void savedSearchesStore.load();
   });
 </script>
 
@@ -291,7 +329,13 @@
     {/if}
 
     <!-- Sidebar -->
-    <Sidebar tree={groupTree} selectedPath={selectedGroupPath} {onGroupSelect} />
+    <Sidebar
+      tree={groupTree}
+      selectedPath={selectedGroupPath}
+      {onGroupSelect}
+      onOpenSearch={openSearch}
+      {onSelectSavedSearch}
+    />
 
     <!-- Entry list (hidden on mobile when in editor screen) -->
     {#if !narrow || mobileScreen === "list"}
@@ -336,6 +380,15 @@
       </aside>
     {/if}
   </div>
+
+  <!-- Search overlay (cmd+p) -->
+  <SearchOverlay
+    bind:this={searchOverlay}
+    onSelectEntry={(id) => {
+      selectEntry(id);
+      if (narrow) mobileScreen = "editor";
+    }}
+  />
 
   <!-- Status bar -->
   <footer class="statusbar">

@@ -2,6 +2,7 @@
 //
 // First-wave commands: read_entry, write_entry, search, tag_index,
 // people_index, entries_in_group, backlinks.
+// Saved-search commands: saved_searches_get, saved_searches_set (spec 0009).
 // Events: index_changed, file_conflict.
 //
 // Paged queries carry a cursor and return a bounded page. Typed Result errors
@@ -141,6 +142,25 @@ export interface GroupMeta {
   color?: string;
 }
 
+// ── Saved searches (spec 0009) ────────────────────────────────────────────────
+
+/**
+ * A single structured filter chip value.
+ * The `kind` discriminator future-proofs the schema — new chip types can be
+ * added without migrating existing `_searches.md` files (spec 0009).
+ */
+export type SavedSearchFilter = { kind: "tag"; values: string[] } | { kind: "group"; path: string };
+
+/** A persisted search combining free-text and chip state (spec 0009). */
+export interface SavedSearch {
+  /** Display name shown in the sidebar. */
+  name: string;
+  /** Free-text query (empty string = no text filter). */
+  text: string;
+  /** Chip state — may be empty. */
+  filters: SavedSearchFilter[];
+}
+
 // ── Command surface (design-0004 §Command surface) ────────────────────────────
 
 export interface IpcCommands {
@@ -217,6 +237,20 @@ export interface IpcCommands {
    * the UI performs the sort/tree-building itself.
    */
   list_groups(): Promise<Result<GroupMeta[]>>;
+
+  // ── Saved searches (spec 0009) ─────────────────────────────────────────────
+
+  /**
+   * Read all saved searches from `_searches.md` at the library root.
+   * Returns an empty array when the file does not exist.
+   */
+  saved_searches_get(): Promise<Result<SavedSearch[]>>;
+
+  /**
+   * Overwrite the saved-searches list in `_searches.md`.
+   * The implementation serialises the exact YAML shape from spec 0009.
+   */
+  saved_searches_set(searches: SavedSearch[]): Promise<Result<void>>;
 }
 
 // ── Event surface (core → UI, design-0004 §Event surface) ─────────────────────
