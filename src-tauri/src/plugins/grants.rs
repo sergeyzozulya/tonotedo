@@ -1,9 +1,17 @@
 // Per-library permission grant store (spec 0010 §"Permissions", design-0002 §"Model").
 //
-// Grants persist in `<library>/.tonotedo/state/plugin-grants.json`. They are per-library
-// because plugins travel with the library (0013) and a synced-in plugin re-prompts on a
-// new device by design (design-0002). The store records, per plugin id, the version the
-// grants were captured against and the set of granted permission entries.
+// SECURITY (review C2): grants are stored in DEVICE-LOCAL app-private storage, NOT inside
+// the synced library. A grants file synced in from another device would otherwise be
+// trusted on a fresh device and yield zero-prompt full grants — the reproduced exploit.
+// Instead, the grant file lives under the OS app-config dir, keyed by a hash of the
+// canonical library-root path, so it never travels with the library. Any
+// `plugin-grants.json` found inside `<library>/.tonotedo` is IGNORED (and a warning is
+// recorded by the caller). Consequence (intended per 0013 §"Plugins travel with the
+// library", design-0002): a synced-in plugin is always permissions-pending on a new
+// device and the user must re-prompt — exactly the 0013/0010 conformance we want.
+//
+// The store records, per plugin id, the version the grants were captured against and the
+// set of granted permission entries.
 //
 // VERSION-DIFF RULE (0010 edge case "Plugin version downgrade/upgrade across launches"):
 //   When a plugin's manifest version differs from the stored version, reconcile against
@@ -26,7 +34,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::core::fswrite::atomic_write;
+use crate::core::fswrite::{atomic_write, content_hash};
 
 use super::manifest::Manifest;
 
@@ -47,8 +55,25 @@ pub struct GrantStore {
     plugins: BTreeMap<String, PluginGrant>,
 }
 
-/// Path to the grants file for a library root.
-pub fn grants_path(library_root: &Path) -> PathBuf {
+/// Device-local grants path for a library root, under the app-private `grants_dir`.
+///
+/// The filename is keyed by a hash of the *canonical* library-root path so two distinct
+/// libraries never collide and the file does not travel with the synced library
+/// (review C2). Canonicalization fails only when the root does not exist; we then fall
+/// back to the lexical path bytes so the function is still total.
+pub fn device_grants_path(grants_dir: &Path, library_root: &Path) -> PathBuf {
+    let canonical = library_root
+        .canonicalize()
+        .unwrap_or_else(|_| library_root.to_path_buf());
+    let key = content_hash(canonical.to_string_lossy().as_bytes());
+    grants_dir
+        .join("plugins")
+        .join(format!("grants-{key:032x}.json"))
+}
+
+/// The (legacy/attacker-controlled) in-library grants path. Files here are IGNORED at load
+/// time (review C2); `load` records that it saw one so the caller can warn the user.
+pub fn in_library_grants_path(library_root: &Path) -> PathBuf {
     library_root
         .join(".tonotedo")
         .join("state")
@@ -56,19 +81,25 @@ pub fn grants_path(library_root: &Path) -> PathBuf {
 }
 
 impl GrantStore {
-    /// Load the grant store from disk. A missing or unparseable file yields an empty
-    /// store (grants are advisory state, never a hard failure on read).
-    pub fn load(library_root: &Path) -> Self {
-        let path = grants_path(library_root);
-        match std::fs::read(&path) {
+    /// Load the device-local grant store from disk. A missing or unparseable file yields an
+    /// empty store (grants are advisory state, never a hard failure on read).
+    ///
+    /// `saw_in_library_grants` reports whether an in-library `plugin-grants.json` exists; it
+    /// is NEVER read (review C2: synced-in grants must not be trusted) — the caller turns a
+    /// `true` into a discovery warning.
+    pub fn load(grants_dir: &Path, library_root: &Path) -> (Self, bool) {
+        let saw_in_library = in_library_grants_path(library_root).exists();
+        let path = device_grants_path(grants_dir, library_root);
+        let store = match std::fs::read(&path) {
             Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
             Err(_) => GrantStore::default(),
-        }
+        };
+        (store, saw_in_library)
     }
 
-    /// Persist the grant store atomically.
-    pub fn save(&self, library_root: &Path) -> std::io::Result<()> {
-        let path = grants_path(library_root);
+    /// Persist the grant store atomically to device-local storage.
+    pub fn save(&self, grants_dir: &Path, library_root: &Path) -> std::io::Result<()> {
+        let path = device_grants_path(grants_dir, library_root);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -198,16 +229,51 @@ mod tests {
     }
 
     #[test]
-    fn round_trips_through_disk() {
-        let dir = TempDir::new().unwrap();
+    fn round_trips_through_device_local_storage() {
+        let grants_dir = TempDir::new().unwrap();
+        let library = TempDir::new().unwrap();
         let m = manifest("1.0.0", "[read-entries, write-entries]");
         let mut store = GrantStore::default();
         store.set_grant(&m, "read-entries", true);
-        store.save(dir.path()).unwrap();
+        store.save(grants_dir.path(), library.path()).unwrap();
 
-        let loaded = GrantStore::load(dir.path());
+        let (loaded, saw) = GrantStore::load(grants_dir.path(), library.path());
+        assert!(!saw, "no in-library grants file present");
         assert!(loaded.is_granted("com.test.p", "read-entries"));
         assert!(!loaded.is_granted("com.test.p", "write-entries"));
+    }
+
+    #[test]
+    fn in_library_grants_file_is_ignored_and_flagged() {
+        // C2 regression: a pre-authored in-library grants file (as if synced from another
+        // device) must NOT be trusted; load reports an empty store + the warning flag.
+        let grants_dir = TempDir::new().unwrap();
+        let library = TempDir::new().unwrap();
+        let attacker = in_library_grants_path(library.path());
+        std::fs::create_dir_all(attacker.parent().unwrap()).unwrap();
+        std::fs::write(
+            &attacker,
+            br#"{"plugins":{"com.test.p":{"version":"1.0.0","granted":["read-entries","write-entries"]}}}"#,
+        )
+        .unwrap();
+
+        let (loaded, saw) = GrantStore::load(grants_dir.path(), library.path());
+        assert!(saw, "the in-library grants file must be flagged");
+        // It is NOT honored: no grant leaks through.
+        assert!(!loaded.is_granted("com.test.p", "read-entries"));
+        assert!(!loaded.is_granted("com.test.p", "write-entries"));
+    }
+
+    #[test]
+    fn device_grants_path_keyed_by_library() {
+        let grants_dir = TempDir::new().unwrap();
+        let a = TempDir::new().unwrap();
+        let b = TempDir::new().unwrap();
+        assert_ne!(
+            device_grants_path(grants_dir.path(), a.path()),
+            device_grants_path(grants_dir.path(), b.path()),
+            "distinct libraries get distinct grant files"
+        );
     }
 
     #[test]

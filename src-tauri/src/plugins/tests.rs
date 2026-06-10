@@ -25,6 +25,19 @@ fn tmp() -> tempfile::TempDir {
     tempfile::tempdir().unwrap()
 }
 
+/// A device-local grants directory for tests (review C2: grants live OUTSIDE the synced
+/// library). It is shared but the store is keyed by the canonical library path inside, so
+/// distinct test libraries never collide and a reload of the SAME library reuses its file
+/// (which the persistence tests rely on).
+fn grants_dir() -> std::path::PathBuf {
+    std::env::temp_dir().join("tonotedo-test-grants")
+}
+
+/// Load a host with the device-local grants dir threaded in.
+fn load(dir: &tempfile::TempDir) -> PluginHost {
+    PluginHost::load(dir.path().to_path_buf(), grants_dir())
+}
+
 // ── Discovery + activation ─────────────────────────────────────────────────────
 
 #[test]
@@ -37,7 +50,7 @@ fn discovers_and_activates_permissionless_plugin() {
         Some("plugin.registerCommand('hi', 'Say hi', function() { return { ok: true }; });"),
     );
 
-    let host = PluginHost::load(dir.path().to_path_buf());
+    let host = load(&dir);
     let list = host.list();
     assert_eq!(list.len(), 1);
     assert_eq!(list[0].status, PluginStatus::Active);
@@ -61,7 +74,7 @@ fn invalid_manifest_is_ignored_with_warning() {
         "---\nname: Broken\nversion: 1.0.0\nshape: [processor]\n---\n",
         None,
     );
-    let host = PluginHost::load(dir.path().to_path_buf());
+    let host = load(&dir);
     assert!(host.list().is_empty(), "broken plugin must not load");
     assert_eq!(host.warnings().len(), 1);
     assert_eq!(host.warnings()[0].source, "broken");
@@ -74,7 +87,7 @@ fn folder_without_manifest_is_ignored() {
     std::fs::create_dir_all(&pdir).unwrap();
     std::fs::write(pdir.join("readme.txt"), "hi").unwrap();
 
-    let host = PluginHost::load(dir.path().to_path_buf());
+    let host = load(&dir);
     assert!(host.list().is_empty());
     assert_eq!(host.warnings().len(), 1);
 }
@@ -91,7 +104,7 @@ fn duplicate_entries_owner_path_rejects_second() {
     write_plugin(dir.path(), "a-plugin", &body("com.test.a"), None);
     write_plugin(dir.path(), "b-plugin", &body("com.test.b"), None);
 
-    let host = PluginHost::load(dir.path().to_path_buf());
+    let host = load(&dir);
     let ids: Vec<_> = host.list().iter().map(|p| p.id.clone()).collect();
     assert_eq!(ids, vec!["com.test.a"], "only the first claimant loads");
     assert!(host
@@ -111,7 +124,7 @@ fn plugin_requesting_permission_starts_pending() {
         "---\nid: com.test.syncer\nname: Syncer\nversion: 1.0.0\nshape: [provider]\ncapabilities: [command]\npermissions: [read-entries]\n---\n",
         Some("plugin.registerCommand('sync', 'Sync', function() { return 1; });"),
     );
-    let host = PluginHost::load(dir.path().to_path_buf());
+    let host = load(&dir);
     assert_eq!(host.list()[0].status, PluginStatus::PermissionsPending);
     // Pending plugins have no runtime → commands cannot run.
     let err = host
@@ -131,7 +144,7 @@ fn granting_permission_activates_and_persists() {
     );
 
     {
-        let mut host = PluginHost::load(dir.path().to_path_buf());
+        let mut host = load(&dir);
         host.set_grant("com.test.syncer", "read-entries", true)
             .unwrap();
         assert_eq!(host.list()[0].status, PluginStatus::Active);
@@ -142,7 +155,7 @@ fn granting_permission_activates_and_persists() {
     }
 
     // Reload: the grant persisted, so the plugin activates immediately.
-    let host2 = PluginHost::load(dir.path().to_path_buf());
+    let host2 = load(&dir);
     assert_eq!(host2.list()[0].status, PluginStatus::Active);
 }
 
@@ -155,7 +168,7 @@ fn revoking_permission_knocks_plugin_back_to_pending() {
         "---\nid: com.test.syncer\nname: Syncer\nversion: 1.0.0\nshape: [provider]\ncapabilities: [command]\npermissions: [read-entries]\n---\n",
         Some("plugin.registerCommand('sync', 'Sync', function() { return 1; });"),
     );
-    let mut host = PluginHost::load(dir.path().to_path_buf());
+    let mut host = load(&dir);
     host.set_grant("com.test.syncer", "read-entries", true)
         .unwrap();
     assert_eq!(host.list()[0].status, PluginStatus::Active);
@@ -173,9 +186,74 @@ fn set_grant_unknown_permission_errors() {
         "---\nid: com.test.p\nname: P\nversion: 1.0.0\nshape: [provider]\ncapabilities: [command]\npermissions: [read-entries]\n---\n",
         None,
     );
-    let mut host = PluginHost::load(dir.path().to_path_buf());
+    let mut host = load(&dir);
     let err = host.set_grant("com.test.p", "network", true).unwrap_err();
     assert_eq!(err.code, error::PluginErrorCode::InvalidArgument);
+}
+
+#[test]
+fn synced_in_library_grants_are_ignored_plugin_stays_pending() {
+    // C2 regression (reproduced exploit): a synced-in `plugin-grants.json` inside the
+    // library granted full permissions with zero prompts on a fresh device. With grants
+    // device-local, the in-library file is ignored → the plugin is permissions-pending and
+    // a warning is recorded (0013/0010 conformance: re-prompt on a new device).
+    let dir = tmp();
+    write_plugin(
+        dir.path(),
+        "syncer",
+        "---\nid: com.test.syncer\nname: Syncer\nversion: 1.0.0\nshape: [provider]\ncapabilities: [command]\npermissions: [read-entries]\n---\n",
+        Some("plugin.registerCommand('sync', 'Sync', function() { return 1; });"),
+    );
+    // Attacker pre-authors a synced grants file granting read-entries.
+    let attacker = grants::in_library_grants_path(dir.path());
+    std::fs::create_dir_all(attacker.parent().unwrap()).unwrap();
+    std::fs::write(
+        &attacker,
+        br#"{"plugins":{"com.test.syncer":{"version":"1.0.0","granted":["read-entries"]}}}"#,
+    )
+    .unwrap();
+
+    // Fresh device: a never-before-seen grants dir.
+    let fresh_device_grants = tmp();
+    let host = PluginHost::load(
+        dir.path().to_path_buf(),
+        fresh_device_grants.path().to_path_buf(),
+    );
+    assert_eq!(
+        host.list()[0].status,
+        PluginStatus::PermissionsPending,
+        "synced-in grants must not auto-activate the plugin"
+    );
+    assert!(
+        host.warnings()
+            .iter()
+            .any(|w| w.reason.contains("in-library plugin-grants.json ignored")),
+        "a warning about the ignored in-library grants must be recorded"
+    );
+}
+
+#[test]
+fn device_local_grant_round_trips_on_same_device() {
+    // The legitimate path: granting on a device persists to device-local storage and a
+    // reload with the SAME device grants dir re-activates without a prompt.
+    let dir = tmp();
+    write_plugin(
+        dir.path(),
+        "syncer",
+        "---\nid: com.test.syncer\nname: Syncer\nversion: 1.0.0\nshape: [provider]\ncapabilities: [command]\npermissions: [read-entries]\n---\n",
+        Some("plugin.registerCommand('sync', 'Sync', function() { return 1; });"),
+    );
+    let device_grants = tmp();
+    {
+        let mut host =
+            PluginHost::load(dir.path().to_path_buf(), device_grants.path().to_path_buf());
+        host.set_grant("com.test.syncer", "read-entries", true)
+            .unwrap();
+        assert_eq!(host.list()[0].status, PluginStatus::Active);
+    }
+    // Reload on the SAME device → still active (grant persisted device-locally).
+    let host2 = PluginHost::load(dir.path().to_path_buf(), device_grants.path().to_path_buf());
+    assert_eq!(host2.list()[0].status, PluginStatus::Active);
 }
 
 // ── entries-owner end to end (grant gate + conflict) ───────────────────────────
@@ -200,7 +278,7 @@ fn grant_all(host: &mut PluginHost, id: &str) {
 fn entries_owner_write_inside_prefix_succeeds() {
     let dir = tmp();
     write_plugin(dir.path(), "cal", OWNER_MANIFEST, Some(OWNER_JS));
-    let mut host = PluginHost::load(dir.path().to_path_buf());
+    let mut host = load(&dir);
     grant_all(&mut host, "com.test.cal");
 
     let out = host
@@ -218,7 +296,7 @@ fn entries_owner_write_inside_prefix_succeeds() {
 fn entries_owner_write_outside_prefix_refused() {
     let dir = tmp();
     write_plugin(dir.path(), "cal", OWNER_MANIFEST, Some(OWNER_JS));
-    let mut host = PluginHost::load(dir.path().to_path_buf());
+    let mut host = load(&dir);
     grant_all(&mut host, "com.test.cal");
 
     // The JS throws because the host returns a path-outside-prefix error envelope.
@@ -238,7 +316,7 @@ fn entries_owner_write_outside_prefix_refused() {
 fn entries_owner_write_without_grant_is_permission_error() {
     let dir = tmp();
     write_plugin(dir.path(), "cal", OWNER_MANIFEST, Some(OWNER_JS));
-    let mut host = PluginHost::load(dir.path().to_path_buf());
+    let mut host = load(&dir);
     // Grant read so the plugin activates, but NOT write.
     host.set_grant("com.test.cal", "read-entries", true)
         .unwrap();
@@ -260,7 +338,7 @@ fn entries_owner_write_without_grant_is_permission_error() {
 fn entries_owner_conflict_when_user_modified() {
     let dir = tmp();
     write_plugin(dir.path(), "cal", OWNER_MANIFEST, Some(OWNER_JS));
-    let mut host = PluginHost::load(dir.path().to_path_buf());
+    let mut host = load(&dir);
     grant_all(&mut host, "com.test.cal");
 
     let rel = "Calendar/Google/e1.md";
@@ -295,6 +373,57 @@ fn entries_owner_conflict_when_user_modified() {
     assert_eq!(on_disk, b"# User edited\n");
 }
 
+#[test]
+fn revoke_keeps_runtime_commands_registered_but_invocation_errors() {
+    // M6 / 0010 edge case: "Affected capabilities suspend; commands stay registered but
+    // error if invoked." Revoking a permission must NOT tear down the runtime — the command
+    // remains listed, but invoking it returns PermissionRevoked. Re-granting restores it.
+    let dir = tmp();
+    write_plugin(
+        dir.path(),
+        "syncer",
+        "---\nid: com.test.syncer\nname: Syncer\nversion: 1.0.0\nshape: [provider]\ncapabilities: [command]\npermissions: [read-entries]\n---\n",
+        Some("plugin.registerCommand('sync', 'Sync', function() { return 7; });"),
+    );
+    let mut host = load(&dir);
+    host.set_grant("com.test.syncer", "read-entries", true)
+        .unwrap();
+    assert_eq!(host.list()[0].status, PluginStatus::Active);
+    assert_eq!(
+        host.invoke_command("com.test.syncer", "com.test.syncer.sync", "null")
+            .unwrap(),
+        "7"
+    );
+
+    // Revoke mid-session.
+    host.set_grant("com.test.syncer", "read-entries", false)
+        .unwrap();
+    let info = &host.list()[0];
+    // Capability suspended (pending) but the command is STILL registered/listed.
+    assert_eq!(info.status, PluginStatus::PermissionsPending);
+    assert_eq!(
+        info.commands.len(),
+        1,
+        "command stays registered after revoke"
+    );
+    assert_eq!(info.commands[0].id, "com.test.syncer.sync");
+    // Invoking it now errors with PermissionRevoked (not NotActive — the runtime is alive).
+    let err = host
+        .invoke_command("com.test.syncer", "com.test.syncer.sync", "null")
+        .unwrap_err();
+    assert_eq!(err.code, error::PluginErrorCode::PermissionRevoked);
+
+    // Re-grant clears it: the command works again without a re-spawn.
+    host.set_grant("com.test.syncer", "read-entries", true)
+        .unwrap();
+    assert_eq!(host.list()[0].status, PluginStatus::Active);
+    assert_eq!(
+        host.invoke_command("com.test.syncer", "com.test.syncer.sync", "null")
+            .unwrap(),
+        "7"
+    );
+}
+
 // ── render-code-block end to end ───────────────────────────────────────────────
 
 #[test]
@@ -310,7 +439,7 @@ fn render_code_block_returns_constrained_output() {
              });",
         ),
     );
-    let host = PluginHost::load(dir.path().to_path_buf());
+    let host = load(&dir);
     let out = host
         .render_code_block("com.test.mermaid", "graph TD;", "mermaid")
         .unwrap();
@@ -331,7 +460,7 @@ fn render_code_block_empty_is_fallback() {
         // Renderer returns null → graceful fallback.
         Some("plugin.registerCodeBlockRenderer(function() { return null; });"),
     );
-    let host = PluginHost::load(dir.path().to_path_buf());
+    let host = load(&dir);
     let out = host.render_code_block("com.test.noop", "x", "y").unwrap();
     assert!(out.is_empty());
 }
@@ -347,7 +476,7 @@ fn three_strikes_suspends_in_manager_view() {
         "---\nid: com.test.buggy\nname: Buggy\nversion: 1.0.0\nshape: [processor]\ncapabilities: [command]\npermissions: []\n---\n",
         Some("plugin.registerCommand('boom', 'Boom', function() { throw new Error('x'); });"),
     );
-    let host = PluginHost::load(dir.path().to_path_buf());
+    let host = load(&dir);
     for _ in 0..3 {
         let _ = host.invoke_command("com.test.buggy", "com.test.buggy.boom", "null");
     }
@@ -370,7 +499,7 @@ plugin.registerCommand('hit', 'Hit', function(args) {
 fn network_ungranted_host_is_refused() {
     let dir = tmp();
     write_plugin(dir.path(), "net", NET_MANIFEST, Some(NET_JS));
-    let mut host = PluginHost::load(dir.path().to_path_buf());
+    let mut host = load(&dir);
     host.set_grant("com.test.net", "network:api.example.com", true)
         .unwrap();
     // Request a DIFFERENT host than the one granted → refused by the per-host gate.
@@ -393,7 +522,7 @@ fn network_ungranted_host_is_refused() {
 fn network_granted_host_is_gated_but_deferred() {
     let dir = tmp();
     write_plugin(dir.path(), "net", NET_MANIFEST, Some(NET_JS));
-    let mut host = PluginHost::load(dir.path().to_path_buf());
+    let mut host = load(&dir);
     host.set_grant("com.test.net", "network:api.example.com", true)
         .unwrap();
     // The granted host passes the gate but the transport is deferred → Unsupported.
@@ -417,7 +546,7 @@ fn invoking_unregistered_command_errors() {
         "---\nid: com.test.p\nname: P\nversion: 1.0.0\nshape: [processor]\ncapabilities: [command]\npermissions: []\n---\n",
         Some("plugin.registerCommand('real', 'Real', function() { return 1; });"),
     );
-    let host = PluginHost::load(dir.path().to_path_buf());
+    let host = load(&dir);
     let err = host
         .invoke_command("com.test.p", "com.test.p.ghost", "null")
         .unwrap_err();

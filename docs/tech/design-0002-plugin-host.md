@@ -22,7 +22,13 @@ adr-0005 picks QuickJS via `rquickjs`, one runtime per plugin, hosted in the Rus
 
 ## Model
 
-**Lifecycle.** `discovered → manifest-validated → permissions-pending → active → (suspended | failed)`. Discovery scans `.tonotedo/plugins/*/plugin.md` at launch and on the reload command. Invalid manifest → ignored with a warning (0010 edge case). First activation prompts for permissions; the grant set persists in app-private state (`.tonotedo/`, per-library — plugins travel with the library (0013), so grants are per-library too, and a synced-in plugin re-prompts on each new device by design).
+**Lifecycle.** `discovered → manifest-validated → permissions-pending → active → (suspended | failed)`. Discovery scans `.tonotedo/plugins/*/plugin.md` at launch and on the reload command. Invalid manifest → ignored with a warning (0010 edge case). First activation prompts for permissions.
+
+**Grant store location (device-local, app-private).** The grant set persists in **device-local** OS app-config storage — *outside* the synced library — in a file keyed by a hash of the canonical library-root path. It is **never** written into `.tonotedo/`, and any `plugin-grants.json` found inside the library is **ignored on load and the user is warned**.
+
+Security rationale (the synced-grants attack): an earlier design stored grants at `<library>/.tonotedo/state/plugin-grants.json`. Because plugins (and `.tonotedo/state`) travel with the library via sync (0013), an attacker (or a compromised/co-operating sync peer) could author a grants file that pre-authorizes full permissions; on a fresh device the host would trust it and activate a plugin with **zero prompts**. Moving grants to per-device app-private storage breaks this: synced-in state can never be trusted as a grant.
+
+Consequence (intended, per 0013/0010): because grants are per-device, a plugin synced in from another device is always **permissions-pending** on a new device and the user must re-prompt before it activates. This per-device re-prompt is the deliberate, specified behavior — plugins travel with the library, but the *decision to trust* them does not.
 
 **Runtimes.** One `rquickjs` Runtime+Context per active plugin, owned by a dedicated plugin-host thread pool (N small threads; plugins are I/O-light). Each runtime gets: a memory limit (default 64MB), an interrupt handler driven by a per-call deadline (default 5s for commands, 500ms for `render-code-block`), and a microtask pump integrated with the host's async executor. Exceeding limits kills the job, not the app; repeated kills (3 strikes per session) suspend the capability and surface in the plugin manager.
 
@@ -55,5 +61,5 @@ Every injected function re-checks the persisted grant set on call; a revoked per
 ## Open questions
 
 - Deadline/fuel defaults need empirical tuning once real plugins exist; the numbers above are starting points, not commitments.
-- Async shape of the plugin API: promises pumped per-job vs a long-lived event loop per plugin. Leaning per-job for containment; validate against a real provider plugin (gcal-style sync) during the spike phase.
+- Async shape of the plugin API: promises pumped per-job vs a long-lived event loop per plugin. **Resolved for v1 (review M1):** per-job, under the call's existing deadline. When a command/renderer returns a thenable/Promise, the host drains the microtask queue *under the same deadline* and unwraps the resolved value; a Promise still pending after the queue drains (i.e. it awaited a host async source v1 does not provide) yields a structured `Unsupported('async plugin commands not supported in v1')` rather than a silent `{}`. This keeps containment (the deadline still bounds the whole call) and gives a real provider plugin a deterministic answer; a long-lived event loop is deferred until a shipping provider needs genuine host-async I/O.
 - Whether `render-code-block` output is a sanitized HTML subset or a constrained AST the UI renders; the AST is safer and is the working assumption.

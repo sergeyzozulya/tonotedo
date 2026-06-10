@@ -411,6 +411,13 @@ export interface IpcCommands {
   plugins_list(): Promise<Result<PluginInfo[]>>;
 
   /**
+   * Re-discover plugin manifests and reconcile grants for the open library, then
+   * return the refreshed inventory. Used by the manager's reload affordance; picks
+   * up newly-dropped plugin folders and version changes without a restart.
+   */
+  plugins_reload(): Promise<Result<PluginInfo[]>>;
+
+  /**
    * Grant or revoke a single permission for a plugin. Granting the last missing
    * permission activates the plugin; revoking a live one knocks it back to
    * permissions-pending (its capabilities stop immediately).

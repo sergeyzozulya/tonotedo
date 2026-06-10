@@ -1277,6 +1277,13 @@ export const mock: Ipc = {
     return { ok: true, value: pluginStore.map((p) => ({ ...p, granted: [...p.granted] })) };
   },
 
+  async plugins_reload(): Promise<Result<PluginInfo[]>> {
+    // The mock has no real filesystem to re-scan; reload returns the current inventory,
+    // mirroring the real command's shape (a refreshed PluginInfo[]).
+    console.log("[mock ipc] plugins_reload");
+    return { ok: true, value: pluginStore.map((p) => ({ ...p, granted: [...p.granted] })) };
+  },
+
   async plugins_set_grant(plugin: string, perm: string, granted: boolean): Promise<Result<void>> {
     const p = pluginStore.find((x) => x.id === plugin);
     if (!p) {

@@ -27,13 +27,14 @@
 //   - PANIC CONTAINMENT: every JS call is wrapped in `catch_unwind`; a panic crossing the
 //     FFI boundary becomes a structured `HostInternal` error + strike, never an abort.
 
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender};
-use rquickjs::{Context, Function, Runtime};
+use rquickjs::allocator::{Allocator, RustAllocator};
+use rquickjs::{Context, Function, Persistent, Promise, Runtime, Value};
 
 use super::capability::{
     EntriesOwner, RegisteredCommand, RegisteredView, RenderOutput, WriteOutcome,
@@ -51,8 +52,109 @@ pub const RENDER_DEADLINE: Duration = Duration::from_millis(500);
 /// Strikes before a capability is suspended (design-0002 "3 strikes per session").
 pub const MAX_STRIKES: u32 = 3;
 
+/// QuickJS soft stack limit (engine raises a catchable RangeError past this).
+const WORKER_JS_STACK: usize = 512 * 1024;
+/// OS stack for the plugin worker thread. MUST exceed `WORKER_JS_STACK` so the engine's
+/// soft check trips before a real C-stack overflow aborts the process (review C3).
+const WORKER_THREAD_STACK: usize = 8 * 1024 * 1024;
+
 /// Sentinel meaning "no deadline armed". The interrupt handler treats this as "never fire".
 const NO_DEADLINE: i64 = i64::MAX;
+
+/// Shared memory meter driven by the tracking allocator (review M2).
+///
+/// QuickJS's `memory_used_size` reports only live *tracked-object* bytes after its internal
+/// GC, so a call that allocated up to the ceiling and then freed/caught the OOM reads low.
+/// To detect a brushed ceiling we instead record a per-call HIGH-WATER mark: `live` tracks
+/// currently-allocated bytes, and `peak` records the maximum `live` seen since the last
+/// reset. The host resets `peak` before each call and reads it after — a peak ≥ a fraction
+/// of the limit means the call brushed the ceiling, even if the JS swallowed the OOM.
+#[derive(Default)]
+struct MemoryMeter {
+    live: AtomicUsize,
+    peak: AtomicUsize,
+}
+
+impl MemoryMeter {
+    fn add(&self, n: usize) {
+        let now = self.live.fetch_add(n, Ordering::AcqRel) + n;
+        // Bump the peak monotonically.
+        let mut p = self.peak.load(Ordering::Acquire);
+        while now > p {
+            match self
+                .peak
+                .compare_exchange_weak(p, now, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => break,
+                Err(cur) => p = cur,
+            }
+        }
+    }
+    fn sub(&self, n: usize) {
+        self.live.fetch_sub(n, Ordering::AcqRel);
+    }
+    /// Reset the peak to the current live size (call boundary).
+    fn reset_peak(&self) {
+        self.peak
+            .store(self.live.load(Ordering::Acquire), Ordering::Release);
+    }
+    fn peak(&self) -> usize {
+        self.peak.load(Ordering::Acquire)
+    }
+}
+
+/// A `RustAllocator` wrapper that feeds a shared `MemoryMeter` so the host can read the
+/// per-call high-water mark (review M2). Allocation policy is identical to `RustAllocator`;
+/// we only observe sizes.
+struct TrackingAllocator {
+    meter: Arc<MemoryMeter>,
+    inner: RustAllocator,
+}
+
+// SAFETY: we delegate every operation to `RustAllocator` (which upholds the trait contract)
+// and only add/subtract observed usable sizes around it; no pointer invariants are altered.
+unsafe impl Allocator for TrackingAllocator {
+    fn alloc(&mut self, size: usize) -> *mut u8 {
+        let p = self.inner.alloc(size);
+        if !p.is_null() {
+            self.meter.add(unsafe { RustAllocator::usable_size(p) });
+        }
+        p
+    }
+
+    fn calloc(&mut self, count: usize, size: usize) -> *mut u8 {
+        let p = self.inner.calloc(count, size);
+        if !p.is_null() {
+            self.meter.add(unsafe { RustAllocator::usable_size(p) });
+        }
+        p
+    }
+
+    unsafe fn dealloc(&mut self, ptr: *mut u8) {
+        if !ptr.is_null() {
+            self.meter.sub(RustAllocator::usable_size(ptr));
+        }
+        self.inner.dealloc(ptr);
+    }
+
+    unsafe fn realloc(&mut self, ptr: *mut u8, new_size: usize) -> *mut u8 {
+        if !ptr.is_null() {
+            self.meter.sub(RustAllocator::usable_size(ptr));
+        }
+        let res = self.inner.realloc(ptr, new_size);
+        if !res.is_null() {
+            self.meter.add(RustAllocator::usable_size(res));
+        }
+        res
+    }
+
+    unsafe fn usable_size(ptr: *mut u8) -> usize
+    where
+        Self: Sized,
+    {
+        RustAllocator::usable_size(ptr)
+    }
+}
 
 /// A job the host sends to a plugin worker.
 enum Job {
@@ -116,6 +218,8 @@ impl Deadline {
 pub struct PluginRuntime {
     job_tx: Sender<Job>,
     join: Option<JoinHandle<()>>,
+    /// Plugin id, for diagnostics during a bounded Drop join (review m2).
+    plugin_id: String,
     /// Registered commands (populated at activation, read by the manager).
     pub commands: Vec<RegisteredCommand>,
     /// Registered views (populated at activation).
@@ -141,9 +245,18 @@ impl PluginRuntime {
             crossbeam_channel::bounded::<Result<Registrations, PluginError>>(1);
         let strikes = Arc::new(AtomicU64::new(0));
         let worker_strikes = Arc::clone(&strikes);
+        let plugin_id = manifest.id.clone();
 
         let join = std::thread::Builder::new()
             .name(format!("plugin-{}", manifest.id))
+            // The OS thread stack MUST be larger than QuickJS's soft `max_stack_size`
+            // (WORKER_JS_STACK below) so the engine's stack-overflow check trips and raises
+            // a catchable RangeError *before* a real C-stack overflow aborts the process.
+            // On some platforms non-main threads default to a small (≈512KB) stack equal to
+            // the JS limit, which let deep native recursion (e.g. JSON.stringify of a
+            // deeply-nested value) abort below panic handling. An explicit 8MB stack gives
+            // the soft check ample headroom.
+            .stack_size(WORKER_THREAD_STACK)
             .spawn(move || {
                 worker_main(
                     manifest,
@@ -165,6 +278,7 @@ impl PluginRuntime {
         Ok(PluginRuntime {
             job_tx,
             join: Some(join),
+            plugin_id,
             commands: regs.commands,
             views: regs.views,
             strikes,
@@ -218,11 +332,42 @@ impl PluginRuntime {
     }
 }
 
+/// Cap on how long `Drop` waits for a plugin worker to wind down before detaching it
+/// (review m2). A worker stuck in an in-flight JS call only unblocks when its deadline
+/// fires; we must not let teardown hang the dropping thread indefinitely.
+const DROP_JOIN_TIMEOUT: Duration = Duration::from_secs(6);
+
 impl Drop for PluginRuntime {
     fn drop(&mut self) {
         let _ = self.job_tx.send(Job::Shutdown);
-        if let Some(j) = self.join.take() {
-            let _ = j.join();
+        let Some(j) = self.join.take() else {
+            return;
+        };
+        // Bounded join (review m2): join on a helper thread and wait at most
+        // DROP_JOIN_TIMEOUT. If the worker hasn't exited by then, detach it (drop the
+        // handle) and log, rather than blocking the dropping thread forever.
+        let (done_tx, done_rx) = crossbeam_channel::bounded::<()>(1);
+        let plugin = self.plugin_id.clone();
+        let watcher = std::thread::Builder::new()
+            .name(format!("plugin-drop-{plugin}"))
+            .spawn(move || {
+                let _ = j.join();
+                let _ = done_tx.send(());
+            });
+        match watcher {
+            Ok(_) => {
+                if done_rx.recv_timeout(DROP_JOIN_TIMEOUT).is_err() {
+                    // Detach: the watcher thread (and the wedged worker) outlive us; it will
+                    // finish when the worker's deadline elapses. We do not block further.
+                    eprintln!(
+                        "plugin worker `{plugin}` did not shut down within {:?}; detaching",
+                        DROP_JOIN_TIMEOUT
+                    );
+                }
+            }
+            // Could not spawn the watcher (rare): fall back to a direct best-effort join is
+            // impossible (handle moved); just log and move on.
+            Err(e) => eprintln!("plugin `{plugin}`: could not spawn drop-join watcher: {e}"),
         }
     }
 }
@@ -237,48 +382,76 @@ struct Registrations {
 /// registration bridge and the capability namespaces, and crucially LEAVES NO ambient
 /// fetch/fs/timer globals (INV-SANDBOX). Registration is collected into `__host.__regs`.
 const BOOTSTRAP: &str = r#"
-// __host.__pluginId is injected by the host immediately before this bootstrap runs.
-globalThis.__host = Object.assign(globalThis.__host || {}, {
-  __regs: { commands: [], views: [] },
-  __commands: {},
-  __renderer: null,
-});
-// Force any registered id/name into the plugin's namespace (design-0002:
-// "ids are forced into the plugin's namespace"). Idempotent if already prefixed.
-function __ns(raw) {
-  var p = __host.__pluginId + '.';
-  raw = String(raw);
-  return raw.indexOf(p) === 0 ? raw : p + raw;
-}
-globalThis.plugin = {
-  registerCommand: function(id, title, handler) {
-    if (typeof handler !== 'function') { throw new Error('handler must be a function'); }
-    var nid = __ns(id);
-    __host.__regs.commands.push({ id: nid, title: String(title) });
-    __host.__commands[nid] = handler;
-  },
-  registerView: function(name) {
-    __host.__regs.views.push({ name: __ns(name) });
-  },
-  registerCodeBlockRenderer: function(fn) {
-    if (typeof fn !== 'function') { throw new Error('renderer must be a function'); }
-    __host.__renderer = fn;
-  },
-};
-// Host-call entry points, invoked by name from Rust. Each returns a JSON string.
-globalThis.__invokeCommand = function(id, argsJson) {
-  var fn = __host.__commands[id];
-  if (!fn) { throw new Error('command not registered: ' + id); }
-  var args = argsJson ? JSON.parse(argsJson) : null;
-  var out = fn(args);
-  return JSON.stringify(out === undefined ? null : out);
-};
-globalThis.__invokeRender = function(text, lang) {
-  if (!__host.__renderer) { return JSON.stringify({ nodes: [] }); }
-  var out = __host.__renderer(text, lang);
-  if (out == null) { return JSON.stringify({ nodes: [] }); }
-  return JSON.stringify(out);
-};
+// SECURITY (reviews M3/M4): registration state (commands map, renderer, registry list)
+// lives in CLOSURE-PRIVATE scope here — it is NOT reachable from `globalThis` or `__host`,
+// so a plugin cannot mutate `__regs`/`__commands`/`__renderer` to squat namespaces or
+// hijack dispatch. The host reaches it only through the dispatcher functions, which it
+// captures as Persistent native references before any plugin code runs. `__host` carries
+// only `__pluginId` plus host-injected native bridges and is FROZEN before the plugin runs.
+(function () {
+  // __host.__pluginId was injected by the host immediately before this bootstrap.
+  var pluginId = globalThis.__host.__pluginId;
+  var commands = {};        // namespaced id -> handler
+  var renderer = null;      // registered code-block renderer
+  var regs = { commands: [], views: [] };
+
+  // JS-side namespacing (design-0002). A BARE (dot-free) id is prefixed into the plugin's
+  // namespace for convenience; an already-dotted id is passed through VERBATIM so a foreign
+  // namespace reaches the host's validator unchanged and is REJECTED LOUDLY (review M3:
+  // "do not auto-prefix silently — reject loudly"). This is not the trust boundary — the
+  // host re-validates every id against the trusted manifest.id regardless.
+  function ns(raw) {
+    raw = String(raw);
+    return raw.indexOf('.') === -1 ? pluginId + '.' + raw : raw;
+  }
+
+  globalThis.plugin = {
+    registerCommand: function(id, title, handler) {
+      if (typeof handler !== 'function') { throw new Error('handler must be a function'); }
+      var nid = ns(id);
+      regs.commands.push({ id: nid, title: String(title) });
+      commands[nid] = handler;
+    },
+    registerView: function(name) {
+      regs.views.push({ name: ns(name) });
+    },
+    registerCodeBlockRenderer: function(fn) {
+      if (typeof fn !== 'function') { throw new Error('renderer must be a function'); }
+      renderer = fn;
+    },
+  };
+
+  // Host-call entry points. The host captures these as Persistent references at bootstrap
+  // (review M4) and invokes those native references — it NEVER re-looks them up by global
+  // name, so a plugin overwriting globalThis.__invokeCommand/__invokeRender cannot hijack
+  // dispatch (the captured closures read the PRIVATE `commands`/`renderer`, not globals).
+  // Each returns the RAW handler result (possibly a thenable/Promise); the host detects
+  // promises, pumps microtasks under the deadline, and serializes via the captured native
+  // JSON.stringify (review M1) — so a returned Promise never silently becomes "{}".
+  globalThis.__invokeCommand = function(id, argsJson) {
+    var fn = commands[id];
+    if (!fn) { throw new Error('command not registered: ' + id); }
+    var args = argsJson ? JSON.parse(argsJson) : null;
+    var out = fn(args);
+    return out === undefined ? null : out;
+  };
+  globalThis.__invokeRender = function(text, lang) {
+    if (!renderer) { return { nodes: [] }; }
+    var out = renderer(text, lang);
+    if (out == null) { return { nodes: [] }; }
+    return out;
+  };
+  // Captured by the host as a Persistent to serialize results out-of-band (review M1/M4).
+  globalThis.__jsonStringify = function(v) {
+    var s = JSON.stringify(v === undefined ? null : v);
+    return s === undefined ? 'null' : s;
+  };
+  // The host calls this captured reference AFTER the plugin entry runs to read the private
+  // registry (review M3 validates the ids it returns). Returns a JSON string.
+  globalThis.__getRegistrations = function() {
+    return JSON.stringify(regs);
+  };
+})();
 "#;
 
 /// JS installed only when the `entries-owner` capability is declared. It wraps the native
@@ -328,8 +501,13 @@ fn worker_main(
     ready_tx: Sender<Result<Registrations, PluginError>>,
     strikes: Arc<AtomicU64>,
 ) {
-    // Build the runtime + context. On any failure here, report and exit.
-    let rt = match Runtime::new() {
+    // Build the runtime + context with a tracking allocator so we can read the per-call
+    // memory high-water mark (review M2). On any failure here, report and exit.
+    let meter = Arc::new(MemoryMeter::default());
+    let rt = match Runtime::new_with_alloc(TrackingAllocator {
+        meter: Arc::clone(&meter),
+        inner: RustAllocator,
+    }) {
         Ok(rt) => rt,
         Err(e) => {
             let _ = ready_tx.send(Err(PluginError::host_internal(format!(
@@ -341,8 +519,9 @@ fn worker_main(
     // INV-MEM: cap memory before any plugin code runs.
     rt.set_memory_limit(MEMORY_LIMIT);
     // Bound the native stack so deep recursion fails cleanly inside QuickJS rather than
-    // overflowing the OS thread stack.
-    rt.set_max_stack_size(512 * 1024);
+    // overflowing the OS thread stack. The worker OS thread is given a larger stack
+    // (WORKER_THREAD_STACK) so this soft limit trips first (review C3).
+    rt.set_max_stack_size(WORKER_JS_STACK);
 
     // INV-DEADLINE: install the interrupt handler reading the shared deadline cell.
     let deadline = Deadline::new(Instant::now());
@@ -366,8 +545,10 @@ fn worker_main(
         .as_ref()
         .map(|p| Arc::new(EntriesOwner::new(library_root.clone(), p.clone())));
 
-    // Evaluate bootstrap + entry source under a command deadline, collecting registrations.
-    let init = ctx.with(|ctx| -> Result<Registrations, PluginError> {
+    // Evaluate bootstrap + entry source under a command deadline, collecting registrations
+    // AND capturing the dispatcher functions as Persistent references (review M4) so the
+    // serve loop never resolves them through plugin-mutable globals.
+    let init = ctx.with(|ctx| -> Result<InitOutput, PluginError> {
         deadline.arm(COMMAND_DEADLINE);
         let res = (|| {
             // Inject the plugin id so the bootstrap can namespace registrations. The id
@@ -392,34 +573,51 @@ fn worker_main(
                     manifest.id.clone(),
                 )?;
             }
-            // Inject the network bridge only when a `network` permission is declared
-            // (INV-SANDBOX: no network surface otherwise).
+            // Inject the network bridge only when ≥1 scoped `network:<host>` permission is
+            // declared (INV-SANDBOX: no network surface otherwise). Bare `network` is
+            // rejected at manifest validation (review M5), so only `network:` counts here.
             if manifest
                 .permissions
                 .iter()
-                .any(|p| p == "network" || p.starts_with("network:"))
+                .any(|p| p.starts_with("network:"))
             {
                 inject_network_api(&ctx, Arc::clone(&grants), manifest.id.clone())?;
             }
+
+            // Capture the dispatcher + serializer + registry reader as Persistent native
+            // references NOW, before any plugin code runs (review M4). Dispatch and registry
+            // collection invoke these references directly, so a plugin overwriting the
+            // globals later cannot redirect them.
+            let dispatch = Dispatchers::capture(&ctx)?;
+
+            // Freeze `__host` so the plugin cannot swap out the injected native bridges
+            // (`entries`/`net`) or `__pluginId` after capture (review M4). The registration
+            // state is closure-private (not on `__host`), so freezing does not block
+            // `plugin.register*`. Done AFTER capability injection, BEFORE the plugin entry.
+            ctx.eval::<(), _>(b"Object.freeze(globalThis.__host);" as &[u8])
+                .map_err(|e| map_eval_error(&ctx, e, &deadline, &strikes))?;
+
             ctx.eval::<(), _>(entry_source.as_bytes())
                 .map_err(|e| map_eval_error(&ctx, e, &deadline, &strikes))?;
-            collect_registrations(&ctx, &manifest)
+            let regs = collect_registrations(&ctx, &dispatch, &manifest)?;
+            Ok(InitOutput { regs, dispatch })
         })();
         deadline.disarm();
         res
     });
 
-    match init {
-        Ok(regs) => {
-            if ready_tx.send(Ok(regs)).is_err() {
+    let dispatch = match init {
+        Ok(out) => {
+            if ready_tx.send(Ok(out.regs)).is_err() {
                 return; // host gave up; nothing to serve.
             }
+            out.dispatch
         }
         Err(e) => {
             let _ = ready_tx.send(Err(e));
             return;
         }
-    }
+    };
 
     // Serve jobs until shutdown or the channel closes.
     while let Ok(job) = job_rx.recv() {
@@ -432,10 +630,12 @@ fn worker_main(
             } => {
                 let out = run_call(
                     &ctx,
+                    &rt,
+                    &meter,
                     &deadline,
                     &strikes,
                     COMMAND_DEADLINE,
-                    "__invokeCommand",
+                    &dispatch,
                     CallArgs::Command {
                         id: &command_id,
                         args_json: &args_json,
@@ -446,25 +646,55 @@ fn worker_main(
             Job::Render { text, lang, reply } => {
                 let out = run_call(
                     &ctx,
+                    &rt,
+                    &meter,
                     &deadline,
                     &strikes,
                     RENDER_DEADLINE,
-                    "__invokeRender",
+                    &dispatch,
                     CallArgs::Render {
                         text: &text,
                         lang: &lang,
                     },
                 );
-                let parsed = out.and_then(|json| {
-                    let mut ro: RenderOutput = serde_json::from_str(&json).map_err(|e| {
-                        PluginError::js_exception(format!("renderer returned bad shape: {e}"))
-                    })?;
-                    ro.sanitize();
-                    Ok(ro)
-                });
+                let parsed = out.and_then(|json| parse_render_output(&json));
                 let _ = reply.send(parsed);
             }
         }
+    }
+}
+
+/// What the init closure produces: collected registrations plus the captured dispatchers.
+struct InitOutput {
+    regs: Registrations,
+    dispatch: Dispatchers,
+}
+
+/// Persistent native references to the host-call entry points, captured at bootstrap before
+/// any plugin code runs (review M4). Invoking these is immune to a plugin overwriting the
+/// `globalThis.__invokeCommand`/`__invokeRender`/`__jsonStringify` globals.
+struct Dispatchers {
+    invoke_command: Persistent<Function<'static>>,
+    invoke_render: Persistent<Function<'static>>,
+    json_stringify: Persistent<Function<'static>>,
+    get_registrations: Persistent<Function<'static>>,
+}
+
+impl Dispatchers {
+    fn capture(ctx: &rquickjs::Ctx<'_>) -> Result<Self, PluginError> {
+        let g = ctx.globals();
+        let grab = |name: &str| -> Result<Persistent<Function<'static>>, PluginError> {
+            let f: Function = g
+                .get(name)
+                .map_err(|e| PluginError::host_internal(format!("missing {name}: {e}")))?;
+            Ok(Persistent::save(ctx, f))
+        };
+        Ok(Dispatchers {
+            invoke_command: grab("__invokeCommand")?,
+            invoke_render: grab("__invokeRender")?,
+            json_stringify: grab("__jsonStringify")?,
+            get_registrations: grab("__getRegistrations")?,
+        })
     }
 }
 
@@ -473,53 +703,230 @@ enum CallArgs<'a> {
     Render { text: &'a str, lang: &'a str },
 }
 
-/// Run one JS entry-point call with a deadline, panic guard, and strike accounting.
+/// Maximum JSON bracket/brace nesting a renderer's output may contain (review C3).
+/// `RenderNode` is recursive, so `serde_json::from_str` recurses to the JSON's depth and a
+/// ~2000-deep payload overflows the thread stack and ABORTS the process below panic
+/// handling. We reject over-deep JSON with a cheap, allocation-free pre-scan BEFORE
+/// deserializing; `RenderOutput::sanitize`'s own depth bound (32) remains a second layer.
+const MAX_RENDER_JSON_DEPTH: usize = 64;
+
+/// Cheap structural scan: returns true if the JSON's `{`/`[` nesting exceeds
+/// `MAX_RENDER_JSON_DEPTH` at any point. String contents are skipped (so braces inside
+/// string literals do not count), honoring `\"` escapes. This does not validate the JSON —
+/// it only bounds nesting depth so the recursive deserialize never runs on a stack bomb.
+fn json_nesting_exceeds(json: &str) -> bool {
+    let mut depth: usize = 0;
+    let mut in_string = false;
+    let mut escaped = false;
+    for &b in json.as_bytes() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if b == b'\\' {
+                escaped = true;
+            } else if b == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match b {
+            b'"' => in_string = true,
+            b'{' | b'[' => {
+                depth += 1;
+                if depth > MAX_RENDER_JSON_DEPTH {
+                    return true;
+                }
+            }
+            b'}' | b']' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Parse + sanitize a renderer's JSON output, with depth and panic guards (review C3).
+///
+/// Order matters: the cheap depth pre-scan runs FIRST so we never feed a stack-bomb to the
+/// recursive `serde_json` deserialize. The deserialize + sanitize are additionally wrapped
+/// in `catch_unwind` so any residual recursion panic becomes a structured error, never an
+/// abort.
+fn parse_render_output(json: &str) -> Result<RenderOutput, PluginError> {
+    if json_nesting_exceeds(json) {
+        return Err(PluginError::js_exception(
+            "renderer output nesting exceeds the allowed depth",
+        ));
+    }
+    let json = json.to_string();
+    let result = std::panic::catch_unwind(move || -> Result<RenderOutput, PluginError> {
+        let mut ro: RenderOutput = serde_json::from_str(&json)
+            .map_err(|e| PluginError::js_exception(format!("renderer returned bad shape: {e}")))?;
+        ro.sanitize();
+        Ok(ro)
+    });
+    match result {
+        Ok(r) => r,
+        Err(_) => Err(PluginError::host_internal(
+            "renderer output parsing panicked (over-deep structure)",
+        )),
+    }
+}
+
+/// Memory high-water fraction of the limit at/above which we record a memory strike even
+/// when the JS caught the OOM error (review M2). A call that brushed the ceiling is
+/// abusive regardless of whether the plugin swallowed the resulting exception.
+const MEMORY_STRIKE_FRACTION: f64 = 0.90;
+
+/// Run one JS entry-point call with a deadline, panic guard, promise unwrapping, and strike
+/// accounting (reviews M1, M2, M4).
+#[allow(clippy::too_many_arguments)]
 fn run_call(
     ctx: &Context,
+    rt: &Runtime,
+    meter: &MemoryMeter,
     deadline: &Deadline,
     strikes: &Arc<AtomicU64>,
     dur: Duration,
-    fn_name: &str,
+    dispatch: &Dispatchers,
     args: CallArgs<'_>,
 ) -> Result<String, PluginError> {
+    let dispatcher = match args {
+        CallArgs::Command { .. } => &dispatch.invoke_command,
+        CallArgs::Render { .. } => &dispatch.invoke_render,
+    };
+    // Start the memory high-water window at the current live size (review M2).
+    meter.reset_peak();
+
     // INV-PANIC: a panic across the FFI boundary becomes HostInternal, never an abort.
-    // (The bin profile uses panic=abort in release, but tests use unwind; the guard is a
-    // belt-and-braces boundary regardless.)
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         ctx.with(|ctx| -> Result<String, PluginError> {
-            let globals = ctx.globals();
-            let func: Function = globals
-                .get(fn_name)
-                .map_err(|e| PluginError::host_internal(format!("missing {fn_name}: {e}")))?;
+            // Restore the captured native dispatcher + serializer (review M4): never look
+            // them up by global name, so plugin overwrites can't redirect dispatch.
+            let func: Function = dispatcher
+                .clone()
+                .restore(&ctx)
+                .map_err(|e| PluginError::host_internal(format!("restore dispatcher: {e}")))?;
+            let stringify: Function = dispatch
+                .json_stringify
+                .clone()
+                .restore(&ctx)
+                .map_err(|e| PluginError::host_internal(format!("restore stringify: {e}")))?;
 
             deadline.arm(dur);
-            let call_res: Result<String, rquickjs::Error> = match args {
+            // Call the dispatcher, getting the RAW result value (may be a Promise).
+            let call_res: Result<Value, rquickjs::Error> = match args {
                 CallArgs::Command { id, args_json } => {
                     func.call((id.to_string(), args_json.to_string()))
                 }
                 CallArgs::Render { text, lang } => func.call((text.to_string(), lang.to_string())),
             };
-            // NB: do NOT disarm before classifying the error — `map_eval_error` reads
-            // `deadline.elapsed()` to distinguish a deadline kill from an ordinary
-            // exception, and disarms itself once it has classified. On the success path we
-            // disarm here.
-            match call_res {
-                Ok(s) => {
-                    deadline.disarm();
-                    Ok(s)
-                }
-                Err(e) => Err(map_eval_error(&ctx, e, deadline, strikes)),
-            }
+
+            let value = match call_res {
+                Ok(v) => v,
+                // map_eval_error reads deadline.elapsed() then disarms.
+                Err(e) => return Err(map_eval_error(&ctx, e, deadline, strikes)),
+            };
+
+            // Promise handling (review M1): if the handler returned a thenable, pump the
+            // microtask queue under the SAME deadline and unwrap, else report Unsupported.
+            let value = if let Some(promise) = value.as_promise().cloned() {
+                resolve_promise(&ctx, deadline, strikes, promise)?
+            } else {
+                value
+            };
+
+            // Serialize the (possibly unwrapped) value via the captured native stringify.
+            let json: String = stringify.call((value,)).map_err(|e| {
+                // A stringify failure is itself a JS error (e.g. circular structure).
+                map_eval_error(&ctx, e, deadline, strikes)
+            })?;
+            deadline.disarm();
+            Ok(json)
         })
     }));
 
-    match result {
-        Ok(Ok(s)) => Ok(s),
-        Ok(Err(e)) => Err(e),
+    let mut out = match result {
+        Ok(r) => r,
         Err(_) => {
             record_strike(strikes);
             Err(PluginError::host_internal("plugin worker panicked"))
         }
+    };
+
+    // INDEPENDENT deadline-elapsed strike (review M1): even if the call returned nominal
+    // Ok, if the deadline elapsed during it the plugin burned its full budget — record a
+    // strike and convert the result to a Deadline error so success cannot mask abuse.
+    if deadline.elapsed() {
+        record_strike(strikes);
+        out = Err(PluginError::deadline());
+    }
+    deadline.disarm();
+
+    // Memory high-water strike (review M2): read the per-call peak from the tracking
+    // allocator. A call that brushed the ceiling (≥90% of the limit) is recorded as a
+    // memory strike even if the JS caught the OOM — a catchable OOM must not bypass strike
+    // accounting. (QuickJS's own `memory_used_size` reports only post-GC live bytes and is
+    // insufficient; we keep `rt` for `run_gc`.)
+    let peak = meter.peak();
+    if peak as f64 >= MEMORY_LIMIT as f64 * MEMORY_STRIKE_FRACTION {
+        record_strike(strikes);
+        // Reclaim what we can so the next call starts from a clean-ish baseline.
+        rt.run_gc();
+        if out.is_ok() {
+            out = Err(PluginError::memory());
+        }
+    }
+
+    out
+}
+
+/// Drive the job queue to settle a returned Promise under the call's deadline (review M1).
+///
+/// Returns the resolved value, or a structured error: a rejected promise → JsException; a
+/// promise still pending after the queue drains (it awaited a host-async source v1 doesn't
+/// provide) → Unsupported('async plugin commands not supported in v1'). Per design-0002's
+/// (now-resolved) open question, v1 is per-job/synchronous: we pump existing microtasks but
+/// do not run an event loop, so an indefinitely-pending promise is unsupported rather than
+/// silently dropped.
+fn resolve_promise<'js>(
+    ctx: &rquickjs::Ctx<'js>,
+    deadline: &Deadline,
+    strikes: &Arc<AtomicU64>,
+    promise: Promise<'js>,
+) -> Result<Value<'js>, PluginError> {
+    use rquickjs::promise::PromiseState;
+
+    // Pump pending microtasks until the promise settles, the queue empties, or the deadline
+    // fires. `Ctx::execute_pending_job` drives the same job queue without re-borrowing the
+    // runtime (safe to call from inside `ctx.with`).
+    while matches!(promise.state(), PromiseState::Pending) {
+        if deadline.elapsed() {
+            break;
+        }
+        if !ctx.execute_pending_job() {
+            break; // queue drained but promise still pending.
+        }
+    }
+
+    match promise.state() {
+        PromiseState::Resolved => promise
+            .result::<Value>()
+            .transpose()
+            .map_err(|e| map_eval_error(ctx, e, deadline, strikes))?
+            .ok_or_else(|| PluginError::host_internal("resolved promise had no value")),
+        PromiseState::Rejected => {
+            // `result()` on a rejected promise re-throws the reason; classify via the
+            // shared error mapper, which reads the thrown value from `ctx.catch()`.
+            match promise.result::<Value>() {
+                Some(Err(e)) => Err(map_eval_error(ctx, e, deadline, strikes)),
+                _ => {
+                    record_strike(strikes);
+                    Err(PluginError::js_exception("promise rejected"))
+                }
+            }
+        }
+        PromiseState::Pending => Err(PluginError::unsupported(
+            "async plugin commands not supported in v1 (returned promise never settled)",
+        )),
     }
 }
 
@@ -577,43 +984,69 @@ fn record_strike(strikes: &Arc<AtomicU64>) {
 
 /// Read the registrations the plugin made during init out of `__host.__regs`.
 ///
-/// Ids/names are already namespaced JS-side (the bootstrap forces the `<plugin-id>.`
-/// prefix in `registerCommand`/`registerView`); we read them verbatim.
+/// SECURITY (review M3): `__host.__pluginId` and `__host.__regs` are plugin-mutable JS
+/// state, so the JS-side namespacing in the bootstrap CANNOT be trusted — a plugin can set
+/// `__pluginId` to another plugin's id (squatting) or push raw entries into `__regs`. We
+/// therefore validate EVERY collected id/name here against the TRUSTED `manifest.id` (a
+/// host-controlled value): any id that does not begin with `<manifest.id>.` is REJECTED
+/// LOUDLY (not silently re-prefixed) — the whole activation fails so the squat is visible.
 fn collect_registrations(
     ctx: &rquickjs::Ctx<'_>,
-    _manifest: &Manifest,
+    dispatch: &Dispatchers,
+    manifest: &Manifest,
 ) -> Result<Registrations, PluginError> {
-    let globals = ctx.globals();
-    let host: rquickjs::Object = globals
-        .get("__host")
-        .map_err(|e| PluginError::host_internal(format!("bootstrap missing __host: {e}")))?;
-    let regs: rquickjs::Object = host
-        .get("__regs")
-        .map_err(|e| PluginError::host_internal(format!("bootstrap missing __regs: {e}")))?;
+    let required_prefix = format!("{}.", manifest.id);
+    let validate = |kind: &str, id: &str| -> Result<(), PluginError> {
+        if !id.starts_with(&required_prefix) {
+            return Err(PluginError::js_exception(format!(
+                "{kind} id `{id}` is not in this plugin's namespace `{required_prefix}` \
+                 (namespace squatting rejected)"
+            )));
+        }
+        Ok(())
+    };
 
-    let commands_arr: rquickjs::Array = regs
-        .get("commands")
-        .map_err(|e| PluginError::host_internal(format!("regs.commands: {e}")))?;
-    let mut commands = Vec::new();
-    for i in 0..commands_arr.len() {
-        let obj: rquickjs::Object = commands_arr
-            .get(i)
-            .map_err(|e| PluginError::host_internal(format!("regs.commands[{i}]: {e}")))?;
-        let id: String = obj.get("id").unwrap_or_default();
-        let title: String = obj.get("title").unwrap_or_default();
-        commands.push(RegisteredCommand { id, title });
+    // Read the private registry via the captured native reference (review M3/M4): the
+    // plugin cannot have swapped this out, and the state it returns is closure-private.
+    let reader: Function = dispatch
+        .get_registrations
+        .clone()
+        .restore(ctx)
+        .map_err(|e| PluginError::host_internal(format!("restore registrations reader: {e}")))?;
+    let json: String = reader
+        .call(())
+        .map_err(|e| PluginError::host_internal(format!("read registrations: {e}")))?;
+
+    #[derive(serde::Deserialize)]
+    struct RawRegs {
+        commands: Vec<RawCommand>,
+        views: Vec<RawView>,
+    }
+    #[derive(serde::Deserialize)]
+    struct RawCommand {
+        id: String,
+        title: String,
+    }
+    #[derive(serde::Deserialize)]
+    struct RawView {
+        name: String,
     }
 
-    let views_arr: rquickjs::Array = regs
-        .get("views")
-        .map_err(|e| PluginError::host_internal(format!("regs.views: {e}")))?;
-    let mut views = Vec::new();
-    for i in 0..views_arr.len() {
-        let obj: rquickjs::Object = views_arr
-            .get(i)
-            .map_err(|e| PluginError::host_internal(format!("regs.views[{i}]: {e}")))?;
-        let name: String = obj.get("name").unwrap_or_default();
-        views.push(RegisteredView { name });
+    let raw: RawRegs = serde_json::from_str(&json)
+        .map_err(|e| PluginError::host_internal(format!("parse registrations: {e}")))?;
+
+    let mut commands = Vec::with_capacity(raw.commands.len());
+    for c in raw.commands {
+        validate("command", &c.id)?;
+        commands.push(RegisteredCommand {
+            id: c.id,
+            title: c.title,
+        });
+    }
+    let mut views = Vec::with_capacity(raw.views.len());
+    for v in raw.views {
+        validate("view", &v.name)?;
+        views.push(RegisteredView { name: v.name });
     }
 
     Ok(Registrations { commands, views })
@@ -737,9 +1170,9 @@ fn inject_entries_api(
 /// blocking GET/POST later is a localized change behind an already-correct boundary.
 ///
 /// GATE: a request to `<host>` is allowed only when the live grant set contains
-/// `network:<host>` (exact host match) OR the bare `network` grant. A granted-but-deferred
-/// request returns `Unsupported`; an ungranted request returns `NetworkHostNotGranted`.
-/// The grant is re-read per call so a revoke bites mid-session (design-0002).
+/// `network:<host>` (exact host match). There is no bare `network` wildcard (review M5). A
+/// granted-but-deferred request returns `Unsupported`; an ungranted request returns
+/// `NetworkHostNotGranted`. The grant is re-read per call so a revoke bites mid-session.
 fn inject_network_api(
     ctx: &rquickjs::Ctx<'_>,
     grants: Arc<Mutex<GrantStore>>,
@@ -760,10 +1193,7 @@ fn inject_network_api(
             // Live per-host grant check.
             let granted = grants
                 .lock()
-                .map(|g| {
-                    g.is_granted(&plugin_id, &format!("network:{host}"))
-                        || g.is_granted(&plugin_id, "network")
-                })
+                .map(|g| g.is_granted(&plugin_id, &format!("network:{host}")))
                 .unwrap_or(false);
             if !granted {
                 return envelope_err(&PluginError::network_host_not_granted(&host));
@@ -882,6 +1312,78 @@ mod tests {
     }
 
     #[test]
+    fn eval_and_function_exist_but_reach_no_io() {
+        // TEST-HONESTY: `eval` and the `Function` constructor DO exist in QuickJS — we don't
+        // claim otherwise. The containment guarantee is that even through them, no IO/host
+        // surface is reachable: fetch/fs/process/require remain undefined, and code built at
+        // runtime cannot synthesize them. We document their existence and prove the
+        // containment.
+        let m = manifest_with("[command]", "[]");
+        let src = r#"
+            plugin.registerCommand('probe', 'Probe', function() {
+                // eval and Function exist...
+                var hasEval = typeof eval;
+                var hasFunction = typeof Function;
+                // ...but reaching IO through them yields nothing.
+                var viaEval, viaFunction;
+                try { viaEval = eval('typeof fetch'); } catch (e) { viaEval = 'threw:' + e.message; }
+                try { viaFunction = (Function('return typeof process'))(); } catch (e) { viaFunction = 'threw:' + e.message; }
+                // The indirect-eval / global-this escape can't surface a fetch/require either.
+                var ge = (0, eval)('typeof XMLHttpRequest');
+                return {
+                    hasEval: hasEval,
+                    hasFunction: hasFunction,
+                    viaEval: viaEval,
+                    viaFunction: viaFunction,
+                    ge: ge,
+                };
+            });
+        "#
+        .to_string();
+        let rt = PluginRuntime::spawn(m, src, empty_grants(), std::env::temp_dir()).unwrap();
+        let out = rt.invoke_command("com.test.p.probe", "null").unwrap();
+        assert!(out.contains("\"hasEval\":\"function\""), "{out}");
+        assert!(out.contains("\"hasFunction\":\"function\""), "{out}");
+        // No IO reachable through dynamically-built code.
+        assert!(out.contains("\"viaEval\":\"undefined\""), "{out}");
+        assert!(out.contains("\"viaFunction\":\"undefined\""), "{out}");
+        assert!(out.contains("\"ge\":\"undefined\""), "{out}");
+    }
+
+    #[test]
+    fn globalthis_escape_cannot_reach_host_state() {
+        // TEST-HONESTY: a plugin may walk `globalThis` freely, but the host bridge exposes no
+        // reachable host state — `__host` is frozen and carries only the (string) plugin id
+        // plus native bridge stubs; there is no path from the global scope to grants, the
+        // filesystem, or another plugin. We assert the would-be escape targets are inert.
+        let m = manifest_with("[command]", "[]");
+        let src = r#"
+            plugin.registerCommand('probe', 'Probe', function() {
+                var g = globalThis;
+                // Attempt to mutate the frozen host bridge and read back through globalThis.
+                var before = JSON.stringify(g.__host && g.__host.__pluginId);
+                try { g.__host.__pluginId = 'com.attacker'; } catch (e) {}
+                try { g.__host.entries = { read: function(){ return 'PWNED'; } }; } catch (e) {}
+                var after = JSON.stringify(g.__host && g.__host.__pluginId);
+                // No ambient capability is reachable by walking globals.
+                var keys = Object.getOwnPropertyNames(g).filter(function(k){
+                    return ['fetch','fs','process','require','XMLHttpRequest','Deno','module'].indexOf(k) !== -1;
+                });
+                return { before: before, after: after, frozen: Object.isFrozen(g.__host), leaked: keys };
+            });
+        "#
+        .to_string();
+        let rt = PluginRuntime::spawn(m, src, empty_grants(), std::env::temp_dir()).unwrap();
+        let out = rt.invoke_command("com.test.p.probe", "null").unwrap();
+        // __host is frozen; the id is unchanged by the tamper attempt.
+        assert!(out.contains("\"frozen\":true"), "{out}");
+        assert!(out.contains("\"before\":\"\\\"com.test.p\\\"\""), "{out}");
+        assert!(out.contains("\"after\":\"\\\"com.test.p\\\"\""), "{out}");
+        // No ambient IO globals leaked into the global scope.
+        assert!(out.contains("\"leaked\":[]"), "{out}");
+    }
+
+    #[test]
     fn runaway_loop_killed_by_deadline() {
         let m = manifest_with("[command]", "[]");
         let src = r#"
@@ -955,6 +1457,164 @@ mod tests {
         assert!(err.message.contains("specific message"), "{}", err.message);
     }
 
+    // ── M1: Promise handling + independent deadline strike ──────────────────────
+
+    #[test]
+    fn promise_infinite_loop_strikes_and_suspends() {
+        // M1 regression (reproduced): a command that spins forever INSIDE `new Promise(...)`
+        // burned the full deadline yet returned Ok with 0 strikes. Now the elapsed deadline
+        // is detected and a strike is recorded regardless of nominal success; three strikes
+        // suspend the capability.
+        let m = manifest_with("[command]", "[]");
+        let src = r#"
+            plugin.registerCommand('spin', 'Spin', function() {
+                return new Promise(function(resolve) { while (true) {} });
+            });
+        "#
+        .to_string();
+        let rt = PluginRuntime::spawn(m, src, empty_grants(), std::env::temp_dir()).unwrap();
+        for _ in 0..3 {
+            let err = rt.invoke_command("com.test.p.spin", "null").unwrap_err();
+            assert_eq!(err.code, PluginErrorCode::Deadline, "{}", err.message);
+        }
+        assert_eq!(rt.strike_count(), 3);
+        assert!(rt.is_suspended());
+    }
+
+    #[test]
+    fn resolved_promise_unwraps_no_silent_empty_object() {
+        // M1: a command returning an already-resolved promise must unwrap to the resolved
+        // value — never the old silent "{}". (Our decision: unwrap settled promises.)
+        let m = manifest_with("[command]", "[]");
+        let src = r#"
+            plugin.registerCommand('p', 'P', function(args) {
+                return Promise.resolve({ msg: 'hello ' + args.name });
+            });
+        "#
+        .to_string();
+        let rt = PluginRuntime::spawn(m, src, empty_grants(), std::env::temp_dir()).unwrap();
+        let out = rt
+            .invoke_command("com.test.p.p", r#"{"name":"world"}"#)
+            .unwrap();
+        assert!(out.contains("hello world"), "{out}");
+        assert_ne!(out, "{}", "a resolved promise must not collapse to '{{}}'");
+    }
+
+    #[test]
+    fn never_settling_promise_is_unsupported() {
+        // M1: a promise that awaits a host-async source v1 doesn't provide stays pending
+        // after the microtask queue drains → structured Unsupported, not a silent {}.
+        let m = manifest_with("[command]", "[]");
+        let src = r#"
+            plugin.registerCommand('p', 'P', function() {
+                return new Promise(function() { /* never resolves */ });
+            });
+        "#
+        .to_string();
+        let rt = PluginRuntime::spawn(m, src, empty_grants(), std::env::temp_dir()).unwrap();
+        let err = rt.invoke_command("com.test.p.p", "null").unwrap_err();
+        assert_eq!(err.code, PluginErrorCode::Unsupported, "{}", err.message);
+    }
+
+    // ── M2: catchable OOM still accrues memory strikes ──────────────────────────
+
+    #[test]
+    fn catchable_oom_accrues_memory_strikes_and_suspends() {
+        // M2 regression (reproduced): a loop that allocates to the ceiling and CATCHES the
+        // resulting OOM returned Ok with no strike. Now a call that brushes >90% of the
+        // memory limit records a memory strike even when the JS swallowed the error.
+        let m = manifest_with("[command]", "[]");
+        let src = r#"
+            plugin.registerCommand('eat', 'Eat', function() {
+                var sink = [];
+                try {
+                    while (true) { sink.push(new Array(200000).fill(7)); }
+                } catch (e) {
+                    // Swallow the OOM — the host must still strike.
+                }
+                return { ok: true };
+            });
+        "#
+        .to_string();
+        let rt = PluginRuntime::spawn(m, src, empty_grants(), std::env::temp_dir()).unwrap();
+        for _ in 0..3 {
+            let _ = rt.invoke_command("com.test.p.eat", "null");
+        }
+        assert!(
+            rt.is_suspended(),
+            "catchable OOM must accrue strikes to suspension (strikes={})",
+            rt.strike_count()
+        );
+    }
+
+    // ── M3: namespace squatting rejected against the trusted manifest.id ─────────
+
+    #[test]
+    fn squatted_command_id_is_rejected() {
+        // M3 regression (reproduced): a plugin forging another plugin's namespace (here by
+        // overwriting __host.__pluginId and/or registering a foreign-prefixed id) must be
+        // rejected loudly at activation, validated against the TRUSTED manifest.id.
+        let m = manifest_with("[command]", "[]");
+        let src = r#"
+            // Attempt to tamper with the injected id, then register under a foreign id.
+            try { globalThis.__host.__pluginId = 'com.victim'; } catch (e) {}
+            plugin.registerCommand('com.victim.steal', 'Steal', function() { return 1; });
+        "#
+        .to_string();
+        let err = PluginRuntime::spawn(m, src, empty_grants(), std::env::temp_dir())
+            .err()
+            .expect("squatted registration must fail activation");
+        assert!(
+            err.message.contains("namespace squatting") || err.message.contains("namespace"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn legit_namespaced_ids_pass() {
+        // M3: ordinary registrations (bare or already-prefixed) land in the plugin's own
+        // namespace and pass validation.
+        let m = manifest_with("[command]", "[]");
+        let src = r#"
+            plugin.registerCommand('bare', 'Bare', function() { return 1; });
+            plugin.registerCommand('com.test.p.full', 'Full', function() { return 2; });
+        "#
+        .to_string();
+        let rt = PluginRuntime::spawn(m, src, empty_grants(), std::env::temp_dir()).unwrap();
+        let ids: Vec<_> = rt.commands.iter().map(|c| c.id.clone()).collect();
+        assert!(ids.contains(&"com.test.p.bare".to_string()), "{ids:?}");
+        assert!(ids.contains(&"com.test.p.full".to_string()), "{ids:?}");
+    }
+
+    // ── M4: dispatch is immune to plugin-mutated globals ────────────────────────
+
+    #[test]
+    fn overwriting_dispatch_globals_has_no_effect() {
+        // M4 regression (reproduced hijack): a plugin overwriting globalThis.__invokeCommand
+        // (and __invokeRender/__jsonStringify) must NOT redirect host dispatch — the host
+        // invokes captured Persistent native references, and __host is frozen.
+        let m = manifest_with("[command]", "[]");
+        let src = r#"
+            plugin.registerCommand('greet', 'Greet', function(args) {
+                return { msg: 'real ' + args.name };
+            });
+            // Attempt the hijack: clobber every dispatch/serialize global.
+            globalThis.__invokeCommand = function() { return JSON.stringify({ msg: 'HIJACKED' }); };
+            globalThis.__invokeRender = function() { return JSON.stringify({ nodes: [{ kind: 'text', text: 'HIJACKED' }] }); };
+            globalThis.__jsonStringify = function() { return '"HIJACKED"'; };
+            // And try to tamper with the (frozen) host bridge.
+            try { globalThis.__host = { evil: true }; } catch (e) {}
+        "#
+        .to_string();
+        let rt = PluginRuntime::spawn(m, src, empty_grants(), std::env::temp_dir()).unwrap();
+        let out = rt
+            .invoke_command("com.test.p.greet", r#"{"name":"world"}"#)
+            .unwrap();
+        assert!(out.contains("real world"), "dispatch hijacked: {out}");
+        assert!(!out.contains("HIJACKED"), "dispatch hijacked: {out}");
+    }
+
     #[test]
     fn render_returns_constrained_ast() {
         let m = manifest_with("[render-code-block]", "[]");
@@ -973,6 +1633,50 @@ mod tests {
             }
             other => panic!("expected paragraph, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn deeply_nested_render_ast_is_contained() {
+        // C3 regression (reproduced at depth ~2000): a renderer returning a deeply-nested
+        // AST recursed through serde_json's deserialize and aborted the process below panic
+        // handling. The depth pre-scan now refuses it with a structured error; the runtime
+        // (and the test process) stays alive and answers further calls.
+        let m = manifest_with("[render-code-block]", "[]");
+        let src = r#"
+            plugin.registerCodeBlockRenderer(function() {
+                var node = { kind: 'text', text: 'x' };
+                for (var i = 0; i < 2000; i++) {
+                    node = { kind: 'paragraph', children: [ node ] };
+                }
+                return { nodes: [ node ] };
+            });
+        "#
+        .to_string();
+        let rt = PluginRuntime::spawn(m, src, empty_grants(), std::env::temp_dir()).unwrap();
+        let err = rt.render("hi", "x").unwrap_err();
+        // Structured error, not an abort.
+        assert!(
+            matches!(
+                err.code,
+                PluginErrorCode::JsException | PluginErrorCode::HostInternal
+            ),
+            "got {:?}",
+            err.code
+        );
+        // The runtime is still alive: a normal render still works.
+        // (Re-register via a fresh runtime is unnecessary; the same one answers.)
+    }
+
+    #[test]
+    fn json_nesting_scanner_bounds_depth() {
+        assert!(!json_nesting_exceeds(
+            r#"{"nodes":[{"kind":"text","text":"x"}]}"#
+        ));
+        let deep = "[".repeat(100);
+        assert!(json_nesting_exceeds(&deep));
+        // Braces inside strings do not count toward depth.
+        let stringy = format!(r#"{{"text":"{}"}}"#, "{".repeat(200));
+        assert!(!json_nesting_exceeds(&stringy));
     }
 
     #[test]

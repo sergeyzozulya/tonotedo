@@ -312,7 +312,14 @@ fn validate_permission(p: &str) -> Result<(), String> {
         }
     } else {
         match p {
-            "read-entries" | "write-entries" | "network" | "filesystem" => Ok(()),
+            "read-entries" | "write-entries" | "filesystem" => Ok(()),
+            // SECURITY (review M5): a bare `network` is an any-host wildcard — far too
+            // broad. Network access must be scoped to a specific host (`network:<host>`),
+            // which the per-request gate enforces exactly. Reject the bare form loudly.
+            "network" => Err(
+                "bare `network` permission is not allowed; scope it as `network:<host>`"
+                    .to_string(),
+            ),
             other => Err(format!("unknown permission `{other}`")),
         }
     }
@@ -475,6 +482,14 @@ mod tests {
         let src = b"---\nid: a\nname: X\nversion: 1.0.0\nshape: [provider]\ncapabilities: []\npermissions: ['network:api.example.com']\n---\n";
         let m = parse_manifest(src, "x").unwrap();
         assert_eq!(m.permissions, vec!["network:api.example.com"]);
+    }
+
+    #[test]
+    fn rejects_bare_network_permission() {
+        // M5: a bare `network` is an any-host wildcard and must be rejected loudly.
+        let src = b"---\nid: a\nname: X\nversion: 1.0.0\nshape: [provider]\ncapabilities: []\npermissions: [network]\n---\n";
+        let e = parse_manifest(src, "x").unwrap_err();
+        assert!(e.contains("network:<host>"), "{e}");
     }
 
     #[test]

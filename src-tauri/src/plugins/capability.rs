@@ -196,18 +196,98 @@ impl EntriesOwner {
     /// INVARIANT: rejects traversal (`..`), absolute inputs, and anything not under the
     /// declared prefix. This is the filesystem boundary for providers (0010 edge case
     /// "writes outside declared paths → refused").
+    ///
+    /// SECURITY (review C1): a *lexical* prefix check is insufficient — an in-tree
+    /// directory or file symlink under the owned subtree lets a plugin read/write/delete
+    /// arbitrary locations outside the library. We therefore canonicalize the deepest
+    /// EXISTING ancestor and lexically join the remaining (not-yet-created) components,
+    /// then require the canonical result to live under `canonicalize(library_root)/prefix`.
+    /// Additionally, ANY existing path component under the prefix that is itself a symlink
+    /// is rejected outright (no following symlinks at all within the owned subtree).
     fn resolve(&self, rel: &str) -> Result<PathBuf, PluginError> {
         let rel = rel.trim_start_matches('/');
         if rel.is_empty() || rel.contains("..") {
             return Err(PluginError::path_outside_prefix(rel));
         }
-        // Must be the prefix itself or a descendant of it.
+        // RULING (review m4): refuse reserved-component names (`_`/`.`-prefixed) anywhere
+        // in the path. Per spec 0002 §"Reserved names" these are app metadata, never
+        // entries; an entries-owner plugin must not create or touch them (e.g. a write to
+        // `Calendar/Google/_group.md` or a `.`-dotfile). The owned prefix itself is
+        // operator-declared and already excludes `.tonotedo` (manifest normalization), so
+        // we only screen the plugin-supplied path here.
+        if crate::core::frontmatter::has_reserved_component(rel) {
+            return Err(PluginError::path_outside_prefix(rel));
+        }
+        // Must be the prefix itself or a descendant of it (cheap lexical pre-check).
         let under_prefix =
             rel == self.owned_prefix || rel.starts_with(&format!("{}/", self.owned_prefix));
         if !under_prefix {
             return Err(PluginError::path_outside_prefix(rel));
         }
-        Ok(self.library_root.join(rel))
+
+        // The lexical (non-canonical) absolute target.
+        let lexical = self.library_root.join(rel);
+
+        // Reject if any EXISTING component under the prefix is a symlink. We walk from the
+        // library root down the lexical path and `symlink_metadata` each component; a
+        // symlink anywhere is refused (don't follow links inside the owned subtree at all).
+        {
+            let mut probe = self.library_root.clone();
+            for comp in Path::new(rel).components() {
+                let std::path::Component::Normal(seg) = comp else {
+                    // `..`/absolute were already rejected; only Normal is expected here.
+                    return Err(PluginError::path_outside_prefix(rel));
+                };
+                probe.push(seg);
+                match std::fs::symlink_metadata(&probe) {
+                    Ok(md) if md.file_type().is_symlink() => {
+                        return Err(PluginError::path_outside_prefix(rel));
+                    }
+                    Ok(_) => {}
+                    // Component doesn't exist yet (and nothing beyond it can either): stop.
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
+                    Err(_) => return Err(PluginError::path_outside_prefix(rel)),
+                }
+            }
+        }
+
+        // Canonicalize the deepest existing ancestor, then lexically re-join the remainder
+        // (the tail that does not yet exist). This collapses any symlink the library_root
+        // itself may sit behind while still producing a path for not-yet-created files.
+        let canon_root = self
+            .library_root
+            .canonicalize()
+            .map_err(|_| PluginError::path_outside_prefix(rel))?;
+        let mut existing = lexical.clone();
+        let mut tail: Vec<std::ffi::OsString> = Vec::new();
+        let resolved = loop {
+            match existing.canonicalize() {
+                Ok(c) => {
+                    let mut out = c;
+                    for seg in tail.iter().rev() {
+                        out.push(seg);
+                    }
+                    break out;
+                }
+                Err(_) => {
+                    // Pop the last component into `tail` and retry on the parent.
+                    let Some(name) = existing.file_name().map(|n| n.to_os_string()) else {
+                        return Err(PluginError::path_outside_prefix(rel));
+                    };
+                    tail.push(name);
+                    if !existing.pop() {
+                        return Err(PluginError::path_outside_prefix(rel));
+                    }
+                }
+            }
+        };
+
+        // Final containment: the canonical result must be the owned subtree or under it.
+        let canon_prefix = canon_root.join(&self.owned_prefix);
+        if resolved != canon_prefix && !resolved.starts_with(&canon_prefix) {
+            return Err(PluginError::path_outside_prefix(rel));
+        }
+        Ok(resolved)
     }
 
     /// Read an owned entry's bytes, recording the observed content hash so a later write
@@ -356,6 +436,131 @@ mod tests {
         std::fs::write(dir.path().join(rel), b"# Pre-existing\n").unwrap();
         // Plugin never read it → cannot clobber.
         assert_eq!(o.write(rel, b"x").unwrap(), WriteOutcome::Conflict);
+    }
+
+    // ── C1: directory/file symlink escape from the owned subtree ────────────────
+    //
+    // These reproduce the reviewer's exploit: an in-tree symlink whose target is OUTSIDE
+    // the library lets a plugin read/write/delete arbitrary locations through a path that
+    // is lexically under the owned prefix. The fix canonicalizes + refuses symlink
+    // components, so each operation is refused with PathOutsidePrefix.
+
+    #[cfg(unix)]
+    fn symlink(src: &Path, dst: &Path) {
+        std::os::unix::fs::symlink(src, dst).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dir_symlink_escape_read_refused() {
+        let lib = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        // Secret file outside the library.
+        std::fs::write(outside.path().join("secret.md"), b"TOP SECRET\n").unwrap();
+        // In-tree directory symlink under the owned prefix → points outside the library.
+        std::fs::create_dir_all(lib.path().join("Calendar")).unwrap();
+        symlink(outside.path(), &lib.path().join("Calendar/Google"));
+
+        let o = owner(&lib);
+        let err = o.read("Calendar/Google/secret.md").unwrap_err();
+        assert_eq!(
+            err.code,
+            super::super::error::PluginErrorCode::PathOutsidePrefix
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dir_symlink_escape_write_refused() {
+        let lib = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        std::fs::create_dir_all(lib.path().join("Calendar")).unwrap();
+        symlink(outside.path(), &lib.path().join("Calendar/Google"));
+
+        let o = owner(&lib);
+        let err = o.write("Calendar/Google/pwned.md", b"x").unwrap_err();
+        assert_eq!(
+            err.code,
+            super::super::error::PluginErrorCode::PathOutsidePrefix
+        );
+        assert!(!outside.path().join("pwned.md").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dir_symlink_escape_delete_refused() {
+        let lib = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        std::fs::write(outside.path().join("victim.md"), b"keep me\n").unwrap();
+        std::fs::create_dir_all(lib.path().join("Calendar")).unwrap();
+        symlink(outside.path(), &lib.path().join("Calendar/Google"));
+
+        let o = owner(&lib);
+        let err = o.delete("Calendar/Google/victim.md").unwrap_err();
+        assert_eq!(
+            err.code,
+            super::super::error::PluginErrorCode::PathOutsidePrefix
+        );
+        // The outside file is untouched.
+        assert!(outside.path().join("victim.md").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_symlink_write_refused() {
+        // The target file itself is a symlink pointing outside the library. A naive write
+        // would follow it (atomic_write's rename only *accidentally* masks some cases — we
+        // must not rely on that). The symlink-component check refuses it explicitly.
+        let lib = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        std::fs::write(outside.path().join("target.md"), b"original\n").unwrap();
+        std::fs::create_dir_all(lib.path().join("Calendar/Google")).unwrap();
+        symlink(
+            &outside.path().join("target.md"),
+            &lib.path().join("Calendar/Google/link.md"),
+        );
+
+        let o = owner(&lib);
+        let err = o.write("Calendar/Google/link.md", b"pwned\n").unwrap_err();
+        assert_eq!(
+            err.code,
+            super::super::error::PluginErrorCode::PathOutsidePrefix
+        );
+        // The outside target is unchanged.
+        assert_eq!(
+            std::fs::read(outside.path().join("target.md")).unwrap(),
+            b"original\n"
+        );
+    }
+
+    #[test]
+    fn normal_nested_paths_still_work() {
+        // The hardening must not break ordinary nested writes/reads under the prefix.
+        let dir = TempDir::new().unwrap();
+        let o = owner(&dir);
+        let rel = "Calendar/Google/2026/06/event.md";
+        assert_eq!(o.write(rel, b"# Event\n").unwrap(), WriteOutcome::Written);
+        assert_eq!(o.read(rel).unwrap(), b"# Event\n".to_vec());
+        assert_eq!(o.delete(rel).unwrap(), WriteOutcome::Written);
+    }
+
+    #[test]
+    fn reserved_component_refused() {
+        // m4: `_`/`.`-prefixed components are app metadata, never plugin entries.
+        let dir = TempDir::new().unwrap();
+        let o = owner(&dir);
+        for rel in [
+            "Calendar/Google/_group.md",
+            "Calendar/Google/.hidden.md",
+            "Calendar/Google/_sub/x.md",
+        ] {
+            let err = o.write(rel, b"x").unwrap_err();
+            assert_eq!(
+                err.code,
+                super::super::error::PluginErrorCode::PathOutsidePrefix,
+                "{rel}"
+            );
+        }
     }
 
     #[test]

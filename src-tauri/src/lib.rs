@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use serde::Serialize;
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
 
 use ipc::AppState;
 use plugins::error::PluginError;
@@ -57,11 +57,21 @@ fn current_library_root(app_state: &AppState) -> Result<PathBuf, PluginCmdError>
         })
 }
 
+/// Resolve the device-local, app-private directory plugin grants persist under (review C2).
+/// This is the OS app-config dir; it never lives inside the synced library.
+fn grants_dir(app: &AppHandle) -> Result<PathBuf, PluginCmdError> {
+    app.path().app_config_dir().map_err(|e| PluginCmdError {
+        code: plugins::error::PluginErrorCode::HostInternal,
+        message: format!("cannot resolve app config dir for plugin grants: {e}"),
+    })
+}
+
 /// Ensure the plugin host is loaded for `root`, rebuilding if the root changed.
 /// Returns a guard holding the loaded host.
 fn ensure_host<'a>(
     host_state: &'a PluginHostState,
     root: &std::path::Path,
+    grants_dir: &std::path::Path,
 ) -> Result<std::sync::MutexGuard<'a, Option<PluginHost>>, PluginCmdError> {
     let mut guard = host_state.0.lock().map_err(|_| PluginCmdError {
         code: plugins::error::PluginErrorCode::HostInternal,
@@ -69,7 +79,10 @@ fn ensure_host<'a>(
     })?;
     let needs_reload = guard.as_ref().map(|h| h.root() != root).unwrap_or(true);
     if needs_reload {
-        *guard = Some(PluginHost::load(root.to_path_buf()));
+        *guard = Some(PluginHost::load(
+            root.to_path_buf(),
+            grants_dir.to_path_buf(),
+        ));
     }
     Ok(guard)
 }
@@ -78,11 +91,32 @@ fn ensure_host<'a>(
 /// declared caps/perms, granted set, registrations, warnings).
 #[tauri::command]
 fn plugins_list(
+    app: AppHandle,
     app_state: State<'_, AppState>,
     host_state: State<'_, PluginHostState>,
 ) -> Result<Vec<PluginInfo>, PluginCmdError> {
     let root = current_library_root(&app_state)?;
-    let guard = ensure_host(&host_state, &root)?;
+    let gdir = grants_dir(&app)?;
+    let guard = ensure_host(&host_state, &root, &gdir)?;
+    Ok(guard.as_ref().map(|h| h.list()).unwrap_or_default())
+}
+
+/// `plugins_reload()` — re-discover manifests and reconcile grants for the open library,
+/// then return the refreshed inventory. Used by the manager's reload affordance (#26).
+#[tauri::command]
+fn plugins_reload(
+    app: AppHandle,
+    app_state: State<'_, AppState>,
+    host_state: State<'_, PluginHostState>,
+) -> Result<Vec<PluginInfo>, PluginCmdError> {
+    let root = current_library_root(&app_state)?;
+    let gdir = grants_dir(&app)?;
+    let mut guard = host_state.0.lock().map_err(|_| PluginCmdError {
+        code: plugins::error::PluginErrorCode::HostInternal,
+        message: "plugin host lock poisoned".into(),
+    })?;
+    // Unconditional rebuild: re-scan the plugins dir and reconcile the device-local grants.
+    *guard = Some(PluginHost::load(root, gdir));
     Ok(guard.as_ref().map(|h| h.list()).unwrap_or_default())
 }
 
@@ -93,11 +127,13 @@ fn plugins_set_grant(
     plugin: String,
     perm: String,
     granted: bool,
+    app: AppHandle,
     app_state: State<'_, AppState>,
     host_state: State<'_, PluginHostState>,
 ) -> Result<(), PluginCmdError> {
     let root = current_library_root(&app_state)?;
-    let mut guard = ensure_host(&host_state, &root)?;
+    let gdir = grants_dir(&app)?;
+    let mut guard = ensure_host(&host_state, &root, &gdir)?;
     let host = guard.as_mut().ok_or_else(|| PluginCmdError {
         code: plugins::error::PluginErrorCode::HostInternal,
         message: "plugin host missing after load".into(),
@@ -112,11 +148,13 @@ fn plugins_invoke_command(
     plugin: String,
     command_id: String,
     args_json: String,
+    app: AppHandle,
     app_state: State<'_, AppState>,
     host_state: State<'_, PluginHostState>,
 ) -> Result<String, PluginCmdError> {
     let root = current_library_root(&app_state)?;
-    let guard = ensure_host(&host_state, &root)?;
+    let gdir = grants_dir(&app)?;
+    let guard = ensure_host(&host_state, &root, &gdir)?;
     let host = guard.as_ref().ok_or_else(|| PluginCmdError {
         code: plugins::error::PluginErrorCode::HostInternal,
         message: "plugin host missing after load".into(),
@@ -143,6 +181,7 @@ pub fn run() {
             ipc::backlinks,
             ipc::entry_titles,
             plugins_list,
+            plugins_reload,
             plugins_set_grant,
             plugins_invoke_command,
         ])

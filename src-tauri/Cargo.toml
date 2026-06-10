@@ -64,7 +64,10 @@ crossbeam-channel = "0.5"
 # line reshuffled. Bundling the C source means no system QuickJS dependency and identical
 # behaviour on all five targets (adr-0005 "interpreter-only on iOS"). `bindgen` stays off
 # so no libclang build dependency is needed — the crate ships pre-generated bindings.
-rquickjs = { version = "0.9", default-features = false }
+# `allocator`: a custom tracking allocator records the per-call high-water memory mark so a
+# catchable OOM still accrues a memory strike (review M2 — QuickJS's `memory_used_size`
+# reports only live tracked-object bytes after GC, so it cannot detect a brushed ceiling).
+rquickjs = { version = "0.9", default-features = false, features = ["allocator"] }
 
 [profile.release]
 codegen-units = 1

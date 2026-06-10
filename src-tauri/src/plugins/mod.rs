@@ -83,6 +83,9 @@ impl PluginHostState {
 /// The live plugin host for an open library.
 pub struct PluginHost {
     library_root: PathBuf,
+    /// Device-local, app-private directory the grant store persists under (review C2).
+    /// Never inside the synced library; keyed there by the canonical library path.
+    grants_dir: PathBuf,
     /// Shared, so injected entries-owner closures see live revocations (design-0002).
     grants: Arc<Mutex<GrantStore>>,
     /// Validated plugins keyed by id. Invalid folders never appear here.
@@ -119,10 +122,26 @@ pub struct PluginInfo {
 impl PluginHost {
     /// Build the host for a library: discover plugins, reconcile grants (version-diff),
     /// and activate those whose permissions are satisfied.
-    pub fn load(library_root: PathBuf) -> Self {
+    ///
+    /// `grants_dir` is the device-local, app-private directory the grant store persists
+    /// under (review C2). The Tauri command layer passes the OS app-config dir; tests pass
+    /// a temp dir. Grants are NEVER read from inside the synced library.
+    pub fn load(library_root: PathBuf, grants_dir: PathBuf) -> Self {
         let discovery = manifest::discover(&library_root);
-        let grant_store = GrantStore::load(&library_root);
+        let (grant_store, saw_in_library_grants) = GrantStore::load(&grants_dir, &library_root);
         let grants = Arc::new(Mutex::new(grant_store));
+
+        let mut warnings = discovery.warnings;
+        if saw_in_library_grants {
+            // C2: an in-library grants file was present (e.g. synced from another device).
+            // It is ignored; warn the user so the re-prompt isn't surprising.
+            warnings.push(DiscoveryWarning {
+                source: ".tonotedo/state/plugin-grants.json".to_string(),
+                reason: "in-library plugin-grants.json ignored (grants are device-local; \
+                         synced-in plugins must be re-authorized on this device)"
+                    .to_string(),
+            });
+        }
 
         let mut plugins = Vec::new();
         for m in discovery.manifests {
@@ -143,14 +162,15 @@ impl PluginHost {
 
         // Persist any version-diff reconciliation (dropped zombie permissions).
         if let Ok(g) = grants.lock() {
-            let _ = g.save(&library_root);
+            let _ = g.save(&grants_dir, &library_root);
         }
 
         let mut host = PluginHost {
             library_root,
+            grants_dir,
             grants,
             plugins,
-            warnings: discovery.warnings,
+            warnings,
         };
 
         // Activate every plugin whose permissions are satisfied.
@@ -285,13 +305,15 @@ impl PluginHost {
                     "permission `{permission}` is not requested by `{plugin_id}`"
                 )));
             }
-            let _ = g.save(&self.library_root);
+            let _ = g.save(&self.grants_dir, &self.library_root);
             g.reconcile_version(&manifest)
         };
 
         match new_status {
             PermissionStatus::Satisfied => {
-                // Activate if not already active.
+                // Activate if not already active. A re-grant that re-satisfies a previously
+                // revoked plugin clears the revoked state and resumes its capabilities
+                // (review M6) — the runtime was kept alive, so registrations persist.
                 if self.plugins[idx].runtime.is_none() {
                     self.activate(plugin_id);
                 } else {
@@ -299,13 +321,30 @@ impl PluginHost {
                 }
             }
             PermissionStatus::Pending => {
-                // A revoke can knock an active plugin back to pending: tear down its runtime
-                // so its capabilities stop (design-0002: "affected capabilities suspend").
+                // SPEC 0010 / review M6: a revoke knocks an active plugin back to pending,
+                // but its runtime + registrations STAY. "Affected capabilities suspend;
+                // commands stay registered but error if invoked." The injected entries/net
+                // functions already re-check the live grant set per call (→ PermissionRevoked),
+                // and command/render dispatch is gated below by `permissions_satisfied`. We
+                // therefore keep the runtime instead of tearing it down.
                 self.plugins[idx].status = PluginStatus::PermissionsPending;
-                self.plugins[idx].runtime = None;
             }
         }
         Ok(())
+    }
+
+    /// Whether the plugin's requested permissions are currently ALL granted (live).
+    ///
+    /// Used to gate command/render dispatch after a mid-session revoke (review M6): the
+    /// runtime stays alive with its registrations, but invoking a command/renderer while a
+    /// requested permission is revoked must error rather than run.
+    fn permissions_satisfied(&self, manifest: &Manifest) -> bool {
+        manifest.permissions.iter().all(|perm| {
+            self.grants
+                .lock()
+                .map(|g| g.is_granted(&manifest.id, perm))
+                .unwrap_or(false)
+        })
     }
 
     /// Invoke a registered command on an active plugin.
@@ -325,6 +364,12 @@ impl PluginHost {
         if !rt.commands.iter().any(|c| c.id == command_id) {
             return Err(PluginError::not_registered(command_id));
         }
+        // M6: a revoked permission leaves the command registered but makes invocation error.
+        if !self.permissions_satisfied(&p.manifest) {
+            return Err(PluginError::permission_revoked(
+                "a requested permission was revoked; re-grant to use this command",
+            ));
+        }
         rt.invoke_command(command_id, args_json)
     }
 
@@ -341,6 +386,12 @@ impl PluginHost {
             .find(|p| p.manifest.id == plugin_id)
             .ok_or_else(PluginError::not_active)?;
         let rt = p.runtime.as_ref().ok_or_else(PluginError::not_active)?;
+        // M6: revoked permission → renderer stays registered but errors on invoke.
+        if !self.permissions_satisfied(&p.manifest) {
+            return Err(PluginError::permission_revoked(
+                "a requested permission was revoked; re-grant to use this renderer",
+            ));
+        }
         rt.render(text, lang)
     }
 }

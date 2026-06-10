@@ -410,6 +410,25 @@ describe("plugins facade (issue #25)", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.code).toBe("io_error");
   });
+
+  it("plugins_reload returns the refreshed inventory (mock)", async () => {
+    const { mock } = await import("../lib/ipc/mock.js");
+    const result = await mock.plugins_reload();
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      // Same shape as plugins_list: a PluginInfo[] with the known mock plugins.
+      const listed = await mock.plugins_list();
+      expect(listed.ok).toBe(true);
+      if (listed.ok) expect(result.value.length).toBe(listed.value.length);
+    }
+  });
+
+  it("real.ts plugins_reload returns io_error when Tauri is absent", async () => {
+    const { real } = await import("../lib/ipc/real.js");
+    const result = await real.plugins_reload();
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("io_error");
+  });
 });
 
 // ── Item 2: IndexChangedKind 'created' ────────────────────────────────────────

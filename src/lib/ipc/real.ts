@@ -189,6 +189,10 @@ export const real: Ipc = {
     return call<PluginInfo[]>("plugins_list");
   },
 
+  async plugins_reload(): Promise<Result<PluginInfo[]>> {
+    return call<PluginInfo[]>("plugins_reload");
+  },
+
   async plugins_set_grant(plugin: string, perm: string, granted: boolean): Promise<Result<void>> {
     return call<void>("plugins_set_grant", { plugin, perm, granted });
   },
