@@ -1,3 +1,5 @@
+pub mod core;
+
 /// Returns the version of this crate as a string.
 #[tauri::command]
 fn core_version() -> String {
