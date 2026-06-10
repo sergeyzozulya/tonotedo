@@ -24,6 +24,7 @@ import type {
   Cursor,
   GroupPath,
   SearchQuery,
+  SavedSearch,
   IpcEventName,
   IpcEventPayload,
   IpcUnsubscribe,
@@ -134,6 +135,16 @@ export const real: Ipc = {
 
   async list_groups(): Promise<Result<GroupMeta[]>> {
     return call<GroupMeta[]>("list_groups");
+  },
+
+  // ── Saved searches (spec 0009) — stubs, refs #20 ──────────────────────────
+
+  saved_searches_get(): Promise<Result<SavedSearch[]>> {
+    return notImpl("saved_searches_get");
+  },
+
+  saved_searches_set(): Promise<Result<void>> {
+    return notImpl("saved_searches_set");
   },
 
   on<E extends IpcEventName>(

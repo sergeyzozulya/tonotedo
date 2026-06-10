@@ -15,6 +15,8 @@
   // count in faint monospace, section labels uppercase 10.5px.
 
   import type { GroupNode } from "./group-tree.js";
+  import { savedSearchesStore } from "../search/saved-searches-store.js";
+  import type { SavedSearch } from "../search/saved-searches-store.js";
 
   interface Props {
     /** Root-level tree nodes (already sorted + aggregated). */
@@ -23,9 +25,13 @@
     selectedPath: string | null;
     /** Called when the user selects a group. */
     onGroupSelect: (path: string | null) => void;
+    /** Called when the Search nav row is clicked. */
+    onOpenSearch?: () => void;
+    /** Called when a saved search is selected. */
+    onSelectSavedSearch?: (s: SavedSearch) => void;
   }
 
-  let { tree, selectedPath, onGroupSelect }: Props = $props();
+  let { tree, selectedPath, onGroupSelect, onOpenSearch, onSelectSavedSearch }: Props = $props();
 
   // ── Per-node collapsed state ──────────────────────────────────────────────────
   // Start with top-level nodes open; children collapsed.
@@ -57,7 +63,13 @@
       <span class="sidebar-row-label">Calendar</span>
       <kbd class="sidebar-row-hint">⌘⌥M</kbd>
     </div>
-    <div class="sidebar-row sidebar-row--nav" role="button" tabindex="0">
+    <div
+      class="sidebar-row sidebar-row--nav"
+      role="button"
+      tabindex="0"
+      onclick={onOpenSearch}
+      onkeydown={(e) => (e.key === "Enter" || e.key === " ") && onOpenSearch?.()}
+    >
       <span class="sidebar-row-icon">🔍</span>
       <span class="sidebar-row-label">Search</span>
       <kbd class="sidebar-row-hint">⌘P</kbd>
@@ -72,6 +84,27 @@
       {@render treeNode(node, 0)}
     {/each}
   </div>
+
+  <!-- Saved searches (spec 0009) -->
+  <div class="sidebar-section-label">Saved</div>
+  {#if savedSearchesStore.searches.length === 0}
+    <div class="sidebar-row sidebar-row--placeholder" aria-disabled="true">
+      <span class="sidebar-row-label sidebar-row-label--faint">No saved searches</span>
+    </div>
+  {:else}
+    {#each savedSearchesStore.searches as s (s.name)}
+      <div
+        class="sidebar-row sidebar-row--saved"
+        role="button"
+        tabindex="0"
+        onclick={() => onSelectSavedSearch?.(s)}
+        onkeydown={(e) => (e.key === "Enter" || e.key === " ") && onSelectSavedSearch?.(s)}
+      >
+        <span class="sidebar-row-icon">⌕</span>
+        <span class="sidebar-row-label">{s.name}</span>
+      </div>
+    {/each}
+  {/if}
 
   <!-- People placeholder (issue #19) -->
   <div class="sidebar-section-label sidebar-section-label--later">People</div>
@@ -220,6 +253,11 @@
 
   .sidebar-row--placeholder:hover {
     background: transparent;
+  }
+
+  .sidebar-row--saved {
+    gap: 8px;
+    font-size: 13px;
   }
 
   /* Active-indicator left bar */
