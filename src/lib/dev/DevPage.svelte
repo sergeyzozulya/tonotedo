@@ -2,8 +2,10 @@
   import { SvelteMap } from "svelte/reactivity";
   import { ipc } from "../ipc/index.js";
   import { Editor } from "../editor/index.js";
+  import PropertiesPanel from "../panel/PropertiesPanel.svelte";
   import themeMap from "../../styles/THEME-MAP.json";
   import type { EntrySummary } from "../ipc/types.js";
+  import type { ChangeSpec } from "../panel/frontmatter-view.js";
 
   // ── Entry titles for wikilink chip resolution ───────────────────────────────
 
@@ -123,6 +125,16 @@
     }, 500);
   }
 
+  // ── Panel write-back (issue #15) ─────────────────────────────────────────────
+
+  // The panel emits a ChangeSpec; we hand it to the editor as externalChange.
+  // Each new object reference triggers the Editor's $effect.
+  let panelChange = $state<ChangeSpec | null>(null);
+
+  function onPanelEdit(change: ChangeSpec): void {
+    panelChange = { ...change };
+  }
+
   // Block callbacks — mock: log to console. Real: will OS-open.
   const blockCallbacks = {
     onOpenAttachment(path: string) {
@@ -213,11 +225,21 @@
           {entryTitles}
           entryPath={selectedId}
           {blockCallbacks}
+          externalChange={panelChange}
         />
       {:else}
         <div class="dev-empty">Select an entry</div>
       {/if}
     </main>
+
+    <!-- Properties panel (issue #15) -->
+    <aside class="dev-panel-aside">
+      {#if selectedId}
+        <PropertiesPanel docText={editorText} onEdit={onPanelEdit} />
+      {:else}
+        <div class="dev-empty">No entry</div>
+      {/if}
+    </aside>
   </div>
 </div>
 
@@ -340,6 +362,13 @@
     min-width: 0;
     min-height: 0;
     background: var(--tnd-panel);
+  }
+
+  .dev-panel-aside {
+    width: 260px;
+    flex-shrink: 0;
+    min-height: 0;
+    overflow: hidden;
   }
 
   .dev-chip-event {

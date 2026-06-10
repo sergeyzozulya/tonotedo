@@ -68,6 +68,13 @@
      * unresolved. When absent, all wikilinks render with their raw target text.
      */
     entryTitles?: Map<string, string>;
+    /**
+     * External change to dispatch into the editor buffer (issue #15 — panel
+     * write-back). When set to a non-null ChangeSpec, the editor dispatches it
+     * as a targeted doc transaction. The caller must reset this to null after
+     * each dispatch (swap the reference to trigger the effect).
+     */
+    externalChange?: { from: number; to: number; insert: string } | null;
     /** Vault-relative path of the currently open entry (for asset resolution). */
     entryPath?: string;
     /** Block-layer callbacks (open attachment, relink/remove broken). */
@@ -84,6 +91,7 @@
     entryTitles = new Map(),
     entryPath = "",
     blockCallbacks = {},
+    externalChange = null,
   }: Props = $props();
 
   let host: HTMLDivElement;
@@ -140,6 +148,19 @@
   // Re-apply settings when they change (theme tokens are live).
   $effect(() => {
     if (host) applySettings(host, settings);
+  });
+
+  // Dispatch an external change (panel write-back, issue #15) into the buffer.
+  $effect(() => {
+    if (externalChange && view) {
+      view.dispatch({
+        changes: {
+          from: externalChange.from,
+          to: externalChange.to,
+          insert: externalChange.insert,
+        },
+      });
+    }
   });
 </script>
 
