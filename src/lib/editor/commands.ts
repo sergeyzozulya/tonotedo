@@ -54,9 +54,20 @@ export function toggleWrap(marker: string): StateCommand {
     }
 
     // Already wrapped *around* the span (markers sit just outside)?
+    // Guard: the character just outside the marker must not be the same marker
+    // character to avoid partially stripping a longer sequence (e.g. `*`-toggle
+    // on `word` inside `**word**` would otherwise see `*…*` and strip one `*`
+    // from the double-bold, corrupting the document).
+    const outerBefore = doc.sliceString(Math.max(0, from - mLen - 1), from - mLen);
+    const outerAfter = doc.sliceString(to + mLen, Math.min(doc.length, to + mLen + 1));
     const before = doc.sliceString(Math.max(0, from - mLen), from);
     const after = doc.sliceString(to, Math.min(doc.length, to + mLen));
-    if (before === marker && after === marker) {
+    if (
+      before === marker &&
+      after === marker &&
+      outerBefore !== marker[0] &&
+      outerAfter !== marker[marker.length - 1]
+    ) {
       dispatch(
         state.update({
           changes: [

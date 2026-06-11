@@ -88,6 +88,14 @@ describe("toggleWrap — italic (*) and code (`)", () => {
     const unwrapped = run(stateOf("`x`", 0, 3), toggleWrap("`"));
     expect(unwrapped?.doc).toBe("x");
   });
+
+  it("italic toggle on text inside bold does not corrupt the bold markers", () => {
+    // Selecting `word` inside `**word**` and toggling italic must not strip
+    // one `*` from the double-bold and leave `*word*`.
+    const r = run(stateOf("**word**", 2, 6), toggleWrap("*"));
+    // Should add `*` around word (making it bold+italic), not remove a `*`.
+    expect(r?.doc).toBe("***word***");
+  });
 });
 
 // ── Heading ────────────────────────────────────────────────────────────────────
