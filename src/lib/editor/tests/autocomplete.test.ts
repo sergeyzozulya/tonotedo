@@ -131,6 +131,11 @@ function stubIpc(overrides?: {
     plugins_set_grant: vi.fn() as never,
     plugins_invoke_command: vi.fn() as never,
     effective_schema: vi.fn() as never,
+    set_tag: vi.fn() as never,
+    rename_person: vi.fn() as never,
+    merge_person: vi.fn() as never,
+    list_orphan_avatars: vi.fn() as never,
+    delete_orphan_avatar: vi.fn() as never,
     on: vi.fn(() => () => {}),
   };
 }

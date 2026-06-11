@@ -846,6 +846,382 @@ pub fn merge_person(
     Ok(())
 }
 
+/// Input DTO for `set_tag`.
+#[derive(Debug, Deserialize)]
+pub struct TagInputDto {
+    pub name: String,
+    pub color: Option<String>,
+    pub description: Option<String>,
+    pub icon: Option<String>,
+    /// When `Some`, upsert into the given group's `_group.md` `scoped_tags`
+    /// instead of the library-root `_tags.md`.  Must be a validated group path.
+    #[serde(rename = "scopePath")]
+    pub scope_path: Option<String>,
+}
+
+/// `set_tag(tag)` — upsert tag metadata.
+///
+/// - If `scopePath` is absent: upsert into `_tags.md` (global tag).
+/// - If `scopePath` is present: upsert into the group's `_group.md`
+///   `scoped_tags` block.
+///
+/// Other tags and the file body are preserved.
+#[tauri::command]
+pub fn set_tag(tag: TagInputDto, state: State<'_, AppState>) -> CmdResult<()> {
+    let guard = require_open!(state);
+    let lib = guard.as_ref().ok_or_else(IpcError::not_open)?;
+    set_tag_inner(&lib.root, &tag)
+}
+
+pub fn set_tag_inner(root: &Path, tag: &TagInputDto) -> CmdResult<()> {
+    if let Some(scope) = &tag.scope_path {
+        // Validate scope path to prevent traversal attacks.
+        use crate::core::frontmatter::is_safe_rel_path;
+        if !is_safe_rel_path(scope) {
+            return Err(IpcError {
+                code: "invalid_argument",
+                message: format!("Unsafe scope path: '{scope}'"),
+                detail: None,
+            });
+        }
+        upsert_scoped_tag(root, scope, tag)
+    } else {
+        upsert_global_tag(root, tag)
+    }
+}
+
+/// Upsert a global tag in `_tags.md`.
+fn upsert_global_tag(root: &Path, tag: &TagInputDto) -> CmdResult<()> {
+    let path = root.join("_tags.md");
+    let (body, mut tags) = read_tags_file(&path)?;
+    let pos = tags.iter().position(|t| t.name == tag.name);
+    let new_entry = TagMetaDecl {
+        name: tag.name.clone(),
+        description: tag.description.clone(),
+        color: tag.color.clone(),
+        icon: tag.icon.clone(),
+    };
+    if let Some(idx) = pos {
+        tags[idx] = new_entry;
+    } else {
+        tags.push(new_entry);
+    }
+    write_tags_file(&path, &tags, &body)
+}
+
+/// Read `_tags.md` (or a non-existent file) returning (body, tag list).
+fn read_tags_file(path: &Path) -> CmdResult<(String, Vec<TagMetaDecl>)> {
+    if !path.exists() {
+        return Ok((String::new(), Vec::new()));
+    }
+    let bytes =
+        std::fs::read(path).map_err(|e| IpcError::io(format!("Cannot read {:?}: {e}", path)))?;
+    let entry = Entry::from_bytes(&bytes);
+    let body = entry.body.clone();
+    let tags = read_tags_meta(&entry);
+    Ok((body, tags))
+}
+
+/// Write `_tags.md` preserving body text.
+fn write_tags_file(path: &Path, tags: &[TagMetaDecl], body: &str) -> CmdResult<()> {
+    let yaml = serialize_tags_meta_yaml(tags);
+    let content = if tags.is_empty() {
+        format!("---\ntags: []\n---\n{body}")
+    } else {
+        format!("---\ntags:\n{yaml}---\n{body}")
+    };
+    atomic_write(path, content.as_bytes())
+        .map_err(|e| IpcError::io(format!("Cannot write {:?}: {e}", path)))
+}
+
+// ── Scoped-tag struct for _group.md ──────────────────────────────────────────
+
+struct ScopedTagDecl {
+    tag: String,
+    description: Option<String>,
+    color: Option<String>,
+    icon: Option<String>,
+}
+
+/// Upsert a scoped tag in the group's `_group.md`.
+///
+/// Strategy: line-based replacement of the `scoped_tags:` block so that
+/// unrelated frontmatter fields (name, order, color, schema, …) are preserved
+/// verbatim and unknown/complex values are never corrupted.
+fn upsert_scoped_tag(root: &Path, scope: &str, tag: &TagInputDto) -> CmdResult<()> {
+    let group_md = root.join(scope).join("_group.md");
+    // Create parent dir if needed.
+    if let Some(parent) = group_md.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| IpcError::io(format!("Cannot create dir {:?}: {e}", parent)))?;
+    }
+
+    // Parse existing scoped_tags from the file (or start empty).
+    let (pre_lines, body, mut scoped_tags) = parse_group_md_scoped_tags(&group_md)?;
+
+    let pos = scoped_tags.iter().position(|t| t.tag == tag.name);
+    let new_entry = ScopedTagDecl {
+        tag: tag.name.clone(),
+        description: tag.description.clone(),
+        color: tag.color.clone(),
+        icon: tag.icon.clone(),
+    };
+    if let Some(idx) = pos {
+        scoped_tags[idx] = new_entry;
+    } else {
+        scoped_tags.push(new_entry);
+    }
+
+    write_group_md_with_scoped_tags(&group_md, &pre_lines, &scoped_tags, &body)
+}
+
+/// Parse `_group.md` for scoped_tags, returning:
+///
+/// - `pre_lines`: all frontmatter lines BEFORE the `scoped_tags:` block,
+///   with a trailing newline.
+/// - `body`: text after the closing `---\n`.
+/// - `scoped_tags`: the parsed list.
+fn parse_group_md_scoped_tags(path: &Path) -> CmdResult<(String, String, Vec<ScopedTagDecl>)> {
+    if !path.exists() {
+        return Ok((String::new(), String::new(), Vec::new()));
+    }
+    let raw = std::fs::read_to_string(path)
+        .map_err(|e| IpcError::io(format!("Cannot read {:?}: {e}", path)))?;
+
+    // Split at frontmatter fences.  `Entry::from_bytes` handles this for us.
+    let bytes = raw.as_bytes();
+    let entry = Entry::from_bytes(bytes);
+    let body = entry.body.clone();
+
+    // Extract the frontmatter text between the first `---` pair by line scanning.
+    // `start` is the byte offset of the first character after the opening fence line.
+    let fm_start = raw.find('\n').map(|n| n + 1).unwrap_or(0);
+    let fm_end = find_fm_end(&raw);
+    let fm_lines: &str = if let Some(end) = fm_end {
+        &raw[fm_start..end] // skip opening "---\n" (or "---\r\n")
+    } else {
+        ""
+    };
+
+    // Walk the frontmatter lines, splitting off the `scoped_tags:` block.
+    let (pre, scoped_tags) = split_fm_scoped_tags(fm_lines);
+    Ok((pre, body, scoped_tags))
+}
+
+/// Find the byte offset of the closing `\n---\n` (or `\n---\r\n`) in `raw`,
+/// returning the offset of the `\n` that precedes `---`.
+fn find_fm_end(raw: &str) -> Option<usize> {
+    if !raw.starts_with("---\n") && !raw.starts_with("---\r\n") {
+        return None;
+    }
+    // Skip past the opening fence line ("---\n" or "---\r\n").
+    let start = raw.find('\n')? + 1;
+    let tail = &raw[start..];
+    // Find closing "---\n" or "---\r\n" within the tail.
+    for (i, _) in tail.char_indices() {
+        let rest = &tail[i..];
+        if rest.starts_with("---\n") || rest.starts_with("---\r\n") {
+            // Return the absolute offset of the closing fence's start in `raw`.
+            return Some(start + i);
+        }
+    }
+    None
+}
+
+/// Split frontmatter lines into (pre_lines, scoped_tags).
+///
+/// `pre_lines` is everything that is NOT part of the `scoped_tags:` block
+/// (i.e. everything before `scoped_tags:` and everything after the block ends).
+/// Indented lines under `scoped_tags:` are consumed.
+fn split_fm_scoped_tags(fm: &str) -> (String, Vec<ScopedTagDecl>) {
+    let mut pre = String::new();
+    let mut scoped_tags: Vec<ScopedTagDecl> = Vec::new();
+    let mut in_block = false;
+    let mut current: Option<ScopedTagDecl> = None;
+
+    for line in fm.lines() {
+        if line == "scoped_tags:" || line == "scoped_tags: []" {
+            in_block = true;
+            if let Some(t) = current.take() {
+                scoped_tags.push(t);
+            }
+            continue;
+        }
+        if in_block {
+            if line.starts_with("  ") || line.starts_with('\t') {
+                // Indented line — part of the scoped_tags block.
+                let trimmed = line.trim();
+                if let Some(rest) = trimmed.strip_prefix("- tag:") {
+                    if let Some(t) = current.take() {
+                        scoped_tags.push(t);
+                    }
+                    current = Some(ScopedTagDecl {
+                        tag: yaml_unquote(rest.trim()),
+                        description: None,
+                        color: None,
+                        icon: None,
+                    });
+                } else if let Some(c) = current.as_mut() {
+                    if let Some(rest) = trimmed.strip_prefix("description:") {
+                        c.description = Some(yaml_unquote(rest.trim()));
+                    } else if let Some(rest) = trimmed.strip_prefix("color:") {
+                        c.color = Some(yaml_unquote(rest.trim()));
+                    } else if let Some(rest) = trimmed.strip_prefix("icon:") {
+                        c.icon = Some(yaml_unquote(rest.trim()));
+                    }
+                }
+                continue;
+            }
+            // Non-indented line ends the block.
+            in_block = false;
+            if let Some(t) = current.take() {
+                scoped_tags.push(t);
+            }
+        }
+        pre.push_str(line);
+        pre.push('\n');
+    }
+    if let Some(t) = current.take() {
+        scoped_tags.push(t);
+    }
+    (pre, scoped_tags)
+}
+
+/// Strip surrounding YAML double-quotes from a bare value string.
+fn yaml_unquote(s: &str) -> String {
+    if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
+        s[1..s.len() - 1]
+            .replace("\\\"", "\"")
+            .replace("\\\\", "\\")
+    } else {
+        s.to_string()
+    }
+}
+
+/// Write `_group.md` with updated scoped_tags, keeping `pre_lines` verbatim
+/// and appending the body after the closing fence.
+fn write_group_md_with_scoped_tags(
+    path: &Path,
+    pre_lines: &str,
+    scoped_tags: &[ScopedTagDecl],
+    body: &str,
+) -> CmdResult<()> {
+    let mut fm = String::new();
+    fm.push_str(pre_lines);
+    if !scoped_tags.is_empty() {
+        fm.push_str("scoped_tags:\n");
+        for t in scoped_tags {
+            fm.push_str(&format!("  - tag: {}\n", yaml_quote(&t.tag)));
+            if let Some(d) = &t.description {
+                fm.push_str(&format!("    description: {}\n", yaml_quote(d)));
+            }
+            if let Some(c) = &t.color {
+                fm.push_str(&format!("    color: {}\n", yaml_quote(c)));
+            }
+            if let Some(i) = &t.icon {
+                fm.push_str(&format!("    icon: {}\n", yaml_quote(i)));
+            }
+        }
+    }
+    let content = format!("---\n{fm}---\n{body}");
+    atomic_write(path, content.as_bytes())
+        .map_err(|e| IpcError::io(format!("Cannot write {:?}: {e}", path)))
+}
+
+// ── Avatar tidy ───────────────────────────────────────────────────────────────
+
+/// DTO returned by `list_orphan_avatars`.
+#[derive(Debug, Serialize)]
+pub struct OrphanAvatarDto {
+    /// Vault-relative path to the orphan avatar file.
+    pub path: String,
+}
+
+/// `list_orphan_avatars()` — scan `_people/` for files no longer referenced by
+/// any declared person in `_people.md`, returning their vault-relative paths.
+#[tauri::command]
+pub fn list_orphan_avatars(state: State<'_, AppState>) -> CmdResult<Vec<OrphanAvatarDto>> {
+    let guard = require_open!(state);
+    let lib = guard.as_ref().ok_or_else(IpcError::not_open)?;
+    list_orphan_avatars_inner(&lib.root)
+}
+
+pub fn list_orphan_avatars_inner(root: &Path) -> CmdResult<Vec<OrphanAvatarDto>> {
+    let people_dir = root.join("_people");
+    if !people_dir.exists() {
+        return Ok(Vec::new());
+    }
+    // Collect the set of avatar paths referenced by declared people.
+    let people = read_people_list(&root.join("_people.md"))?;
+    let referenced: std::collections::HashSet<String> = people
+        .iter()
+        .filter_map(|p| p.avatar_path.as_deref())
+        .map(|s| s.to_string())
+        .collect();
+
+    let mut orphans = Vec::new();
+    let read_dir = std::fs::read_dir(&people_dir)
+        .map_err(|e| IpcError::io(format!("Cannot read _people/: {e}")))?;
+    for entry in read_dir {
+        let entry = entry.map_err(|e| IpcError::io(format!("read_dir error: {e}")))?;
+        let file_path = entry.path();
+        // Only files.
+        if !file_path.is_file() {
+            continue;
+        }
+        // Build vault-relative path.
+        let rel = file_path
+            .strip_prefix(root)
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_default();
+        if !rel.is_empty() && !referenced.contains(&rel) {
+            orphans.push(OrphanAvatarDto { path: rel });
+        }
+    }
+    Ok(orphans)
+}
+
+/// `delete_orphan_avatar(path)` — delete a single orphan avatar file.
+///
+/// The path must be inside `_people/` and must not escape the library root.
+#[tauri::command]
+pub fn delete_orphan_avatar(path: String, state: State<'_, AppState>) -> CmdResult<()> {
+    let guard = require_open!(state);
+    let lib = guard.as_ref().ok_or_else(IpcError::not_open)?;
+    delete_orphan_avatar_inner(&lib.root, &path)
+}
+
+pub fn delete_orphan_avatar_inner(root: &Path, rel_path: &str) -> CmdResult<()> {
+    // Must start with the _people/ prefix — no traversal allowed.
+    if !rel_path.starts_with("_people/") {
+        return Err(IpcError {
+            code: "invalid_argument",
+            message: format!("Path '{rel_path}' is not inside _people/"),
+            detail: None,
+        });
+    }
+    // Guard against path traversal in the filename component.
+    let filename = &rel_path["_people/".len()..];
+    if filename.is_empty()
+        || filename.contains('/')
+        || filename.contains('\\')
+        || filename == ".."
+        || filename == "."
+    {
+        return Err(IpcError {
+            code: "invalid_argument",
+            message: format!("Unsafe path: '{rel_path}'"),
+            detail: None,
+        });
+    }
+    let abs = root.join(rel_path);
+    if !abs.exists() {
+        // Idempotent: already gone.
+        return Ok(());
+    }
+    std::fs::remove_file(&abs).map_err(|e| IpcError::io(format!("Cannot delete '{rel_path}': {e}")))
+}
+
 // ── _tags.md helpers ─────────────────────────────────────────────────────────
 
 struct TagMetaDecl {
@@ -1937,5 +2313,291 @@ pub mod tests {
         let result = calendar_window_inner(lib, "2026-06-10", "2026-06-20", None).unwrap();
         let item = result.items.iter().find(|i| i.entry_id == "work/sched");
         assert!(item.is_some(), "entry with 'scheduled' prop must appear");
+    }
+
+    // ── set_tag: global tags ──────────────────────────────────────────────────
+
+    #[test]
+    fn set_tag_creates_global_tag() {
+        let fix = Fixture::new();
+        let tag = TagInputDto {
+            name: "followup".to_string(),
+            color: Some("amber".to_string()),
+            description: Some("Things to come back to.".to_string()),
+            icon: Some("⏳".to_string()),
+            scope_path: None,
+        };
+        set_tag_inner(&fix.root, &tag).unwrap();
+        let path = fix.root.join("_tags.md");
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("name: followup"), "name must appear");
+        assert!(content.contains("color: amber"), "color must appear");
+        assert!(content.contains("description:"), "description must appear");
+        assert!(content.contains("icon:"), "icon must appear");
+    }
+
+    #[test]
+    fn set_tag_updates_existing_global_tag() {
+        let fix = Fixture::new();
+        // Pre-populate _tags.md.
+        let initial = "---\ntags:\n  - name: followup\n    color: amber\n---\n# Notes\n";
+        std::fs::write(fix.root.join("_tags.md"), initial).unwrap();
+
+        let tag = TagInputDto {
+            name: "followup".to_string(),
+            color: Some("red".to_string()),
+            description: Some("Updated description.".to_string()),
+            icon: None,
+            scope_path: None,
+        };
+        set_tag_inner(&fix.root, &tag).unwrap();
+
+        let (_, tags) = read_tags_file(&fix.root.join("_tags.md")).unwrap();
+        assert_eq!(tags.len(), 1, "must not duplicate");
+        assert_eq!(tags[0].color.as_deref(), Some("red"), "color updated");
+        assert_eq!(
+            tags[0].description.as_deref(),
+            Some("Updated description."),
+            "description updated"
+        );
+    }
+
+    #[test]
+    fn set_tag_preserves_body_and_other_tags() {
+        let fix = Fixture::new();
+        let initial =
+            "---\ntags:\n  - name: done\n    color: green\n---\n# Tag taxonomy notes\n\nBody.\n";
+        std::fs::write(fix.root.join("_tags.md"), initial).unwrap();
+
+        let tag = TagInputDto {
+            name: "followup".to_string(),
+            color: Some("amber".to_string()),
+            description: None,
+            icon: None,
+            scope_path: None,
+        };
+        set_tag_inner(&fix.root, &tag).unwrap();
+
+        let content = std::fs::read_to_string(fix.root.join("_tags.md")).unwrap();
+        assert!(content.contains("done"), "other tag must be preserved");
+        assert!(content.contains("followup"), "new tag must appear");
+        assert!(
+            content.contains("# Tag taxonomy notes"),
+            "body must be preserved"
+        );
+        assert!(content.contains("Body."), "body must be preserved");
+    }
+
+    // ── set_tag: scoped tags ──────────────────────────────────────────────────
+
+    #[test]
+    fn set_tag_creates_scoped_tag_in_group_md() {
+        let fix = Fixture::new();
+        // Create the group directory.
+        std::fs::create_dir_all(fix.root.join("work/atlas")).unwrap();
+
+        let tag = TagInputDto {
+            name: "atlas/blocked".to_string(),
+            color: Some("red".to_string()),
+            description: Some("Blocked in Atlas.".to_string()),
+            icon: None,
+            scope_path: Some("work/atlas".to_string()),
+        };
+        set_tag_inner(&fix.root, &tag).unwrap();
+
+        let path = fix.root.join("work/atlas/_group.md");
+        assert!(path.exists(), "_group.md must be created");
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            content.contains("scoped_tags:"),
+            "scoped_tags block required"
+        );
+        assert!(content.contains("tag: atlas/blocked"), "tag name required");
+        assert!(content.contains("color: red"), "color required");
+    }
+
+    #[test]
+    fn set_tag_scoped_preserves_existing_group_md_fields() {
+        let fix = Fixture::new();
+        std::fs::create_dir_all(fix.root.join("work/atlas")).unwrap();
+        // Pre-populate _group.md with name and an existing scoped tag.
+        let initial = "---\nname: Atlas\nscoped_tags:\n  - tag: atlas/parked\n    color: slate\n---\n# Group notes\n";
+        std::fs::write(fix.root.join("work/atlas/_group.md"), initial).unwrap();
+
+        let tag = TagInputDto {
+            name: "atlas/blocked".to_string(),
+            color: Some("red".to_string()),
+            description: None,
+            icon: None,
+            scope_path: Some("work/atlas".to_string()),
+        };
+        set_tag_inner(&fix.root, &tag).unwrap();
+
+        let content = std::fs::read_to_string(fix.root.join("work/atlas/_group.md")).unwrap();
+        // Both scoped tags must be present.
+        assert!(
+            content.contains("atlas/parked"),
+            "existing scoped tag preserved"
+        );
+        assert!(content.contains("atlas/blocked"), "new scoped tag added");
+        // The group name and body must survive.
+        assert!(content.contains("name: Atlas"), "group name preserved");
+        assert!(content.contains("# Group notes"), "body preserved");
+    }
+
+    #[test]
+    fn set_tag_scoped_updates_existing_entry() {
+        let fix = Fixture::new();
+        std::fs::create_dir_all(fix.root.join("work/atlas")).unwrap();
+        let initial = "---\nscoped_tags:\n  - tag: atlas/blocked\n    color: slate\n---\n";
+        std::fs::write(fix.root.join("work/atlas/_group.md"), initial).unwrap();
+
+        let tag = TagInputDto {
+            name: "atlas/blocked".to_string(),
+            color: Some("red".to_string()),
+            description: Some("Now blocking.".to_string()),
+            icon: None,
+            scope_path: Some("work/atlas".to_string()),
+        };
+        set_tag_inner(&fix.root, &tag).unwrap();
+
+        let (_, _, scoped) =
+            parse_group_md_scoped_tags(&fix.root.join("work/atlas/_group.md")).unwrap();
+        assert_eq!(scoped.len(), 1, "must not duplicate");
+        assert_eq!(scoped[0].color.as_deref(), Some("red"), "color updated");
+        assert_eq!(
+            scoped[0].description.as_deref(),
+            Some("Now blocking."),
+            "description updated"
+        );
+    }
+
+    #[test]
+    fn set_tag_rejects_traversal_scope_path() {
+        let fix = Fixture::new();
+        let tag = TagInputDto {
+            name: "evil".to_string(),
+            color: None,
+            description: None,
+            icon: None,
+            scope_path: Some("../outside".to_string()),
+        };
+        let err = set_tag_inner(&fix.root, &tag).unwrap_err();
+        assert_eq!(err.code, "invalid_argument");
+    }
+
+    // ── rename_person rewrites mentions ──────────────────────────────────────
+
+    #[test]
+    fn rename_person_rewrites_mentions_in_entries() {
+        let fix = Fixture::new();
+        fix.write_md(
+            "journal/day.md",
+            "---\nmentions: [sergey]\n---\n# Day\n\nHad lunch with @sergey today.\n",
+        );
+        let guard = fix.lib();
+        let lib = guard.as_ref().unwrap();
+        crate::core::journal::rename_person(
+            &lib.root,
+            &lib.index,
+            &lib.tokens,
+            "sergey",
+            "sergey-k",
+        )
+        .unwrap();
+        let out = std::fs::read_to_string(fix.root.join("journal/day.md")).unwrap();
+        assert!(out.contains("@sergey-k"), "body must be rewritten");
+        assert!(
+            !out.contains("@sergey "),
+            "old slug must not remain in body"
+        );
+        assert!(out.contains("sergey-k"), "frontmatter must be rewritten");
+    }
+
+    // ── list_orphan_avatars ───────────────────────────────────────────────────
+
+    #[test]
+    fn list_orphan_avatars_finds_unreferenced_file() {
+        let fix = Fixture::new();
+        // Create _people/ with an avatar file.
+        std::fs::create_dir_all(fix.root.join("_people")).unwrap();
+        std::fs::write(fix.root.join("_people/orphan.jpg"), b"fake").unwrap();
+        // No _people.md → nobody references the file.
+        let orphans = list_orphan_avatars_inner(&fix.root).unwrap();
+        assert!(
+            orphans.iter().any(|o| o.path == "_people/orphan.jpg"),
+            "orphan must be detected"
+        );
+    }
+
+    #[test]
+    fn list_orphan_avatars_excludes_referenced_file() {
+        let fix = Fixture::new();
+        std::fs::create_dir_all(fix.root.join("_people")).unwrap();
+        std::fs::write(fix.root.join("_people/anna.jpg"), b"fake").unwrap();
+        // Declare anna with that avatar.
+        let person = PersonInputDto {
+            slug: "anna".to_string(),
+            display_name: Some("Anna".to_string()),
+            description: None,
+            color: None,
+            avatar_path: Some("_people/anna.jpg".to_string()),
+        };
+        set_person_inner(&fix.root, &person).unwrap();
+        let orphans = list_orphan_avatars_inner(&fix.root).unwrap();
+        assert!(
+            orphans.iter().all(|o| o.path != "_people/anna.jpg"),
+            "referenced avatar must not be listed as orphan"
+        );
+    }
+
+    #[test]
+    fn delete_orphan_avatar_removes_file() {
+        let fix = Fixture::new();
+        std::fs::create_dir_all(fix.root.join("_people")).unwrap();
+        let f = fix.root.join("_people/old-avatar.jpg");
+        std::fs::write(&f, b"fake").unwrap();
+        delete_orphan_avatar_inner(&fix.root, "_people/old-avatar.jpg").unwrap();
+        assert!(!f.exists(), "file must be removed");
+    }
+
+    #[test]
+    fn delete_orphan_avatar_rejects_path_outside_people() {
+        let fix = Fixture::new();
+        let err = delete_orphan_avatar_inner(&fix.root, "work/note.md").unwrap_err();
+        assert_eq!(err.code, "invalid_argument");
+    }
+
+    // ── find_fm_end / CRLF round-trip ─────────────────────────────────────────
+
+    #[test]
+    fn set_tag_scoped_round_trips_crlf_opening_fence() {
+        // _group.md with CRLF opening fence must not corrupt frontmatter.
+        let fix = Fixture::new();
+        std::fs::create_dir_all(fix.root.join("work/atlas")).unwrap();
+        // Write a _group.md with CRLF opening fence.
+        let initial = "---\r\nname: Atlas\n---\nbody\n";
+        std::fs::write(fix.root.join("work/atlas/_group.md"), initial).unwrap();
+
+        let tag = TagInputDto {
+            name: "atlas/blocked".to_string(),
+            color: Some("red".to_string()),
+            description: None,
+            icon: None,
+            scope_path: Some("work/atlas".to_string()),
+        };
+        set_tag_inner(&fix.root, &tag).unwrap();
+
+        let content = std::fs::read_to_string(fix.root.join("work/atlas/_group.md")).unwrap();
+        // The name field from the CRLF file must survive intact.
+        assert!(
+            content.contains("name: Atlas"),
+            "group name must survive CRLF round-trip, got: {:?}",
+            content
+        );
+        assert!(
+            content.contains("atlas/blocked"),
+            "new scoped tag must appear"
+        );
     }
 }

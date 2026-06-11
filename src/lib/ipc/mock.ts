@@ -11,6 +11,7 @@ import type {
   EntryContent,
   EntrySummary,
   TagMeta,
+  TagInput,
   PersonMeta,
   PersonInput,
   GroupMeta,
@@ -31,6 +32,7 @@ import type {
   TrashOpResult,
   RestoreResult,
   PluginInfo,
+  OrphanAvatar,
 } from "./types.js";
 import {
   parseCalValue,
@@ -549,6 +551,27 @@ const TAG_META: Record<string, { description?: string; icon?: string }> = {
   review: { description: "Periodic review items." },
   books: { description: "Book notes and reading list.", icon: "📚" },
 };
+
+/** Mutable tag declaration store for set_tag (global + scoped). */
+interface TagDecl {
+  name: string;
+  color?: ChipColor | string;
+  description?: string;
+  icon?: string;
+  scopePath?: string;
+}
+
+const tagDeclStore = new Map<string, TagDecl>(
+  Object.entries(TAG_META).map(([name, m]) => [
+    name,
+    {
+      name,
+      color: TAG_COLORS[name],
+      description: m.description,
+      icon: m.icon,
+    },
+  ]),
+);
 
 // Scoped tags: declared in _group.md `scoped_tags:` for specific groups.
 // These are visible only within the group and its descendants (spec 0002 / issue #28).
@@ -1418,8 +1441,98 @@ export const mock: Ipc = {
   async delete_tag(name: string): Promise<Result<void>> {
     // Remove only from suggestions / metadata — do not touch entry text.
     if (TAG_COLORS[name]) delete TAG_COLORS[name];
+    tagDeclStore.delete(name);
     invalidateCaches();
     console.log(`[mock ipc] delete_tag → ${name}`);
+    return { ok: true, value: undefined };
+  },
+
+  async set_tag(tag: TagInput): Promise<Result<void>> {
+    const key = tag.scopePath ? `${tag.scopePath}::${tag.name}` : tag.name;
+    tagDeclStore.set(key, { ...tag });
+    // Sync color into TAG_COLORS for buildTagIndex backward compat.
+    if (!tag.scopePath && tag.color) {
+      TAG_COLORS[tag.name] = tag.color as ChipColor;
+    }
+    invalidateCaches();
+    console.log(`[mock ipc] set_tag → ${tag.name} (scope=${tag.scopePath ?? "global"})`);
+    return { ok: true, value: undefined };
+  },
+
+  async rename_person(oldSlug: string, newSlug: string): Promise<Result<void>> {
+    // Rewrite entries that reference the old slug.
+    for (const [id, e] of store.entries()) {
+      const updated = e.people.map((p) => (p === oldSlug ? newSlug : p));
+      const newText = e.text
+        .split("\n")
+        .map((line) =>
+          line.replace(new RegExp(`(?<![\\w])@${oldSlug}(?![\\w-])`, "g"), `@${newSlug}`),
+        )
+        .join("\n");
+      if (updated.join(",") !== e.people.join(",") || newText !== e.text) {
+        store.set(id, { ...e, people: updated, text: newText });
+      }
+    }
+    // Rename in peopleStore.
+    const decl = peopleStore.get(oldSlug);
+    if (decl) {
+      peopleStore.delete(oldSlug);
+      peopleStore.set(newSlug, { ...decl, slug: newSlug });
+    }
+    invalidateCaches();
+    console.log(`[mock ipc] rename_person ${oldSlug} → ${newSlug}`);
+    return { ok: true, value: undefined };
+  },
+
+  async merge_person(sourceSlug: string, targetSlug: string): Promise<Result<void>> {
+    // Rewrite entries that reference the source slug.
+    for (const [id, e] of store.entries()) {
+      const updated = e.people.map((p) => (p === sourceSlug ? targetSlug : p));
+      const deduped = [...new Set(updated)];
+      const newText = e.text
+        .split("\n")
+        .map((line) =>
+          line.replace(new RegExp(`(?<![\\w])@${sourceSlug}(?![\\w-])`, "g"), `@${targetSlug}`),
+        )
+        .join("\n");
+      if (deduped.join(",") !== e.people.join(",") || newText !== e.text) {
+        store.set(id, { ...e, people: deduped, text: newText });
+      }
+    }
+    // Remove source from peopleStore.
+    peopleStore.delete(sourceSlug);
+    invalidateCaches();
+    console.log(`[mock ipc] merge_person ${sourceSlug} → ${targetSlug}`);
+    return { ok: true, value: undefined };
+  },
+
+  async list_orphan_avatars(): Promise<Result<OrphanAvatar[]>> {
+    // Find avatar paths stored in mock asset store that aren't referenced by any person.
+    const referenced = new Set<string>(
+      Array.from(peopleStore.values())
+        .map((p) => p.avatarPath)
+        .filter((p): p is string => !!p),
+    );
+    const orphans: OrphanAvatar[] = Array.from(assetStore.keys())
+      .filter((p) => p.startsWith("_people/") && !referenced.has(p))
+      .map((p) => ({ path: p }));
+    return { ok: true, value: orphans };
+  },
+
+  async delete_orphan_avatar(path: string): Promise<Result<void>> {
+    if (!path.startsWith("_people/")) {
+      return {
+        ok: false,
+        error: { code: "invalid_argument", message: `Path '${path}' is not inside _people/` },
+      };
+    }
+    assetStore.delete(path);
+    const cached = objectUrlCache.get(path);
+    if (cached) {
+      URL.revokeObjectURL(cached);
+      objectUrlCache.delete(path);
+    }
+    console.log(`[mock ipc] delete_orphan_avatar → ${path}`);
     return { ok: true, value: undefined };
   },
 

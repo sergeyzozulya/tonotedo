@@ -94,6 +94,24 @@ export interface TagMeta {
   scopePath?: string | null;
 }
 
+/** Fields for creating or updating a tag declaration in _tags.md or a group's _group.md. */
+export interface TagInput {
+  name: string;
+  color?: ChipColor | string;
+  description?: string;
+  icon?: string;
+  /**
+   * When present, upsert into the named group's _group.md `scoped_tags`.
+   * When absent, upsert into the library-root _tags.md.
+   */
+  scopePath?: string;
+}
+
+/** A vault-relative path to an orphan avatar file under _people/. */
+export interface OrphanAvatar {
+  path: string;
+}
+
 // ── People types ──────────────────────────────────────────────────────────────
 
 export interface PersonMeta {
@@ -427,6 +445,42 @@ export interface IpcCommands {
    * refs #22 — Rust stub returns not_implemented.
    */
   delete_tag(name: string): Promise<Result<void>>;
+
+  /**
+   * Upsert tag metadata.
+   * If `tag.scopePath` is absent: writes to _tags.md (global).
+   * If `tag.scopePath` is present: writes to the group's _group.md scoped_tags.
+   * Round-trips other fields in the file.
+   */
+  set_tag(tag: TagInput): Promise<Result<void>>;
+
+  /**
+   * Rename a person slug: rewrite every @old to @new in all entries.
+   * Also renames the _people.md declaration entry.
+   * Confirmed batch operation with journaling.
+   */
+  rename_person(oldSlug: string, newSlug: string): Promise<Result<void>>;
+
+  /**
+   * Merge person source into target: rewrite every @source to @target.
+   * Removes source's metadata from _people.md.
+   * Confirmed batch operation with journaling.
+   */
+  merge_person(sourceSlug: string, targetSlug: string): Promise<Result<void>>;
+
+  /**
+   * List avatar files under _people/ that are not referenced by any declared
+   * person in _people.md. Used by the "tidy" affordance in PersonView.
+   */
+  list_orphan_avatars(): Promise<Result<OrphanAvatar[]>>;
+
+  /**
+   * Delete a single orphan avatar file.
+   * The path must be inside _people/ (enforced on the Rust side).
+   * Idempotent: returns ok if the file is already gone.
+   */
+  delete_orphan_avatar(path: string): Promise<Result<void>>;
+
   // ── Calendar facade (issue #21) ────────────────────────────────────────────
 
   // ── Group mutation commands (phase 6 / issue #28) ─────────────────────────

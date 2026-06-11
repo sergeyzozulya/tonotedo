@@ -16,6 +16,7 @@ import type {
   EntryId,
   EntrySummary,
   TagMeta,
+  TagInput,
   PersonMeta,
   GroupMeta,
   Backlink,
@@ -26,6 +27,7 @@ import type {
   SearchQuery,
   SavedSearch,
   PersonInput,
+  OrphanAvatar,
   IpcEventName,
   IpcEventPayload,
   IpcUnsubscribe,
@@ -178,6 +180,26 @@ export const real: Ipc = {
 
   async delete_tag(name: string): Promise<Result<void>> {
     return call<void>("delete_tag", { name });
+  },
+
+  async set_tag(tag: TagInput): Promise<Result<void>> {
+    return call<void>("set_tag", { tag });
+  },
+
+  async rename_person(oldSlug: string, newSlug: string): Promise<Result<void>> {
+    return call<void>("rename_person", { oldSlug, newSlug });
+  },
+
+  async merge_person(sourceSlug: string, targetSlug: string): Promise<Result<void>> {
+    return call<void>("merge_person", { sourceSlug, targetSlug });
+  },
+
+  async list_orphan_avatars(): Promise<Result<OrphanAvatar[]>> {
+    return call<OrphanAvatar[]>("list_orphan_avatars");
+  },
+
+  async delete_orphan_avatar(path: string): Promise<Result<void>> {
+    return call<void>("delete_orphan_avatar", { path });
   },
 
   // ── Group mutation commands (phase 6) ────────────────────────────────────────
