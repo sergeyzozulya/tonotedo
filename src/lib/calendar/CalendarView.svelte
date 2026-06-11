@@ -246,8 +246,7 @@
       // datetime values and duration for range values (spec 0008 line ~73).
       const dateProp = primaryDateProp();
       const dueRow = model.rows.find((r) => r.key === dateProp);
-      const rawPrev =
-        typeof dueRow?.value === "string" ? dueRow.value : null;
+      const rawPrev = typeof dueRow?.value === "string" ? dueRow.value : null;
       const newDateStr = rescheduleValue(rawPrev, toDate);
       let change: ChangeSpec | null = null;
 

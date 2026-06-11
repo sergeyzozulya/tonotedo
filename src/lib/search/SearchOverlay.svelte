@@ -58,7 +58,7 @@
     saveNameInput = "";
     savingMode = false;
     focusedIndex = 0;
-    sortOrder = "relevance";
+    sortOrder = "auto";
     void runSearch();
     void loadMeta();
   }
