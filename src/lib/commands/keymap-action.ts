@@ -48,23 +48,83 @@ export function setCheatsheetOpener(fn: () => void): void {
 
 // ── Keystroke normalization ────────────────────────────────────────────────────
 
+/**
+ * Shifted US punctuation glyph → its unshifted base key. Used only to keep the
+ * canonical stroke aligned with the binding-table notation when other modifiers
+ * are present (e.g. cmd+shift+/ emits e.key "?" — we re-form it as meta+shift+/
+ * so it matches the stored binding). Layout-dependent but covers the only
+ * spec-relevant case (cmd+? == shift+cmd+/, spec 0007 §Cheatsheet).
+ */
+const SHIFTED_PUNCT_BASE: Record<string, string> = {
+  "?": "/",
+  ":": ";",
+  "<": ",",
+  ">": ".",
+  '"': "'",
+  "{": "[",
+  "}": "]",
+  "|": "\\",
+  "+": "=",
+  _: "-",
+  "~": "`",
+  "!": "1",
+  "@": "2",
+  "#": "3",
+  $: "4",
+  "%": "5",
+  "^": "6",
+  "&": "7",
+  "*": "8",
+  "(": "9",
+  ")": "0",
+};
+
+/** The subset of KeyboardEvent fields eventToStroke reads (lets tests pass a
+ *  plain object without a DOM KeyboardEvent constructor). */
+export interface StrokeEvent {
+  key: string;
+  metaKey: boolean;
+  ctrlKey: boolean;
+  altKey: boolean;
+  shiftKey: boolean;
+}
+
 /** Convert a KeyboardEvent to a canonical stroke string. Returns null if
- *  the event is not a bindable keystroke (e.g. bare modifier key press). */
-function eventToStroke(e: KeyboardEvent): string | null {
+ *  the event is not a bindable keystroke (e.g. bare modifier key press).
+ *  Exported for unit testing of the `?`/`cmd+?` normalization (spec 0007). */
+export function eventToStroke(e: StrokeEvent): string | null {
   const key = e.key;
   // Ignore bare modifier presses.
   if (["Meta", "Control", "Alt", "Shift", "CapsLock"].includes(key)) return null;
+
+  const hasOtherMod = e.metaKey || e.ctrlKey || e.altKey;
+  // A shifted printable punctuation glyph (e.g. "?", ":") already encodes the
+  // shift in `e.key`. With no other modifier the keymap notation is the bare
+  // glyph ("?", not "shift+?") — so a literal "?" matches the cheatsheet binding
+  // and the text-zone guard. With another modifier present, we instead re-form
+  // the canonical as shift + base key (cmd+? → meta+shift+/) to match how the
+  // binding is written on disk.
+  const isShiftedPunct = key in SHIFTED_PUNCT_BASE && e.shiftKey;
 
   const parts: string[] = [];
   if (e.metaKey) parts.push("meta");
   if (e.ctrlKey) parts.push("ctrl");
   if (e.altKey) parts.push("alt");
-  if (e.shiftKey) parts.push("shift");
 
-  // Normalize the key name to our canonical form.
-  let normalizedKey = key.toLowerCase();
-  // Browser sends " " for spacebar.
-  if (normalizedKey === " ") normalizedKey = "space";
+  let normalizedKey: string;
+  if (isShiftedPunct && !hasOtherMod) {
+    // Bare shifted glyph → drop the shift, emit the glyph itself.
+    normalizedKey = key;
+  } else if (isShiftedPunct) {
+    // Shifted glyph + another modifier → shift + base key.
+    parts.push("shift");
+    normalizedKey = SHIFTED_PUNCT_BASE[key];
+  } else {
+    if (e.shiftKey) parts.push("shift");
+    normalizedKey = key.toLowerCase();
+    // Browser sends " " for spacebar.
+    if (normalizedKey === " ") normalizedKey = "space";
+  }
 
   parts.push(normalizedKey);
   const raw = parts.join("+");

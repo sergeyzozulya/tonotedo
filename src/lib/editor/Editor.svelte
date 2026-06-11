@@ -36,6 +36,8 @@
     type BlockCallbacks,
   } from "./extensions/blocks.js";
   import { autocomplete } from "./extensions/autocomplete.js";
+  import { editorKeymap } from "./extensions/editor-keymap.js";
+  import { setActiveEditorView, clearActiveEditorView } from "./active-view.js";
   import { ipc } from "../ipc/index.js";
 
   interface Props {
@@ -58,10 +60,16 @@
     onTokenClick?: (kind: "tag" | "mention", value: string) => void;
     /**
      * Called when a wikilink chip is clicked. The target is the raw wikilink
-     * target string (may be path-qualified). Actual navigation is the caller's
-     * responsibility.
+     * target string (may be path-qualified). `range` is the document span of the
+     * `[[…]]` token and `rect` its on-screen box — both supplied so the caller
+     * can disambiguate a bare link and rewrite it path-qualified in place (spec
+     * 0006). Actual navigation is the caller's responsibility.
      */
-    onNavigate?: (target: string) => void;
+    onNavigate?: (
+      target: string,
+      range?: { from: number; to: number },
+      rect?: { left: number; top: number; bottom: number },
+    ) => void;
     /**
      * Map of entryId → display title used to resolve wikilink chips.
      * When provided, wikilinks whose target matches an entry id show the entry
@@ -98,6 +106,11 @@
      * so scoped tags (from _group.md) are ranked/filtered correctly (phase 6).
      */
     groupPath?: string | null;
+    /**
+     * Called when the editor gains or loses focus. Lets the shell show/hide the
+     * mobile accessory bar and scope editor-zone commands (spec 0007).
+     */
+    onFocusChange?: (focused: boolean) => void;
   }
 
   let {
@@ -114,6 +127,7 @@
     externalChange = null,
     externalDocReplace = null,
     groupPath = null,
+    onFocusChange,
   }: Props = $props();
 
   // groupPathRef is a mutable box so the autocomplete source always reads the
@@ -153,6 +167,14 @@
   const updateListener = EditorView.updateListener.of((u) => {
     if (u.docChanged) onDocChanged?.(u.state.doc.toString());
     if (u.selectionSet || u.docChanged) onSelectionContext?.(selectionContext(u.state));
+    if (u.focusChanged) {
+      if (u.view.hasFocus) {
+        setActiveEditorView(u.view);
+        onFocusChange?.(true);
+      } else {
+        onFocusChange?.(false);
+      }
+    }
   });
 
   onMount(() => {
@@ -179,6 +201,7 @@
           blocksPlugin(ipc, blockCallbacks),
           pasteDropHandlers(ipc, () => entryPath),
           autocomplete({ ipc, onCreatePerson, groupPath: groupPathRef }),
+          editorKeymap,
           markdownExtension,
           baseSetup,
           editorTheme,
@@ -191,7 +214,15 @@
     // Emit the initial selection context once mounted.
     onSelectionContext?.(selectionContext(view.state));
 
-    return () => view?.destroy();
+    // Register as the active editor so editor commands (bold/italic/heading/…)
+    // and the accessory bar reach this instance even before the first focus.
+    setActiveEditorView(view);
+
+    const v = view;
+    return () => {
+      clearActiveEditorView(v);
+      v.destroy();
+    };
   });
 
   // Re-apply settings when they change (theme tokens are live).

@@ -54,3 +54,30 @@ export {
   rankPeople,
 } from "./extensions/autocomplete.js";
 export type { AutocompleteConfig } from "./extensions/autocomplete.js";
+export {
+  toggleWrap,
+  toggleBold,
+  toggleItalic,
+  toggleCode,
+  setHeading,
+  heading1,
+  heading2,
+  heading3,
+  cycleBlockLine,
+  cycleBlockType,
+  moveBlockUp,
+  moveBlockDown,
+  indentBlock,
+  outdentBlock,
+} from "./commands.js";
+export {
+  setActiveEditorView,
+  clearActiveEditorView,
+  getActiveEditorView,
+  runEditorCommand,
+} from "./active-view.js";
+export { editorKeymap } from "./extensions/editor-keymap.js";
+export { extractHeadings } from "./outline.js";
+export type { OutlineHeading } from "./outline.js";
+export { resolveWikilink } from "./wikilink-resolve.js";
+export type { WikilinkResolution, WikilinkCandidate, ResolveInput } from "./wikilink-resolve.js";

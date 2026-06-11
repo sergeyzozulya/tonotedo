@@ -49,6 +49,9 @@ export const markdownExtension: Extension = markdownLang({
   // HTML-tag completion is harmless and cheap; leave defaults.
 });
 
+/** Keys whose bindings the 0007 command engine owns (see baseSetup comment). */
+const BLOCK_OWNED_KEYS = new Set(["Alt-ArrowUp", "Alt-ArrowDown", "Mod-]", "Mod-["]);
+
 /**
  * Curated base setup. Order matters only where CM6 documents it; decoration
  * layers (cursor-reveal, frontmatter-fold) are appended by the Editor component
@@ -68,5 +71,14 @@ export const baseSetup: Extension = [
   // Single cursor only (0006 non-goal: no multi-cursor in v1).
   EditorState.allowMultipleSelections.of(false),
   EditorView.lineWrapping,
-  keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
+  // Drop the default block-move / indent bindings: spec 0007 makes the command
+  // keymap engine the single owner of these (editor.move-block-up/-down,
+  // editor.indent/-outdent), dispatched from the global keydown listener. Leaving
+  // CM's own bindings active would double-fire (the global listener is an
+  // ancestor; the keydown bubbles up after CM already ran the command).
+  keymap.of([
+    ...defaultKeymap.filter((b) => !BLOCK_OWNED_KEYS.has(b.key ?? "")),
+    ...historyKeymap,
+    indentWithTab,
+  ]),
 ];
