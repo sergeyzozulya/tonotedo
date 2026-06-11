@@ -23,7 +23,7 @@
   //   overlay?.openSearch();
 
   import { ipc } from "../ipc/index.js";
-  import { savedSearchesStore } from "./saved-searches-store.js";
+  import { savedSearchesStore } from "./saved-searches-store.svelte.js";
   import { parseQuery, matchesQuery } from "./query-parse.js";
   import type { EntrySummary, TagMeta, GroupMeta, SavedSearchFilter } from "../ipc/types.js";
 

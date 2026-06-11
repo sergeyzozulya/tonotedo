@@ -22,13 +22,13 @@
   import { registry, seedThemeCommands } from "../commands/index.js";
   import { settings_get_user } from "../commands/settings.js";
   import { buildGroupTree } from "./group-tree.js";
-  import { themeStore } from "./theme-store.js";
+  import { themeStore } from "./theme-store.svelte.js";
   import Sidebar from "./Sidebar.svelte";
   import EntryList from "./EntryList.svelte";
   import { Editor } from "../editor/index.js";
   import PropertiesPanel from "../panel/PropertiesPanel.svelte";
   import SearchOverlay from "../search/SearchOverlay.svelte";
-  import { savedSearchesStore } from "../search/saved-searches-store.js";
+  import { savedSearchesStore } from "../search/saved-searches-store.svelte.js";
   import ConflictBanner from "./ConflictBanner.svelte";
   import {
     makeTracker,
@@ -49,7 +49,7 @@
   import type { EntrySummary, PersonMeta, TagMeta } from "../ipc/types.js";
   import type { GroupNode } from "./group-tree.js";
   import type { ChangeSpec } from "../panel/frontmatter-view.js";
-  import type { SavedSearch } from "../search/saved-searches-store.js";
+  import type { SavedSearch } from "../search/saved-searches-store.svelte.js";
   import themeMap from "../../styles/THEME-MAP.json";
   // Mobile components (issue #24)
   import MobileTopBar from "./MobileTopBar.svelte";

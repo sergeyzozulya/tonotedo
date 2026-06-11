@@ -10,7 +10,7 @@
 
 import { registry, type Command } from "./registry.js";
 import { setZone } from "./zones.js";
-import type { themeStore as ThemeStoreType } from "../shell/theme-store.js";
+import type { themeStore as ThemeStoreType } from "../shell/theme-store.svelte.js";
 
 // ── palette / app ──────────────────────────────────────────────────────────────
 

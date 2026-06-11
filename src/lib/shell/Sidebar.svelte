@@ -17,8 +17,8 @@
   // count in faint monospace, section labels uppercase 10.5px.
 
   import type { GroupNode } from "./group-tree.js";
-  import { savedSearchesStore } from "../search/saved-searches-store.js";
-  import type { SavedSearch } from "../search/saved-searches-store.js";
+  import { savedSearchesStore } from "../search/saved-searches-store.svelte.js";
+  import type { SavedSearch } from "../search/saved-searches-store.svelte.js";
   import type { PersonMeta } from "../ipc/types.js";
   import PeopleSection from "../people/PeopleSection.svelte";
   import { ipc } from "../ipc/index.js";

@@ -13,7 +13,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { registry } from "../../../lib/commands/registry.js";
 import { seedCommands, seedThemeCommands } from "../../../lib/commands/seed.js";
-import type { themeStore as ThemeStoreType } from "../../../lib/shell/theme-store.js";
+import type { themeStore as ThemeStoreType } from "../../../lib/shell/theme-store.svelte.js";
 
 // Minimal themeStore mock — tracks calls.
 function makeStoreMock(): typeof ThemeStoreType & {

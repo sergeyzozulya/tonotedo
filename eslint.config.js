@@ -31,4 +31,20 @@ export default [
       },
     },
   },
+  // Rune modules (`*.svelte.ts` / `*.svelte.js`) are plain TS/JS modules that
+  // use runes — the Svelte recommended config grabs them with the svelte
+  // parser, which can't parse a full TS module. Force the TS parser; runes are
+  // just call expressions to it. This block comes last so it wins.
+  {
+    files: ["**/*.svelte.ts", "**/*.svelte.js"],
+    languageOptions: {
+      parser: tsParser,
+    },
+    plugins: {
+      "@typescript-eslint": tseslint,
+    },
+    rules: {
+      ...tseslint.configs.recommended.rules,
+    },
+  },
 ];

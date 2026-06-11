@@ -33,8 +33,8 @@
   import type { ConflictResult } from "../commands/keymap.js";
   import { loadPresets } from "../commands/presets.js";
   import type { PresetDefinition } from "../commands/presets.js";
-  import { themeStore } from "../shell/theme-store.js";
-  import type { ThemeMode } from "../shell/theme-store.js";
+  import { themeStore } from "../shell/theme-store.svelte.js";
+  import type { ThemeMode } from "../shell/theme-store.svelte.js";
   import themeMap from "../../styles/THEME-MAP.json";
 
   interface Props {
