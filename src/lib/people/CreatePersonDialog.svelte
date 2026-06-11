@@ -186,7 +186,7 @@
   .dialog {
     background: var(--tnd-panel);
     border: 1px solid var(--tnd-line-strong);
-    border-radius: 8px;
+    border-radius: var(--tnd-radius, 8px);
     box-shadow: var(--tnd-shadow);
     width: 380px;
     max-width: calc(100vw - 32px);
@@ -244,10 +244,13 @@
   }
 
   .field-label {
-    font-size: 11.5px;
+    font-size: 11px;
     font-weight: 600;
     color: var(--tnd-text-muted);
     user-select: none;
+    text-transform: var(--tnd-label-transform, none);
+    letter-spacing: var(--tnd-label-spacing, 0);
+    font-family: var(--tnd-font-ui);
   }
 
   .required {
@@ -259,10 +262,10 @@
     font-size: 13px;
     padding: 6px 8px;
     border: 1px solid var(--tnd-line-strong);
-    border-radius: 4px;
+    border-radius: var(--tnd-radius, 4px);
     background: var(--tnd-bg);
     color: var(--tnd-text);
-    font-family: inherit;
+    font-family: var(--tnd-font-ui);
     outline: none;
     transition: border-color 0.1s;
   }
@@ -306,9 +309,9 @@
   .btn {
     font-size: 13px;
     padding: 6px 16px;
-    border-radius: 5px;
+    border-radius: var(--tnd-radius, 5px);
     cursor: pointer;
-    font-family: inherit;
+    font-family: var(--tnd-font-ui);
     font-weight: 600;
     border: 1px solid transparent;
     transition: background 0.08s;
