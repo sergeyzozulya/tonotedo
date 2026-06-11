@@ -67,6 +67,35 @@ pub fn is_safe_rel_path(rel_path: &str) -> bool {
     true
 }
 
+/// Like [`is_safe_rel_path`] but WITHOUT the reserved-component rejection.
+///
+/// For commands that legitimately operate on app-metadata files — `_group.md`
+/// is openable/editable as an entry (spec 0003) and avatars live under
+/// `_people/` — but must still never escape the library root. Rejects:
+///   - empty
+///   - absolute (`/foo`, leading `\`, or a Windows drive prefix)
+///   - any empty, `.`, or `..` component
+///
+/// Same lexical-containment guarantee as `is_safe_rel_path`: with absolute
+/// paths and `..` rejected, `library_root.join(path)` stays under the root.
+pub fn is_traversal_safe_rel_path(rel_path: &str) -> bool {
+    if rel_path.is_empty() {
+        return false;
+    }
+    if rel_path.starts_with('/')
+        || rel_path.starts_with('\\')
+        || std::path::Path::new(rel_path).is_absolute()
+    {
+        return false;
+    }
+    for comp in rel_path.split(['/', '\\']) {
+        if comp.is_empty() || comp == "." || comp == ".." {
+            return false;
+        }
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,5 +160,28 @@ mod tests {
         assert!(!has_reserved_component("note.md"));
         assert!(!has_reserved_component("Work/Atlas/note.md"));
         assert!(!has_reserved_component("a/b/c.md"));
+    }
+
+    #[test]
+    fn traversal_safe_rejects_escapes() {
+        assert!(!is_traversal_safe_rel_path(""));
+        assert!(!is_traversal_safe_rel_path("/tmp/evil"));
+        assert!(!is_traversal_safe_rel_path("\\tmp\\evil"));
+        assert!(!is_traversal_safe_rel_path("../../../../tmp/evil"));
+        assert!(!is_traversal_safe_rel_path("work/../../../evil"));
+        assert!(!is_traversal_safe_rel_path("work/./note"));
+        assert!(!is_traversal_safe_rel_path("work//note"));
+        assert!(!is_traversal_safe_rel_path("work\\..\\evil"));
+    }
+
+    #[test]
+    fn traversal_safe_allows_reserved_components() {
+        // Unlike is_safe_rel_path: _group.md opens as an entry (spec 0003) and
+        // avatars live under _people/ — these must pass.
+        assert!(is_traversal_safe_rel_path("work/_group"));
+        assert!(is_traversal_safe_rel_path("_people.md"));
+        assert!(is_traversal_safe_rel_path("_people/sergey.png"));
+        assert!(is_traversal_safe_rel_path("work/atlas/overview"));
+        assert!(is_traversal_safe_rel_path("note"));
     }
 }

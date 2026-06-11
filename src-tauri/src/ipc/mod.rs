@@ -45,7 +45,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 
 use crate::core::{
-    frontmatter::Entry,
+    frontmatter::{is_traversal_safe_rel_path, Entry},
     fswrite::{write_entry as fswrite_write_entry, TokenRegistry, WriteToken},
     index::Index,
     reconcile::{ChangeEvent, ChangeKind, ReconcileNotification, Reconciler, SyncReconciler},
@@ -399,6 +399,14 @@ pub fn read_entry(id: String, state: State<'_, AppState>) -> CmdResult<EntryCont
     let guard = require_open!(state);
     let lib = guard.as_ref().ok_or_else(IpcError::not_open)?;
 
+    // Security: the id is joined onto the library root; reject traversal.
+    // (Reserved `_` components stay allowed — `_group.md` opens as an entry.)
+    if !is_traversal_safe_rel_path(&id) {
+        return Err(IpcError::invalid_argument(format!(
+            "Unsafe entry id: {id:?}"
+        )));
+    }
+
     let abs = entry_abs_path(&lib.root, &id);
     let bytes = std::fs::read(&abs).map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
@@ -454,6 +462,13 @@ pub fn write_entry(
 ) -> CmdResult<WriteEntryResult> {
     let guard = require_open!(state);
     let lib = guard.as_ref().ok_or_else(IpcError::not_open)?;
+
+    // Security: the id is joined onto the library root; reject traversal.
+    if !is_traversal_safe_rel_path(&id) {
+        return Err(IpcError::invalid_argument(format!(
+            "Unsafe entry id: {id:?}"
+        )));
+    }
 
     let abs = entry_abs_path(&lib.root, &id);
 

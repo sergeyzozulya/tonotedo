@@ -187,6 +187,27 @@ pub fn attach_file_inner(
         )));
     }
 
+    // Security: entry_path's group prefix and the asset name are joined onto
+    // the library root. Reject traversal in both. Reserved `_` components stay
+    // allowed in entry_path (avatars attach to `_people.md`); the asset name
+    // must be a single path component.
+    if !crate::core::frontmatter::is_traversal_safe_rel_path(entry_path) {
+        return Err(IpcError::invalid_argument(format!(
+            "Unsafe entry path: {entry_path:?}"
+        )));
+    }
+    if name.is_empty()
+        || name.contains('/')
+        || name.contains('\\')
+        || name == "."
+        || name == ".."
+        || name.chars().any(|c| c.is_control())
+    {
+        return Err(IpcError::invalid_argument(format!(
+            "Invalid asset name: {name:?}"
+        )));
+    }
+
     // Derive the entry's group directory.
     let group_dir = if entry_path.contains('/') {
         let slash = entry_path.rfind('/').unwrap();
@@ -2455,6 +2476,28 @@ pub mod tests {
         let abs = fix.root.join(&asset_path);
         assert!(abs.exists());
         assert_eq!(std::fs::read(&abs).unwrap(), bytes);
+    }
+
+    #[test]
+    fn attach_file_rejects_traversal() {
+        let fix = Fixture::new();
+        // entry_path traversal
+        let err = attach_file_inner(&fix.root, "../../tmp/x.md", "a.png", b"x", "_assets");
+        assert_eq!(err.unwrap_err().code, "invalid_argument");
+        let err = attach_file_inner(&fix.root, "/tmp/x.md", "a.png", b"x", "_assets");
+        assert_eq!(err.unwrap_err().code, "invalid_argument");
+        // asset name traversal / separators
+        for bad in ["../../evil", "a/b.png", "a\\b.png", "..", ".", ""] {
+            let err = attach_file_inner(&fix.root, "work/entry.md", bad, b"x", "_assets");
+            assert_eq!(
+                err.unwrap_err().code,
+                "invalid_argument",
+                "name {bad:?} must be rejected"
+            );
+        }
+        // the avatar flow stays allowed: reserved entry_path, plain name
+        let ok = attach_file_inner(&fix.root, "_people.md", "sergey.png", b"x", "_people");
+        assert!(ok.is_ok(), "avatar attach to _people must keep working");
     }
 
     #[test]
