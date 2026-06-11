@@ -115,6 +115,14 @@ impl IpcError {
             detail: None,
         }
     }
+
+    pub fn invalid_argument(msg: impl Into<String>) -> Self {
+        IpcError {
+            code: "invalid_argument",
+            message: msg.into(),
+            detail: None,
+        }
+    }
 }
 
 // Tauri commands must return `Result<T, E>` where E: Serialize.

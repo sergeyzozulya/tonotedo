@@ -20,7 +20,11 @@
 
   import { ipc } from "../ipc/index.js";
   import { registry, seedThemeCommands } from "../commands/index.js";
-  import { settings_get_user } from "../commands/settings.js";
+  import {
+    settings_get_user,
+    initSettingsFromIpc,
+    initLibrarySettingsFromIpc,
+  } from "../commands/settings.js";
   import { buildGroupTree } from "./group-tree.js";
   import { applyArchiveToText, nextDuplicateId } from "./entry-ops.js";
   import { themeStore } from "./theme-store.svelte.js";
@@ -95,6 +99,9 @@
 
   $effect(() => {
     // Restore persisted theme/mode before init() applies DOM attributes.
+    // Reads from localStorage cache synchronously on first render;
+    // the async IPC load below will apply the file-backed values on next
+    // write/read without a visible flicker for theme (same value in both).
     const savedTheme = settings_get_user("theme");
     const savedMode = settings_get_user("mode");
     if (savedTheme && typeof savedTheme === "string") themeStore.setTheme(savedTheme);
@@ -106,6 +113,16 @@
     seedThemeCommands(themeStore);
     // Restore the persisted vim modal-editor flag (set by the vim-flavor preset).
     modalStore.init();
+
+    // Bootstrap settings from IPC (async; migrates localStorage on first run).
+    // Library settings are also loaded here; they apply on the next sync after open.
+    initSettingsFromIpc(ipc).catch(() => {
+      // Best-effort — localStorage fallback remains active.
+    });
+    initLibrarySettingsFromIpc(ipc).catch(() => {
+      // Best-effort.
+    });
+
     return () => themeStore.destroy();
   });
 

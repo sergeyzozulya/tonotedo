@@ -138,6 +138,12 @@ function stubIpc(overrides?: {
     delete_orphan_avatar: vi.fn() as never,
     get_group_config: vi.fn() as never,
     update_group_config: vi.fn() as never,
+    settings_get_user: vi.fn() as never,
+    settings_set_user: vi.fn() as never,
+    settings_get_library: vi.fn() as never,
+    settings_set_library: vi.fn() as never,
+    plugin_settings_get: vi.fn() as never,
+    plugin_settings_set: vi.fn() as never,
     on: vi.fn(() => () => {}),
   };
 }

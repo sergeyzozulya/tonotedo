@@ -50,6 +50,14 @@ import { syntaxTree } from "@codemirror/language";
 import { RangeSetBuilder, type Extension } from "@codemirror/state";
 import type { EditorState } from "@codemirror/state";
 import type { Ipc } from "../../ipc/types.js";
+import { settings_get_library } from "../../commands/settings.js";
+
+// ── Asset folder name (library setting, default "_assets") ───────────────────
+
+/** Return the configured asset folder name (without trailing slash). */
+function assetFolderName(): string {
+  return settings_get_library("assetFolder") ?? "_assets";
+}
 
 // ── Image extension set ───────────────────────────────────────────────────────
 
@@ -62,9 +70,10 @@ export function isImagePath(path: string): boolean {
   return IMAGE_EXTS.has(path.slice(dot + 1).toLowerCase());
 }
 
-/** True iff path is an _assets/ link that should render as an attachment block. */
+/** True iff path is an asset-folder link that should render as an attachment block. */
 export function isAttachmentPath(path: string): boolean {
-  return path.startsWith("_assets/") && !isImagePath(path);
+  const folder = assetFolderName();
+  return path.startsWith(`${folder}/`) && !isImagePath(path);
 }
 
 // ── Cursor-adjacency predicate ────────────────────────────────────────────────
@@ -396,8 +405,8 @@ export function extractBlockSpecs(
 
           const href = state.doc.sliceString(urlFrom, urlTo);
 
-          // Only handle _assets/ links.
-          if (!href.startsWith("_assets/")) return false;
+          // Only handle asset-folder links.
+          if (!href.startsWith(`${assetFolderName()}/`)) return false;
 
           if (node.name === "Image") {
             // Extract alt text: between `![` and `](`.

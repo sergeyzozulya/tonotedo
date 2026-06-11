@@ -294,6 +294,35 @@ export const real: Ipc = {
     return call<void>("update_group_config", { groupPath, config });
   },
 
+  // ── Settings (spec 0011) ─────────────────────────────────────────────────────
+
+  async settings_get_user(): Promise<Result<Record<string, unknown>>> {
+    return call<Record<string, unknown>>("settings_get_user");
+  },
+
+  async settings_set_user(patch: Record<string, unknown>): Promise<Result<void>> {
+    return call<void>("settings_set_user", { patch });
+  },
+
+  async settings_get_library(): Promise<Result<Record<string, unknown>>> {
+    return call<Record<string, unknown>>("settings_get_library");
+  },
+
+  async settings_set_library(patch: Record<string, unknown>): Promise<Result<void>> {
+    return call<void>("settings_set_library", { patch });
+  },
+
+  async plugin_settings_get(pluginId: string): Promise<Result<Record<string, string>>> {
+    return call<Record<string, string>>("plugin_settings_get", { pluginId });
+  },
+
+  async plugin_settings_set(
+    pluginId: string,
+    values: Record<string, string>,
+  ): Promise<Result<void>> {
+    return call<void>("plugin_settings_set", { pluginId, values });
+  },
+
   on<E extends IpcEventName>(
     event: E,
     handler: (payload: IpcEventPayload<E>) => void,

@@ -150,8 +150,9 @@ pub fn effective_schema(
 
 // ── Group 1: Assets ───────────────────────────────────────────────────────────
 
-/// `attach_file(entryPath, name, bytes)` — write bytes into `<group>/_assets/` with
+/// `attach_file(entryPath, name, bytes)` — write bytes into `<group>/<assetFolder>/` with
 /// collision-safe naming (append -2, -3, … before the extension).
+/// The asset folder name is read from `_settings.md` (key `asset_folder`; default `_assets`).
 ///
 /// Returns the vault-relative `AssetPath`.
 #[tauri::command]
@@ -163,7 +164,8 @@ pub fn attach_file(
 ) -> CmdResult<String> {
     let guard = require_open!(state);
     let lib = guard.as_ref().ok_or_else(IpcError::not_open)?;
-    attach_file_inner(&lib.root, &entry_path, &name, &bytes)
+    let folder = get_asset_folder_name(&lib.root);
+    attach_file_inner(&lib.root, &entry_path, &name, &bytes, &folder)
 }
 
 pub fn attach_file_inner(
@@ -171,7 +173,20 @@ pub fn attach_file_inner(
     entry_path: &str,
     name: &str,
     bytes: &[u8],
+    asset_folder: &str,
 ) -> CmdResult<String> {
+    // Validate the asset folder name: must not be empty, must not contain
+    // path separators or start with reserved chars.
+    if asset_folder.is_empty()
+        || asset_folder.contains('/')
+        || asset_folder.contains('\\')
+        || asset_folder.contains("..")
+    {
+        return Err(IpcError::invalid_argument(format!(
+            "Invalid asset folder name: {asset_folder:?}"
+        )));
+    }
+
     // Derive the entry's group directory.
     let group_dir = if entry_path.contains('/') {
         let slash = entry_path.rfind('/').unwrap();
@@ -180,13 +195,13 @@ pub fn attach_file_inner(
         ""
     };
     let assets_rel = if group_dir.is_empty() {
-        "_assets".to_string()
+        asset_folder.to_string()
     } else {
-        format!("{group_dir}/_assets")
+        format!("{group_dir}/{asset_folder}")
     };
     let assets_abs = root.join(&assets_rel);
     std::fs::create_dir_all(&assets_abs)
-        .map_err(|e| IpcError::io(format!("Cannot create _assets dir: {e}")))?;
+        .map_err(|e| IpcError::io(format!("Cannot create {asset_folder} dir: {e}")))?;
 
     // Collision-safe candidate selection.
     let candidate_rel = collision_safe_path(&assets_rel, name, |rel| root.join(rel).exists());
@@ -195,6 +210,19 @@ pub fn attach_file_inner(
     atomic_write(&abs_dest, bytes).map_err(|e| IpcError::io(format!("Cannot write asset: {e}")))?;
 
     Ok(candidate_rel)
+}
+
+/// Read the asset folder name from `_settings.md` (key `asset_folder`).
+/// Returns `"_assets"` when the file is missing or the key is not set.
+fn get_asset_folder_name(root: &Path) -> String {
+    settings_get_library_inner(root)
+        .ok()
+        .and_then(|v| {
+            v.get("asset_folder")
+                .and_then(|v| v.as_str().map(|s| s.to_string()))
+        })
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "_assets".to_string())
 }
 
 /// Build a collision-safe asset path: if `<assets>/<name>` exists, try
@@ -1737,6 +1765,92 @@ fn json_to_value(v: &serde_json::Value) -> crate::core::frontmatter::Value {
     }
 }
 
+// ── Group 5b: Plugin settings ─────────────────────────────────────────────────
+//
+// Per-plugin settings are stored device-locally in the app config dir alongside
+// grants (same security rationale: never sync with the library — see grants.rs).
+// Path: <app_config_dir>/plugins/settings-<plugin_id_sanitized>.json
+// Shape: JSON object { [fieldKey: string]: string }
+//
+// All field values are stored as strings; the frontend/plugin side handles
+// type coercion per the declared PluginSettingField schema.
+
+/// `plugin_settings_get(plugin_id)` — read settings for one plugin.
+///
+/// Returns `{}` when no settings have been written for this plugin.
+#[tauri::command]
+pub fn plugin_settings_get(
+    plugin_id: String,
+    app: AppHandle,
+) -> CmdResult<std::collections::HashMap<String, String>> {
+    let path = plugin_settings_path(&app, &plugin_id)?;
+    plugin_settings_get_inner(&path)
+}
+
+pub fn plugin_settings_get_inner(
+    path: &Path,
+) -> CmdResult<std::collections::HashMap<String, String>> {
+    if !path.exists() {
+        return Ok(std::collections::HashMap::new());
+    }
+    let bytes = std::fs::read(path)
+        .map_err(|e| IpcError::io(format!("Cannot read plugin settings: {e}")))?;
+    serde_json::from_slice(&bytes)
+        .map_err(|e| IpcError::parse(format!("Cannot parse plugin settings: {e}")))
+}
+
+/// `plugin_settings_set(plugin_id, values)` — atomically write settings for one plugin.
+///
+/// Replaces the entire settings map (not a merge); the frontend sends the full map.
+#[tauri::command]
+pub fn plugin_settings_set(
+    plugin_id: String,
+    values: std::collections::HashMap<String, String>,
+    app: AppHandle,
+) -> CmdResult<()> {
+    let path = plugin_settings_path(&app, &plugin_id)?;
+    plugin_settings_set_inner(&path, &values)
+}
+
+pub fn plugin_settings_set_inner(
+    path: &Path,
+    values: &std::collections::HashMap<String, String>,
+) -> CmdResult<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| IpcError::io(format!("Cannot create plugin settings dir: {e}")))?;
+    }
+    let json = serde_json::to_vec_pretty(values)
+        .map_err(|e| IpcError::io(format!("Cannot serialize plugin settings: {e}")))?;
+    atomic_write(path, &json)
+        .map_err(|e| IpcError::io(format!("Cannot write plugin settings: {e}")))?;
+    Ok(())
+}
+
+/// Device-local path for a plugin's settings file.
+///
+/// Uses a sanitized plugin id as the filename so it is human-readable in the
+/// config dir. The plugin id namespace (e.g. `com.example.mermaid`) is safe
+/// for filenames on all platforms after replacing `/` with `_`.
+fn plugin_settings_path(app: &AppHandle, plugin_id: &str) -> CmdResult<PathBuf> {
+    // Validate: plugin ids are dot-separated reverse-domain segments.
+    // Reject anything that would escape the directory.
+    if plugin_id.is_empty()
+        || plugin_id.contains('/')
+        || plugin_id.contains('\\')
+        || plugin_id.contains("..")
+    {
+        return Err(IpcError::invalid_argument(format!(
+            "Invalid plugin id: {plugin_id:?}"
+        )));
+    }
+    let safe_id = plugin_id.replace([':', '*'], "_");
+    app.path()
+        .app_config_dir()
+        .map(|d| d.join("plugins").join(format!("settings-{safe_id}.json")))
+        .map_err(|e| IpcError::io(format!("Cannot resolve app config dir: {e}")))
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1873,8 +1987,14 @@ pub mod tests {
     fn attach_file_round_trip() {
         let fix = Fixture::new();
         let bytes = b"fake png bytes";
-        let asset_path =
-            attach_file_inner(&fix.root, "work/atlas/entry.md", "image.png", bytes).unwrap();
+        let asset_path = attach_file_inner(
+            &fix.root,
+            "work/atlas/entry.md",
+            "image.png",
+            bytes,
+            "_assets",
+        )
+        .unwrap();
         assert_eq!(asset_path, "work/atlas/_assets/image.png");
         let abs = fix.root.join(&asset_path);
         assert!(abs.exists());
@@ -1886,8 +2006,22 @@ pub mod tests {
         let fix = Fixture::new();
         let bytes1 = b"first";
         let bytes2 = b"second";
-        let p1 = attach_file_inner(&fix.root, "work/atlas/entry.md", "file.pdf", bytes1).unwrap();
-        let p2 = attach_file_inner(&fix.root, "work/atlas/entry.md", "file.pdf", bytes2).unwrap();
+        let p1 = attach_file_inner(
+            &fix.root,
+            "work/atlas/entry.md",
+            "file.pdf",
+            bytes1,
+            "_assets",
+        )
+        .unwrap();
+        let p2 = attach_file_inner(
+            &fix.root,
+            "work/atlas/entry.md",
+            "file.pdf",
+            bytes2,
+            "_assets",
+        )
+        .unwrap();
         assert_eq!(p1, "work/atlas/_assets/file.pdf");
         assert_eq!(p2, "work/atlas/_assets/file-2.pdf");
         assert_eq!(std::fs::read(fix.root.join(&p1)).unwrap(), bytes1);
@@ -1897,14 +2031,15 @@ pub mod tests {
     #[test]
     fn attach_file_no_group() {
         let fix = Fixture::new();
-        let path = attach_file_inner(&fix.root, "root-note.md", "doc.txt", b"text").unwrap();
+        let path =
+            attach_file_inner(&fix.root, "root-note.md", "doc.txt", b"text", "_assets").unwrap();
         assert_eq!(path, "_assets/doc.txt");
     }
 
     #[test]
     fn asset_url_returns_absolute_path() {
         let fix = Fixture::new();
-        attach_file_inner(&fix.root, "notes/entry.md", "img.png", b"data").unwrap();
+        attach_file_inner(&fix.root, "notes/entry.md", "img.png", b"data", "_assets").unwrap();
         let url = asset_url_inner(&fix.root, "notes/_assets/img.png").unwrap();
         assert!(std::path::Path::new(&url).is_absolute());
         assert!(url.ends_with("img.png"));
@@ -1920,13 +2055,28 @@ pub mod tests {
     #[test]
     fn asset_exists_and_remove() {
         let fix = Fixture::new();
-        attach_file_inner(&fix.root, "n.md", "a.bin", b"x").unwrap();
+        attach_file_inner(&fix.root, "n.md", "a.bin", b"x", "_assets").unwrap();
         let path = "_assets/a.bin";
         assert!(fix.root.join(path).exists());
 
         // remove_asset works.
         remove_asset_inner(&fix.root, path).unwrap();
         assert!(!fix.root.join(path).exists());
+    }
+
+    #[test]
+    fn attach_file_custom_folder() {
+        let fix = Fixture::new();
+        // Write _settings.md with a custom asset_folder.
+        std::fs::write(
+            fix.root.join("_settings.md"),
+            "---\nasset_folder: _files\n---\n",
+        )
+        .unwrap();
+        let path =
+            attach_file_inner(&fix.root, "notes/entry.md", "doc.pdf", b"x", "_files").unwrap();
+        assert_eq!(path, "notes/_files/doc.pdf");
+        assert!(fix.root.join("notes/_files/doc.pdf").exists());
     }
 
     #[test]
@@ -2599,5 +2749,64 @@ pub mod tests {
             content.contains("atlas/blocked"),
             "new scoped tag must appear"
         );
+    }
+
+    // ── Group 5b: Plugin settings ─────────────────────────────────────────────
+
+    #[test]
+    fn plugin_settings_empty_when_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings-com.test.plugin.json");
+        let loaded = plugin_settings_get_inner(&path).unwrap();
+        assert!(loaded.is_empty());
+    }
+
+    #[test]
+    fn plugin_settings_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings-com.test.plugin.json");
+        let mut values = std::collections::HashMap::new();
+        values.insert("apiToken".to_string(), "secret-value".to_string());
+        values.insert("theme".to_string(), "dark".to_string());
+        plugin_settings_set_inner(&path, &values).unwrap();
+        let loaded = plugin_settings_get_inner(&path).unwrap();
+        assert_eq!(
+            loaded.get("apiToken").map(|s| s.as_str()),
+            Some("secret-value")
+        );
+        assert_eq!(loaded.get("theme").map(|s| s.as_str()), Some("dark"));
+    }
+
+    #[test]
+    fn plugin_settings_overwrite_replaces_all() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings-com.test.plugin.json");
+        let mut v1 = std::collections::HashMap::new();
+        v1.insert("key1".to_string(), "a".to_string());
+        v1.insert("key2".to_string(), "b".to_string());
+        plugin_settings_set_inner(&path, &v1).unwrap();
+
+        let mut v2 = std::collections::HashMap::new();
+        v2.insert("key1".to_string(), "updated".to_string());
+        plugin_settings_set_inner(&path, &v2).unwrap();
+
+        let loaded = plugin_settings_get_inner(&path).unwrap();
+        assert_eq!(loaded.get("key1").map(|s| s.as_str()), Some("updated"));
+        // key2 was not in v2 — full replace, so it should be absent.
+        assert!(!loaded.contains_key("key2"));
+    }
+
+    #[test]
+    fn attach_file_uses_settings_asset_folder() {
+        let fix = Fixture::new();
+        // Write library settings with custom asset folder.
+        let patch = serde_json::json!({"asset_folder": "_media"});
+        settings_set_library_inner(&fix.root, &patch).unwrap();
+        // The Rust command reads the folder from the settings.
+        let folder = get_asset_folder_name(&fix.root);
+        assert_eq!(folder, "_media");
+        let path =
+            attach_file_inner(&fix.root, "notes/entry.md", "photo.jpg", b"data", &folder).unwrap();
+        assert_eq!(path, "notes/_media/photo.jpg");
     }
 }

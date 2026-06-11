@@ -204,6 +204,8 @@ pub fn run() {
             ipc::commands2::settings_set_user,
             ipc::commands2::settings_get_library,
             ipc::commands2::settings_set_library,
+            ipc::commands2::plugin_settings_get,
+            ipc::commands2::plugin_settings_set,
             // Phase 6 — schemas (issue #28)
             ipc::commands2::effective_schema,
             // Phase 6 — group management + trash IPC (issue #28)

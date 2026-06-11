@@ -797,6 +797,34 @@ const store = new Map<EntryId, MockEntry>(ENTRIES.map((e) => [e.id, { ...e }]));
 /** In-memory saved-search list (mirrors _searches.md frontmatter shape). */
 let savedSearchStore: SavedSearch[] = [];
 
+// ── Settings stores (spec 0011) ───────────────────────────────────────────────
+
+const USER_SETTINGS_STORAGE_KEY = "tonotedo:mock-user-settings";
+
+/** Load mock user settings from localStorage (survives page reloads in the /dev demo). */
+function loadMockUserSettings(): Record<string, unknown> {
+  if (typeof localStorage === "undefined") return {};
+  try {
+    const raw = localStorage.getItem(USER_SETTINGS_STORAGE_KEY);
+    return raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Persist mock user settings to localStorage. */
+function saveMockUserSettings(settings: Record<string, unknown>): void {
+  if (typeof localStorage !== "undefined") {
+    localStorage.setItem(USER_SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+  }
+}
+
+/** In-memory library settings (mirrors _settings.md frontmatter shape). */
+let mockLibrarySettings: Record<string, unknown> = {};
+
+/** In-memory per-plugin settings store: pluginId → { key → value }. */
+const mockPluginSettings = new Map<string, Record<string, string>>();
+
 // ── Asset store (issue #13 — in-memory for /dev demo) ────────────────────────
 
 // Two tiny sample images as base64 data URIs so the /dev demo shows inline
@@ -1942,6 +1970,40 @@ export const mock: Ipc = {
     return { ok: true, value: undefined };
   },
 
+  // ── Settings (spec 0011) ─────────────────────────────────────────────────────
+
+  async settings_get_user(): Promise<Result<Record<string, unknown>>> {
+    return { ok: true, value: { ...loadMockUserSettings() } };
+  },
+
+  async settings_set_user(patch: Record<string, unknown>): Promise<Result<void>> {
+    const existing = loadMockUserSettings();
+    saveMockUserSettings({ ...existing, ...patch });
+    return { ok: true, value: undefined };
+  },
+
+  async settings_get_library(): Promise<Result<Record<string, unknown>>> {
+    return { ok: true, value: { ...mockLibrarySettings } };
+  },
+
+  async settings_set_library(patch: Record<string, unknown>): Promise<Result<void>> {
+    mockLibrarySettings = { ...mockLibrarySettings, ...patch };
+    return { ok: true, value: undefined };
+  },
+
+  async plugin_settings_get(pluginId: string): Promise<Result<Record<string, string>>> {
+    return { ok: true, value: { ...(mockPluginSettings.get(pluginId) ?? {}) } };
+  },
+
+  async plugin_settings_set(
+    pluginId: string,
+    values: Record<string, string>,
+  ): Promise<Result<void>> {
+    mockPluginSettings.set(pluginId, { ...values });
+    console.log(`[mock ipc] plugin_settings_set ${pluginId}`);
+    return { ok: true, value: undefined };
+  },
+
   on<E extends IpcEventName>(
     event: E,
     handler: (payload: IpcEventPayload<E>) => void,
@@ -1957,7 +2019,12 @@ export const mock: Ipc = {
 };
 
 // Export raw data for tests.
-export { ENTRIES, PEOPLE_DECLARED, peopleStore, MOCK_PLUGINS };
+export { ENTRIES, PEOPLE_DECLARED, peopleStore, MOCK_PLUGINS, mockPluginSettings };
+
+/** Test helper: get the current mock library settings snapshot. */
+export function getMockLibrarySettings(): Record<string, unknown> {
+  return { ...mockLibrarySettings };
+}
 
 // ── Dev / test helpers ────────────────────────────────────────────────────────
 

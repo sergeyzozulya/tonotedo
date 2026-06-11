@@ -644,6 +644,46 @@ export interface IpcCommands {
     commandId: string,
     argsJson: string,
   ): Promise<Result<string>>;
+
+  // ── Settings (spec 0011) ────────────────────────────────────────────────────
+
+  /**
+   * Read user settings from the platform config dir (`settings.json`).
+   * Returns `{}` when the file does not exist (all defaults apply).
+   * Unknown keys round-trip (spec 0011 §Edge cases).
+   */
+  settings_get_user(): Promise<Result<Record<string, unknown>>>;
+
+  /**
+   * Merge `patch` into the user settings file.
+   * Only top-level keys in `patch` are written; unknown keys are preserved.
+   */
+  settings_set_user(patch: Record<string, unknown>): Promise<Result<void>>;
+
+  /**
+   * Read library settings from `_settings.md` frontmatter.
+   * Returns `{}` when the file does not exist (all defaults apply).
+   */
+  settings_get_library(): Promise<Result<Record<string, unknown>>>;
+
+  /**
+   * Merge `patch` into `_settings.md`, preserving unknown keys and body text.
+   * Creates the file when the first non-default setting is written.
+   */
+  settings_set_library(patch: Record<string, unknown>): Promise<Result<void>>;
+
+  /**
+   * Read per-plugin settings for the given `pluginId` from device-local storage
+   * (same location as grants — never inside the synced library).
+   * Returns `{}` when no settings have been saved yet.
+   */
+  plugin_settings_get(pluginId: string): Promise<Result<Record<string, string>>>;
+
+  /**
+   * Write per-plugin settings for `pluginId` atomically to device-local storage.
+   * The full values map replaces any previous values for this plugin.
+   */
+  plugin_settings_set(pluginId: string, values: Record<string, string>): Promise<Result<void>>;
 }
 
 // ── Event surface (core → UI, design-0004 §Event surface) ─────────────────────
