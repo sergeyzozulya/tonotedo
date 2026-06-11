@@ -22,6 +22,7 @@
   import { registry, seedThemeCommands } from "../commands/index.js";
   import { settings_get_user } from "../commands/settings.js";
   import { buildGroupTree } from "./group-tree.js";
+  import { applyArchiveToText, nextDuplicateId } from "./entry-ops.js";
   import { themeStore } from "./theme-store.svelte.js";
   import Sidebar from "./Sidebar.svelte";
   import EntryList from "./EntryList.svelte";
@@ -54,6 +55,7 @@
   import MobileTopBar from "./MobileTopBar.svelte";
   import PropertiesSheet from "./PropertiesSheet.svelte";
   import ActionSheet from "./ActionSheet.svelte";
+  import GroupPicker from "./GroupPicker.svelte";
   import ChipPopover from "./ChipPopover.svelte";
   import EditorAccessoryBar from "./EditorAccessoryBar.svelte";
   import FloatingPaletteButton from "./FloatingPaletteButton.svelte";
@@ -147,14 +149,49 @@
 
   // ── Action sheet (long-press entry row) ──────────────────────────────────────
 
-  let actionSheetEntry = $state<{ id: string; title: string } | null>(null);
+  let actionSheetEntry = $state<{ id: string; title: string; archived: boolean } | null>(null);
 
-  function openActionSheet(id: string, title: string): void {
-    actionSheetEntry = { id, title };
+  function openActionSheet(id: string, title: string, archived = false): void {
+    actionSheetEntry = { id, title, archived };
   }
 
   function closeActionSheet(): void {
     actionSheetEntry = null;
+  }
+
+  // ── Entry context menu (right-click on desktop) ───────────────────────────────
+
+  function onEntryContextMenu(id: string, title: string, archived: boolean): void {
+    openActionSheet(id, title, archived);
+  }
+
+  // ── Group picker for "Move entry to…" ────────────────────────────────────────
+
+  let moveEntryPickerTarget = $state<string | null>(null);
+
+  function openMoveEntryPicker(entryId: string): void {
+    moveEntryPickerTarget = entryId;
+  }
+
+  function closeMoveEntryPicker(): void {
+    moveEntryPickerTarget = null;
+  }
+
+  async function commitMoveEntry(entryId: string, dstGroup: string): Promise<void> {
+    moveEntryPickerTarget = null;
+    const path = entryId.endsWith(".md") ? entryId : `${entryId}.md`;
+    const res = await ipc.move_entry(path, dstGroup);
+    if (res.ok) {
+      // If the moved entry was the open entry, deselect and refresh schema.
+      if (selectedEntryId === entryId) {
+        selectedEntryId = null;
+        editorText = "";
+      }
+      await loadEntries(selectedGroupPath);
+      await loadGroups();
+    } else {
+      console.error("[shell] move_entry failed:", res.error.message);
+    }
   }
 
   // ── Chip popover (tap-and-hold on chip) ──────────────────────────────────────
@@ -186,10 +223,12 @@
   // ── Group tree ────────────────────────────────────────────────────────────────
 
   let groupTree = $state<GroupNode[]>([]);
+  let allGroups = $state<import("../ipc/types.js").GroupMeta[]>([]);
 
   async function loadGroups(): Promise<void> {
     const result = await ipc.list_groups();
     if (result.ok) {
+      allGroups = result.value;
       groupTree = buildGroupTree(result.value);
     } else {
       console.error("[shell] list_groups failed:", result.error.message);
@@ -479,6 +518,53 @@
     }
   }
 
+  /** Archive or unarchive an entry by setting/clearing the `archived` property. */
+  async function onArchiveEntry(entryId: string, archive: boolean): Promise<void> {
+    const readResult = await ipc.read_entry(entryId);
+    if (!readResult.ok) {
+      console.error("[shell] archive: read_entry failed:", readResult.error.message);
+      return;
+    }
+    const text = applyArchiveToText(readResult.value.text, archive);
+    const writeResult = await ipc.write_entry(entryId, text, readResult.value.selfToken);
+    if (writeResult.ok) {
+      if (selectedEntryId === entryId) {
+        editorText = text;
+      }
+      loadEntries(selectedGroupPath);
+    } else {
+      console.error("[shell] archive: write_entry failed:", writeResult.error.message);
+    }
+  }
+
+  /** Duplicate an entry: copy body + properties, fresh id/slug, fresh timestamps. */
+  async function onDuplicateEntry(entryId: string): Promise<void> {
+    const readResult = await ipc.read_entry(entryId);
+    if (!readResult.ok) {
+      console.error("[shell] duplicate: read_entry failed:", readResult.error.message);
+      return;
+    }
+    // Determine new slug with -2/-3/... suffix.
+    const existing = new Set(entries.map((e) => e.id));
+    const newId = nextDuplicateId(entryId, existing);
+    // Build new text: strip existing id/created/updated and let write set fresh ones.
+    let text = readResult.value.text;
+    // Remove id, created, updated lines from frontmatter.
+    text = text.replace(/^id:.*\n?/m, "");
+    text = text.replace(/^created:.*\n?/m, "");
+    text = text.replace(/^updated:.*\n?/m, "");
+    // Insert fresh id.
+    const newFrontmatterId = `id: ${newId.split("/").at(-1)}-copy\n`;
+    text = text.replace(/^(---\n)/, `$1${newFrontmatterId}`);
+    const writeResult = await ipc.write_entry(newId, text, "shell-dup-tok");
+    if (writeResult.ok) {
+      await loadEntries(selectedGroupPath);
+      await selectEntry(newId);
+    } else {
+      console.error("[shell] duplicate: write_entry failed:", writeResult.error.message);
+    }
+  }
+
   function onNavigate(target: string): void {
     console.log("[shell] navigate →", target);
   }
@@ -584,13 +670,47 @@
     }
   });
 
+  // ── entry.create via command registry ────────────────────────────────────────
+  // Re-register the seeded stub with the real createEntry handler (same pattern
+  // as entry.search at AppShell:561-570 in the original code).
+
+  $effect(() => {
+    const seeded = registry.get("entry.create");
+    if (seeded) {
+      registry.register({ ...seeded, handler: () => void createEntry() });
+    }
+  });
+
+  // ── view.day / view.week / view.month / view.agenda ──────────────────────────
+  // These commands open the calendar in the requested view mode.
+
+  $effect(() => {
+    for (const [id, view] of [
+      ["view.day", "day"],
+      ["view.week", "week"],
+      ["view.month", "month"],
+      ["view.agenda", "agenda"],
+    ] as const) {
+      const seeded = registry.get(id);
+      if (seeded) {
+        const v = view;
+        registry.register({
+          ...seeded,
+          handler: () => openCalendar(v as import("../calendar/types.js").CalendarViewMode),
+        });
+      }
+    }
+  });
+
   // ── Calendar zone ─────────────────────────────────────────────────────────────
 
   let calendarOpen = $state(false);
+  let calendarRequestedView = $state<import("../calendar/types.js").CalendarViewMode | null>(null);
 
-  function openCalendar(): void {
+  function openCalendar(view?: import("../calendar/types.js").CalendarViewMode): void {
     calendarOpen = true;
     mainZone = "editor";
+    if (view) calendarRequestedView = view;
     if (narrow) mobilePush("calendar");
   }
 
@@ -660,6 +780,7 @@
             loadGroups();
             loadEntries(selectedGroupPath);
           }}
+          {allGroups}
         />
       </div>
     {/if}
@@ -675,7 +796,10 @@
           loading={entriesLoading}
           error={entriesError}
           {onEntrySelect}
-          onLongPress={(id, title) => openActionSheet(id, title)}
+          onLongPress={(id, title) => {
+            const e = entries.find((x) => x.id === id);
+            openActionSheet(id, title, e?.archived ?? false);
+          }}
         />
       {/if}
 
@@ -746,6 +870,7 @@
               mobilePush("editor");
             }}
             onApplyEdit={onCalendarApplyEdit}
+            requestedView={calendarRequestedView}
           />
         </main>
       {/if}
@@ -820,6 +945,7 @@
             calendarActive={calendarOpen}
             {onPluginsOpen}
             pluginsOpen={mainZone === "plugins"}
+            {allGroups}
           />
         </div>
       {/if}
@@ -839,6 +965,7 @@
       open={actionSheetEntry !== null}
       entryId={actionSheetEntry?.id ?? null}
       entryTitle={actionSheetEntry?.title ?? ""}
+      entryArchived={actionSheetEntry?.archived ?? false}
       onClose={closeActionSheet}
       onOpen={(id) => {
         selectEntry(id);
@@ -848,7 +975,29 @@
         void onTrashEntry(id);
         closeActionSheet();
       }}
+      onArchive={(id, archive) => {
+        void onArchiveEntry(id, archive);
+        closeActionSheet();
+      }}
+      onDuplicate={(id) => {
+        void onDuplicateEntry(id);
+        closeActionSheet();
+      }}
+      onMoveTo={(id) => {
+        openMoveEntryPicker(id);
+        closeActionSheet();
+      }}
     />
+
+    <!-- Group picker for entry "Move to…" (mobile) -->
+    {#if moveEntryPickerTarget !== null}
+      <GroupPicker
+        groups={allGroups}
+        title="Move entry to…"
+        onPick={(dstGroup) => void commitMoveEntry(moveEntryPickerTarget!, dstGroup)}
+        onClose={closeMoveEntryPicker}
+      />
+    {/if}
 
     <!-- Chip popover (tap-and-hold on chip) -->
     {#if chipPopover !== null}
@@ -1055,6 +1204,7 @@
           loadGroups();
           loadEntries(selectedGroupPath);
         }}
+        {allGroups}
       />
 
       <!-- Entry list -->
@@ -1065,7 +1215,18 @@
         loading={entriesLoading}
         error={entriesError}
         {onEntrySelect}
+        onContextMenu={onEntryContextMenu}
       />
+
+      <!-- Group picker for entry "Move to…" (desktop) -->
+      {#if moveEntryPickerTarget !== null}
+        <GroupPicker
+          groups={allGroups}
+          title="Move entry to…"
+          onPick={(dstGroup) => void commitMoveEntry(moveEntryPickerTarget!, dstGroup)}
+          onClose={closeMoveEntryPicker}
+        />
+      {/if}
 
       <!-- Editor / Person / Tags / Calendar zone -->
       <main class="editor-zone" data-focus-zone="editor">
@@ -1074,6 +1235,7 @@
             group={selectedGroupPath}
             onSelectEntry={onCalendarSelectEntry}
             onApplyEdit={onCalendarApplyEdit}
+            requestedView={calendarRequestedView}
           />
         {:else if mainZone === "person" && selectedPersonMeta}
           <PersonView

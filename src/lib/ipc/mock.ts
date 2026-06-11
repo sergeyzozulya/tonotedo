@@ -53,6 +53,7 @@ interface MockEntry {
   people: string[];
   modifiedAt: string;
   text: string;
+  archived?: boolean;
 }
 
 const ENTRIES: MockEntry[] = [
@@ -457,6 +458,26 @@ Three things I'm grateful for today.
 `,
   },
   {
+    id: "inbox/archived-old-idea",
+    path: "inbox/archived-old-idea.md",
+    title: "Old Idea (Archived)",
+    group: "inbox",
+    tags: ["ideas"],
+    people: [],
+    modifiedAt: "2026-01-10T00:00:00Z",
+    archived: true,
+    text: `---
+archived: true
+title: Old Idea (Archived)
+tags: [ideas]
+---
+
+# Old Idea (Archived)
+
+This entry has been archived and should not appear in default lists.
+`,
+  },
+  {
     id: "work/atlas/blocks-demo",
     path: "work/atlas/blocks-demo.md",
     title: "Blocks Demo (checkboxes, attachments, images)",
@@ -803,7 +824,7 @@ function invalidateCaches(): void {
 }
 
 function toSummary(e: MockEntry): EntrySummary {
-  return {
+  const s: EntrySummary = {
     id: e.id,
     path: e.path,
     title: e.title,
@@ -812,6 +833,8 @@ function toSummary(e: MockEntry): EntrySummary {
     people: e.people,
     modifiedAt: e.modifiedAt,
   };
+  if (e.archived) s.archived = true;
+  return s;
 }
 
 // ── Simple paged cursor (base64 of offset) ────────────────────────────────────

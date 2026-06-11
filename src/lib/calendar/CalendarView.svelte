@@ -32,13 +32,26 @@
     onSelectEntry?: (entryId: string) => void;
     /** Called when a drag-to-reschedule writes a ChangeSpec back to the document. */
     onApplyEdit?: (entryId: string, change: ChangeSpec) => void;
+    /**
+     * Externally requested view mode (view.day / view.week / view.month / view.agenda
+     * commands from the palette). When provided and different from the current mode,
+     * the view switches immediately.
+     */
+    requestedView?: CalendarViewMode | null;
   }
 
-  let { group = null, onSelectEntry, onApplyEdit }: Props = $props();
+  let { group = null, onSelectEntry, onApplyEdit, requestedView = null }: Props = $props();
 
   // ── View state ────────────────────────────────────────────────────────────────
 
   let viewMode = $state<CalendarViewMode>("month");
+
+  // Apply externally requested view when it changes.
+  $effect(() => {
+    if (requestedView && requestedView !== viewMode) {
+      viewMode = requestedView;
+    }
+  });
   // "anchor" date — the current day/week/month being viewed.
   let anchorDate = $state<Date>(new Date());
 

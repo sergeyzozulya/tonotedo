@@ -191,6 +191,7 @@ impl Fixture {
                     tags,
                     people,
                     modified_at: sr.updated.clone().unwrap_or_default(),
+                    archived: false,
                 }
             })
             .collect();
@@ -302,6 +303,7 @@ impl Fixture {
                     tags,
                     people,
                     modified_at: row.updated.unwrap_or_default(),
+                    archived: row.archived,
                 }
             })
             .collect();

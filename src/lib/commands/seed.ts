@@ -262,6 +262,45 @@ const COMMANDS: Command[] = [
     handler: noop,
   },
 
+  // ── Calendar view commands ─────────────────────────────────────────────────
+
+  {
+    id: "view.day",
+    name: "Calendar: Day view",
+    description: "Open the calendar in day view",
+    category: "View",
+    defaultBindings: [],
+    when: "",
+    handler: noop, // wired by AppShell
+  },
+  {
+    id: "view.week",
+    name: "Calendar: Week view",
+    description: "Open the calendar in week view",
+    category: "View",
+    defaultBindings: [],
+    when: "",
+    handler: noop, // wired by AppShell
+  },
+  {
+    id: "view.month",
+    name: "Calendar: Month view",
+    description: "Open the calendar in month view",
+    category: "View",
+    defaultBindings: [],
+    when: "",
+    handler: noop, // wired by AppShell
+  },
+  {
+    id: "view.agenda",
+    name: "Calendar: Agenda view",
+    description: "Open the calendar in agenda view",
+    category: "View",
+    defaultBindings: [],
+    when: "",
+    handler: noop, // wired by AppShell
+  },
+
   // ── Navigation / Focus ─────────────────────────────────────────────────────
 
   {

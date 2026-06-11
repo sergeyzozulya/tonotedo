@@ -734,6 +734,7 @@ pub fn mentions_for_inner(lib: &OpenLibrary, slug: &str) -> CmdResult<Vec<EntryS
                 tags,
                 people,
                 modified_at,
+                archived: false, // recent_entries doesn't carry archived; frontend filters
             });
         }
     }

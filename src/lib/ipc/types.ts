@@ -65,6 +65,8 @@ export interface EntrySummary {
   tags: string[];
   people: string[];
   modifiedAt: string; // ISO-8601
+  /** True when the entry has `archived: true` in its frontmatter (spec 0002). */
+  archived?: boolean;
 }
 
 // ── Tag types ─────────────────────────────────────────────────────────────────
