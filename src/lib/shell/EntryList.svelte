@@ -257,7 +257,7 @@
   /* Individual entry item */
   .entry-item {
     position: relative;
-    padding: 12px 14px;
+    padding: var(--tnd-row-y, 12px) var(--tnd-list-pad, 14px);
     border-bottom: 1px solid var(--tnd-line);
     cursor: pointer;
     transition: background 0.08s;
