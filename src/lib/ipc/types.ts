@@ -461,8 +461,11 @@ export interface IpcCommands {
    * collision within the group, `-2`/`-3`/… is appended. In-app references
    * (wikilinks `[[old]]`/`[[group/old]]` and `ref`/`ref[]` frontmatter) are
    * rewritten. Rejects reserved (`_`/`.`) and slash-bearing slugs.
+   *
+   * Returns the final (possibly collision-suffixed) slug so callers can
+   * re-select the renamed entry reliably.
    */
-  rename_entry(path: string, newSlug: string): Promise<Result<void>>;
+  rename_entry(path: string, newSlug: string): Promise<Result<string>>;
 
   // ── Trash commands (phase 6 / issue #28) ──────────────────────────────────
 

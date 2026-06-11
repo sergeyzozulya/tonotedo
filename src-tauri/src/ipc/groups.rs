@@ -377,7 +377,11 @@ pub fn move_entry_inner(root: &Path, rel_path: &str, dst_group: &str) -> CmdResu
 /// Reserved names (`_`/`.` prefixes) are rejected.  `new_slug` must be a single
 /// path component.
 #[tauri::command]
-pub fn rename_entry(path: String, new_slug: String, state: State<'_, AppState>) -> CmdResult<()> {
+pub fn rename_entry(
+    path: String,
+    new_slug: String,
+    state: State<'_, AppState>,
+) -> CmdResult<String> {
     let guard = require_open!(state);
     let lib = guard.as_ref().ok_or_else(IpcError::not_open)?;
 
@@ -396,9 +400,12 @@ pub fn rename_entry(path: String, new_slug: String, state: State<'_, AppState>) 
     )
     .map_err(|e| IpcError::io(format!("rename_entry reference rewrite failed: {e}")))?;
 
+    let final_slug = outcome.new_slug.clone();
     drop(guard);
     signal_rescan(&state);
-    Ok(())
+    // Return the actual (possibly collision-suffixed) slug so the caller can
+    // re-select the renamed entry reliably.
+    Ok(final_slug)
 }
 
 /// Result of the filesystem half of a rename: the group the entry lives in, the

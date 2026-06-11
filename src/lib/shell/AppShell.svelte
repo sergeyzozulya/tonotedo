@@ -329,9 +329,10 @@
     }
     await loadEntries(selectedGroupPath);
     loadGroups();
-    // The slug may have been collision-suffixed; re-select by best guess and
-    // fall back to refreshing the list if the exact id isn't present.
-    const newId = group ? `${group}/${newSlug}` : newSlug;
+    // Use the actual final slug returned by the backend (may have been
+    // collision-suffixed) to re-select the renamed entry reliably.
+    const finalSlug = result.value;
+    const newId = group ? `${group}/${finalSlug}` : finalSlug;
     if (selectedEntryId === id) {
       await selectEntry(newId);
     }

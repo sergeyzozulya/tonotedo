@@ -198,8 +198,8 @@ export const real: Ipc = {
     return call<void>("move_entry", { path, dstGroup });
   },
 
-  async rename_entry(path: string, newSlug: string): Promise<Result<void>> {
-    return call<void>("rename_entry", { path, newSlug });
+  async rename_entry(path: string, newSlug: string): Promise<Result<string>> {
+    return call<string>("rename_entry", { path, newSlug });
   },
 
   // ── Trash commands (phase 6) ──────────────────────────────────────────────────

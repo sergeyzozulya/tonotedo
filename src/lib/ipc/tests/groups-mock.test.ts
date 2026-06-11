@@ -154,6 +154,9 @@ describe("mock rename_entry", () => {
 
     const res = await mock.rename_entry("inbox/coll-a-r2.md", "coll-target-r2");
     expect(res.ok).toBe(true);
+    // The returned slug must be the suffixed one so callers can re-select.
+    if (!res.ok) return;
+    expect(res.value).toBe("coll-target-r2-2");
 
     const suffixed = await mock.read_entry("inbox/coll-target-r2-2");
     expect(suffixed.ok).toBe(true);

@@ -1554,7 +1554,7 @@ export const mock: Ipc = {
     return { ok: true, value: undefined };
   },
 
-  async rename_entry(path: string, newSlug: string): Promise<Result<void>> {
+  async rename_entry(path: string, newSlug: string): Promise<Result<string>> {
     if (!newSlug || newSlug.startsWith("_") || newSlug.startsWith(".")) {
       return {
         ok: false,
@@ -1575,7 +1575,7 @@ export const mock: Ipc = {
 
     const group = e.group;
     const oldSlug = entryId.split("/").at(-1) ?? entryId;
-    if (newSlug === oldSlug) return { ok: true, value: undefined };
+    if (newSlug === oldSlug) return { ok: true, value: oldSlug };
 
     // Collision-suffix the new slug within the group (spec 0002).
     const idFor = (slug: string) => (group ? `${group}/${slug}` : slug);
@@ -1601,7 +1601,9 @@ export const mock: Ipc = {
 
     invalidateCaches();
     emit("index_changed", { paths: [path, newPath], kinds: ["renamed", "renamed"] });
-    return { ok: true, value: undefined };
+    // Return the actual (possibly collision-suffixed) final slug so the caller
+    // can re-select the renamed entry reliably.
+    return { ok: true, value: finalSlug };
   },
 
   // ── Trash commands (phase 6) ───────────────────────────────────────────────
