@@ -130,6 +130,8 @@ function stubIpc(overrides?: {
     plugins_set_grant: vi.fn() as never,
     plugins_invoke_command: vi.fn() as never,
     effective_schema: vi.fn() as never,
+    get_group_config: vi.fn() as never,
+    update_group_config: vi.fn() as never,
     on: vi.fn(() => () => {}),
   };
 }

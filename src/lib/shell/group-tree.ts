@@ -22,6 +22,8 @@ export interface GroupNode {
   order?: number;
   /** Optional color hint from _group.md. */
   color?: string;
+  /** Optional icon hint from _group.md. */
+  icon?: string;
   /** Sorted children per 0003 ordering rules. */
   children: GroupNode[];
 }
@@ -65,6 +67,7 @@ export function buildGroupTree(groups: GroupMeta[]): GroupNode[] {
       count: meta?.count ?? 0,
       order: meta?.order,
       color: meta?.color,
+      icon: meta?.icon,
       children: [],
     };
     byPath.set(path, node);

@@ -27,6 +27,7 @@
   import EntryList from "./EntryList.svelte";
   import { Editor } from "../editor/index.js";
   import PropertiesPanel from "../panel/PropertiesPanel.svelte";
+  import GroupConfigPanel from "../panel/GroupConfigPanel.svelte";
   import SearchOverlay from "../search/SearchOverlay.svelte";
   import { savedSearchesStore } from "../search/saved-searches-store.svelte.js";
   import ConflictBanner from "./ConflictBanner.svelte";
@@ -194,6 +195,18 @@
     } else {
       console.error("[shell] list_groups failed:", result.error.message);
     }
+  }
+
+  // ── Group config panel ────────────────────────────────────────────────────────
+
+  let groupConfigPath = $state<string | null>(null);
+
+  function openGroupConfig(path: string): void {
+    groupConfigPath = path;
+  }
+
+  function closeGroupConfig(): void {
+    groupConfigPath = null;
   }
 
   // ── People ────────────────────────────────────────────────────────────────────
@@ -660,6 +673,7 @@
             loadGroups();
             loadEntries(selectedGroupPath);
           }}
+          onGroupConfigure={openGroupConfig}
         />
       </div>
     {/if}
@@ -820,6 +834,7 @@
             calendarActive={calendarOpen}
             {onPluginsOpen}
             pluginsOpen={mainZone === "plugins"}
+            onGroupConfigure={openGroupConfig}
           />
         </div>
       {/if}
@@ -1055,6 +1070,7 @@
           loadGroups();
           loadEntries(selectedGroupPath);
         }}
+        onGroupConfigure={openGroupConfig}
       />
 
       <!-- Entry list -->
@@ -1131,7 +1147,17 @@
       <!-- Properties panel (desktop only when visible; not shown for person/tags views) -->
       {#if propertiesVisible && mainZone === "editor"}
         <aside class="properties-zone" data-focus-zone="properties">
-          {#if selectedEntryId}
+          {#if groupConfigPath !== null}
+            <!-- Group config panel overrides properties when a group config is open -->
+            <GroupConfigPanel
+              groupPath={groupConfigPath}
+              onClose={closeGroupConfig}
+              onChanged={() => {
+                loadGroups();
+                closeGroupConfig();
+              }}
+            />
+          {:else if selectedEntryId}
             <PropertiesPanel
               docText={editorText}
               onEdit={onPanelEdit}

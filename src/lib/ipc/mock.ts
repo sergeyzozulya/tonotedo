@@ -14,6 +14,8 @@ import type {
   PersonMeta,
   PersonInput,
   GroupMeta,
+  GroupConfigInput,
+  SchemaPropertyDecl,
   Backlink,
   GroupPath,
   Cursor,
@@ -784,6 +786,39 @@ interface MockTrashSlot {
 
 const trashStore = new Map<string, MockTrashSlot>();
 
+// ── Group config store (group config UI — fix/group-config) ───────────────────
+
+/** Mutable config per group path. */
+const groupConfigStore = new Map<GroupPath, GroupConfigInput>([
+  [
+    "work/atlas",
+    {
+      name: "Atlas",
+      icon: "🗺️",
+      color: "#4a90d9",
+      view: "note",
+      schema: {
+        status: { type: "enum", enumValues: ["draft", "active", "done"], default: "draft" },
+        priority: { type: "number" },
+      },
+    },
+  ],
+  [
+    "books",
+    {
+      name: "Books",
+      icon: "📚",
+      color: "#6ab06a",
+      view: "note",
+      schema: {
+        author: { type: "string" },
+        read: { type: "boolean" },
+        rating: { type: "number" },
+      },
+    },
+  ],
+]);
+
 let tagIndexCache: TagMeta[] | null = null;
 let backlinkIndex: Map<EntryId, Backlink[]> | null = null;
 
@@ -1246,34 +1281,30 @@ export const mock: Ipc = {
         allPaths.add(parts.slice(0, i).join("/"));
       }
     }
-    const groups: GroupMeta[] = Array.from(allPaths).map((path) => ({
-      path,
-      name: path.split("/").at(-1) ?? path,
-      count: counts.get(path) ?? 0,
-    }));
+    const groups: GroupMeta[] = Array.from(allPaths).map((path) => {
+      const cfg = groupConfigStore.get(path);
+      return {
+        path,
+        name: cfg?.name ?? path.split("/").at(-1) ?? path,
+        count: counts.get(path) ?? 0,
+        color: cfg?.color,
+        icon: cfg?.icon,
+      };
+    });
     return { ok: true, value: groups };
   },
 
   // ── Group schema (phase 6 / issue #28) ───────────────────────────────────────
 
   async effective_schema(groupPath: GroupPath): Promise<Result<string | null>> {
-    // Mock parity: work/atlas has a status+priority schema; work inherits nothing.
-    const schemas: Record<string, Record<string, { type: string; default?: unknown }>> = {
-      "work/atlas": {
-        status: { type: "string", default: "draft" },
-        priority: { type: "number" },
-      },
-      work: {
-        status: { type: "string" },
-      },
-    };
-    // Walk ancestor chain (child overrides parent).
-    const merged: Record<string, { type: string; default?: unknown }> = {};
+    // Walk ancestor chain (child overrides parent), using groupConfigStore.
+    const merged: Record<string, SchemaPropertyDecl> = {};
     const parts = groupPath.split("/");
     for (let i = 1; i <= parts.length; i++) {
       const ancestor = parts.slice(0, i).join("/");
-      if (schemas[ancestor]) {
-        Object.assign(merged, schemas[ancestor]);
+      const cfg = groupConfigStore.get(ancestor);
+      if (cfg?.schema) {
+        Object.assign(merged, cfg.schema);
       }
     }
     if (Object.keys(merged).length === 0) {
@@ -1660,6 +1691,26 @@ export const mock: Ipc = {
     // The mock has no JS runtime — echo a deterministic result.
     console.log(`[mock ipc] plugins_invoke_command ${commandId}(${argsJson})`);
     return { ok: true, value: JSON.stringify({ ok: true, command: commandId }) };
+  },
+
+  async get_group_config(groupPath: GroupPath): Promise<Result<GroupConfigInput>> {
+    const cfg = groupConfigStore.get(groupPath) ?? {};
+    return { ok: true, value: { ...cfg, schema: cfg.schema ? { ...cfg.schema } : undefined } };
+  },
+
+  async update_group_config(groupPath: GroupPath, config: GroupConfigInput): Promise<Result<void>> {
+    const existing = groupConfigStore.get(groupPath) ?? {};
+    const merged: GroupConfigInput = { ...existing };
+    if (config.name !== undefined) merged.name = config.name;
+    if (config.icon !== undefined) merged.icon = config.icon;
+    if (config.color !== undefined) merged.color = config.color;
+    if (config.view !== undefined) merged.view = config.view;
+    if (config.schema !== undefined) merged.schema = { ...config.schema };
+    groupConfigStore.set(groupPath, merged);
+    invalidateCaches();
+    emit("index_changed", { paths: [groupPath + "/_group.md"], kinds: ["modified"] });
+    console.log(`[mock ipc] update_group_config → ${groupPath}`, config);
+    return { ok: true, value: undefined };
   },
 
   on<E extends IpcEventName>(
