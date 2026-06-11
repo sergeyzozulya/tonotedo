@@ -63,19 +63,30 @@
 {#if open}
   <div class="action-sheet-backdrop" role="presentation" onclick={handleBackdrop}>
     <div class="action-sheet" role="dialog" aria-label="Entry actions" aria-modal="true">
+      <!-- Drag handle -->
+      <div class="action-sheet-handle-row" aria-hidden="true">
+        <div class="action-sheet-handle"></div>
+      </div>
+
+      <!-- Title row -->
       <div class="action-sheet-header">
         <span class="action-sheet-title">{entryTitle}</span>
       </div>
+
+      <!-- Action rows -->
       {#each actions as action (action.id)}
         <button
-          class="action-sheet-btn"
-          class:action-sheet-btn--destructive={action.destructive}
+          class="action-sheet-row"
+          class:action-sheet-row--destructive={action.destructive}
           onclick={() => run(action.id)}
         >
           {action.label}
         </button>
       {/each}
-      <button class="action-sheet-btn action-sheet-btn--cancel" onclick={onClose}>Cancel</button>
+
+      <!-- Cancel (visually separated) -->
+      <div class="action-sheet-cancel-gap" aria-hidden="true"></div>
+      <button class="action-sheet-row action-sheet-row--cancel" onclick={onClose}>Cancel</button>
     </div>
   </div>
 {/if}
@@ -84,7 +95,7 @@
   .action-sheet-backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.4);
+    background: rgba(0, 0, 0, 0.45);
     z-index: 4000;
     display: flex;
     align-items: flex-end;
@@ -93,60 +104,88 @@
 
   .action-sheet {
     width: 100%;
-    background: var(--tnd-panel);
-    border-top-left-radius: 16px;
-    border-top-right-radius: 16px;
+    background: var(--tnd-panel2);
+    border-top-left-radius: max(16px, var(--tnd-radius));
+    border-top-right-radius: max(16px, var(--tnd-radius));
     overflow: hidden;
-    box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.18);
+    box-shadow: var(--tnd-shadow, 0 -4px 24px rgba(0, 0, 0, 0.22));
     padding-bottom: 8px;
+    font-family: var(--tnd-font-ui);
+  }
+
+  /* Pull-handle */
+  .action-sheet-handle-row {
+    display: flex;
+    justify-content: center;
+    padding: 10px 0 4px;
+  }
+
+  .action-sheet-handle {
+    width: 36px;
+    height: 4px;
+    background: var(--tnd-line-strong);
+    border-radius: 2px;
   }
 
   .action-sheet-header {
-    padding: 16px 16px 8px;
+    padding: 4px 18px 12px;
     border-bottom: 1px solid var(--tnd-line);
   }
 
   .action-sheet-title {
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--tnd-text-muted);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--tnd-text-faint);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
     display: block;
+    font-family: var(--tnd-font-ui);
   }
 
-  .action-sheet-btn {
+  /* Individual action rows */
+  .action-sheet-row {
     display: block;
     width: 100%;
-    padding: 16px;
-    text-align: center;
-    font-size: 17px;
-    font-family: inherit;
-    font-weight: 400;
-    background: none;
+    padding: 15px 18px;
+    text-align: left;
+    font-size: 15px;
+    font-family: var(--tnd-font-ui);
+    font-weight: 500;
+    background: var(--tnd-panel);
     border: none;
     border-bottom: 1px solid var(--tnd-line);
-    color: var(--tnd-accent, #3e7a52);
+    color: var(--tnd-accent-text);
     cursor: pointer;
   }
 
-  .action-sheet-btn:last-child {
-    border-bottom: none;
+  .action-sheet-row:first-of-type {
+    margin-top: 8px;
+    border-top: 1px solid var(--tnd-line);
   }
 
-  .action-sheet-btn:active {
+  .action-sheet-row:active {
     background: var(--tnd-panel2);
   }
 
-  .action-sheet-btn--destructive {
-    color: #c0392b;
+  .action-sheet-row--destructive {
+    color: var(--tnd-chip-red-fg, #c0392b);
   }
 
-  .action-sheet-btn--cancel {
-    font-weight: 600;
-    color: var(--tnd-text);
-    margin-top: 8px;
-    border-top: 1px solid var(--tnd-line-strong);
+  /* Cancel row — visual gap + stronger weight */
+  .action-sheet-cancel-gap {
+    height: 8px;
+    background: var(--tnd-panel2);
+    border-top: 1px solid var(--tnd-line);
+  }
+
+  .action-sheet-row--cancel {
+    font-weight: 700;
+    color: var(--tnd-text-muted);
+    border-bottom: none;
+    border-top: none;
+    margin-top: 0;
   }
 </style>

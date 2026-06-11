@@ -683,7 +683,7 @@
       {#if mobileScreen === "editor"}
         <main class="editor-zone" data-focus-zone="editor">
           {#if selectedEntryId}
-            <!-- Editor toolbar button to open properties sheet -->
+            <!-- Editor toolbar: thin bar with Properties peek button -->
             <div class="mobile-editor-toolbar">
               <button
                 class="mobile-editor-toolbar-btn"
@@ -691,7 +691,22 @@
                 aria-pressed={mobilePropertiesOpen}
                 onclick={mobileToggleProperties}
               >
-                ⚙ Props
+                <!-- properties/panel icon -->
+                <svg
+                  viewBox="0 0 20 20"
+                  width="14"
+                  height="14"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <rect x="3" y="3" width="14" height="14" rx="2" />
+                  <path d="M12 3v14" />
+                </svg>
+                Props
               </button>
             </div>
             {#if conflictDiskText !== null}
@@ -855,11 +870,9 @@
     <!-- Editor accessory bar above software keyboard -->
     <EditorAccessoryBar {editorFocused} />
 
-    <!-- Status bar (narrow: minimal, no hints) -->
+    <!-- Status bar (narrow: minimal zone label only) -->
     <footer class="statusbar">
-      <span class="statusbar-zone">
-        {screenTitle(mobileScreen).toUpperCase()}
-      </span>
+      <span class="statusbar-zone">{screenTitle(mobileScreen).toUpperCase()}</span>
     </footer>
   {:else}
     <!-- ── Desktop layout ───────────────────────────────────────────────────── -->
@@ -1452,35 +1465,41 @@
     background: var(--tnd-panel);
     z-index: 200;
     overflow-y: auto;
-    box-shadow: 2px 0 16px rgba(0, 0, 0, 0.18);
+    box-shadow: var(--tnd-shadow, 2px 0 16px rgba(0, 0, 0, 0.18));
   }
 
-  /* Mobile editor toolbar (properties toggle) */
+  /* Mobile editor toolbar — thin peek bar for the Properties sheet toggle */
   .mobile-editor-toolbar {
     display: flex;
     align-items: center;
     gap: 6px;
-    padding: 6px 12px;
+    padding: 6px 14px;
     background: var(--tnd-panel2);
     border-bottom: 1px solid var(--tnd-line);
     flex-shrink: 0;
   }
 
   .mobile-editor-toolbar-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
     background: var(--tnd-panel);
-    border: 1px solid var(--tnd-line-strong);
+    border: 1px solid var(--tnd-line);
     color: var(--tnd-text-muted);
-    font-size: 12px;
-    font-family: inherit;
+    font-size: 11.5px;
+    font-family: var(--tnd-font-ui);
+    font-weight: 600;
     padding: 4px 10px;
-    border-radius: 4px;
+    border-radius: var(--tnd-radius);
     cursor: pointer;
+    letter-spacing: var(--tnd-label-spacing, 0);
+    text-transform: var(--tnd-label-transform, none);
   }
 
   .mobile-editor-toolbar-btn[aria-pressed="true"] {
     background: var(--tnd-accent-soft);
     color: var(--tnd-accent-text);
-    border-color: var(--tnd-accent);
+    border-color: var(--tnd-accent-soft);
   }
 
   /* ── Responsive ──────────────────────────────────────────────────────────── */

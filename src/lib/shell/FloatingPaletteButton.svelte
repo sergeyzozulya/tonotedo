@@ -13,24 +13,36 @@
 </script>
 
 <button class="fab" aria-label="Open command palette" title="Command palette (⌘K)" onclick={onTap}>
-  ⌘
+  <!-- Plus icon matching design: accent FAB with + -->
+  <svg
+    viewBox="0 0 20 20"
+    width="22"
+    height="22"
+    fill="none"
+    stroke="#fff"
+    stroke-width="2.2"
+    stroke-linecap="round"
+    aria-hidden="true"
+  >
+    <path d="M10 4v12M4 10h12" />
+  </svg>
 </button>
 
 <style>
   .fab {
     position: fixed;
-    bottom: calc(env(safe-area-inset-bottom, 0px) + 20px);
-    right: 20px;
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 22px);
+    right: 18px;
     width: 52px;
     height: 52px;
-    border-radius: 50%;
-    background: var(--tnd-accent, #3e7a52);
+    border-radius: var(--tnd-radius, 16px);
+    background: var(--tnd-accent);
     color: #fff;
     border: none;
-    font-size: 22px;
-    font-weight: 700;
     cursor: pointer;
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+    box-shadow:
+      0 8px 20px var(--tnd-accent-soft, rgba(0, 0, 0, 0.18)),
+      0 4px 10px rgba(0, 0, 0, 0.18);
     display: flex;
     align-items: center;
     justify-content: center;
