@@ -54,3 +54,13 @@ export {
   rankPeople,
 } from "./extensions/autocomplete.js";
 export type { AutocompleteConfig } from "./extensions/autocomplete.js";
+export {
+  vimCompartment,
+  modalEnabled,
+  vimModeField,
+  setVimMode,
+  currentMode,
+  isModalActive,
+  registerModeListener,
+} from "./vim/index.js";
+export type { VimMode } from "./vim/index.js";

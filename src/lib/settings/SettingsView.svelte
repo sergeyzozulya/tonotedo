@@ -33,6 +33,7 @@
   import type { ConflictResult } from "../commands/keymap.js";
   import { loadPresets } from "../commands/presets.js";
   import type { PresetDefinition } from "../commands/presets.js";
+  import { modalStore } from "../editor/vim/modal-store.svelte.js";
   import { themeStore } from "../shell/theme-store.svelte.js";
   import type { ThemeMode } from "../shell/theme-store.svelte.js";
   import themeMap from "../../styles/THEME-MAP.json";
@@ -315,6 +316,8 @@
     }
 
     savePreset(preset.id as import("../commands/settings.js").PresetId, preset.modal);
+    // Toggle the modal engine live (spec 0007: takes effect without restart).
+    modalStore.set(preset.modal);
     appliedPresetId = preset.id;
     confirmPreset = null;
     refreshRows();

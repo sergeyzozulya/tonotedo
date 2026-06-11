@@ -37,6 +37,7 @@
   } from "./extensions/blocks.js";
   import { autocomplete } from "./extensions/autocomplete.js";
   import { ipc } from "../ipc/index.js";
+  import { vimCompartment, modalEnabled, registerModeListener, type VimMode } from "./vim/index.js";
 
   interface Props {
     /** Initial document text. The editor never mutates the buffer on its own. */
@@ -98,6 +99,12 @@
      * so scoped tags (from _group.md) are ranked/filtered correctly (phase 6).
      */
     groupPath?: string | null;
+    /**
+     * Whether the vim-flavor modal editor engine is active (spec 0007
+     * §Modal vs modeless). Toggled live via a CM6 compartment; when true the
+     * editor opens in normal mode and shows a mode indicator. Defaults to off.
+     */
+    modalEditor?: boolean;
   }
 
   let {
@@ -114,6 +121,7 @@
     externalChange = null,
     externalDocReplace = null,
     groupPath = null,
+    modalEditor = false,
   }: Props = $props();
 
   // groupPathRef is a mutable box so the autocomplete source always reads the
@@ -126,6 +134,10 @@
 
   let host: HTMLDivElement;
   let view: EditorView | undefined;
+
+  // Current vim mode for the indicator; null when the modal engine is off.
+  let vimMode = $state<VimMode | null>(null);
+  let unregisterMode: (() => void) | undefined;
 
   /** Offset of the first body character after a leading `---` frontmatter block
    * (0 if there is none). Used to seat the initial cursor in the prose. */
@@ -184,14 +196,34 @@
           editorTheme,
           blocksTheme,
           updateListener,
+          // Vim modal engine — loaded into a compartment so the active preset
+          // can toggle it live (spec 0007). Empty unless modalEditor is set.
+          vimCompartment.of(modalEnabled(modalEditor)),
         ],
       }),
+    });
+
+    // Mirror the modal engine's mode into the indicator. The listener emits the
+    // current mode immediately and `null` whenever the engine is uninstalled.
+    unregisterMode = registerModeListener(view, (m) => {
+      vimMode = m;
     });
 
     // Emit the initial selection context once mounted.
     onSelectionContext?.(selectionContext(view.state));
 
-    return () => view?.destroy();
+    return () => {
+      unregisterMode?.();
+      view?.destroy();
+    };
+  });
+
+  // Toggle the modal engine live when the modalEditor prop changes (preset
+  // switch in settings, no restart — spec 0007 acceptance criterion).
+  $effect(() => {
+    view?.dispatch({
+      effects: vimCompartment.reconfigure(modalEnabled(modalEditor)),
+    });
   });
 
   // Re-apply settings when they change (theme tokens are live).
@@ -226,17 +258,70 @@
   });
 </script>
 
-<!-- Focus is owned by CM6 inside this element (design-0003 §Interfaces). -->
-<div class="tnd-editor-host" bind:this={host}></div>
+<!-- Editor wrapper: CM6 host plus the optional vim mode indicator strip. -->
+<div class="tnd-editor-wrap">
+  <!-- Focus is owned by CM6 inside this element (design-0003 §Interfaces). -->
+  <div class="tnd-editor-host" bind:this={host}></div>
+
+  <!-- Vim mode indicator — only present while the modal engine is active. -->
+  {#if vimMode}
+    <div class="tnd-vim-status" data-vim-mode={vimMode} aria-live="polite">
+      <span class="tnd-vim-mode-label">
+        {#if vimMode === "normal"}NORMAL{:else if vimMode === "insert"}INSERT{:else}VISUAL{/if}
+      </span>
+    </div>
+  {/if}
+</div>
 
 <style>
-  .tnd-editor-host {
+  .tnd-editor-wrap {
     display: flex;
     flex-direction: column;
     height: 100%;
     min-height: 0;
   }
+  .tnd-editor-host {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+  }
   .tnd-editor-host :global(.cm-editor) {
     height: 100%;
+  }
+
+  /* Vim mode indicator — statusbar-style strip pinned to the editor's bottom. */
+  .tnd-vim-status {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    height: 22px;
+    padding: 0 10px;
+    border-top: 1px solid var(--tnd-line);
+    background: var(--tnd-panel2);
+    font-family: var(--tnd-font-mono);
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    user-select: none;
+  }
+
+  .tnd-vim-mode-label {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 7px;
+    border-radius: var(--tnd-radius);
+    color: var(--tnd-accent-text);
+    background: var(--tnd-accent-soft);
+  }
+
+  .tnd-vim-status[data-vim-mode="insert"] .tnd-vim-mode-label {
+    color: var(--tnd-chip-green-fg);
+    background: var(--tnd-chip-green-bg);
+  }
+
+  .tnd-vim-status[data-vim-mode="visual"] .tnd-vim-mode-label {
+    color: var(--tnd-chip-amber-fg);
+    background: var(--tnd-chip-amber-bg);
   }
 </style>

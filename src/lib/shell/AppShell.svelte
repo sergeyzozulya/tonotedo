@@ -26,6 +26,7 @@
   import Sidebar from "./Sidebar.svelte";
   import EntryList from "./EntryList.svelte";
   import { Editor } from "../editor/index.js";
+  import { modalStore } from "../editor/vim/modal-store.svelte.js";
   import PropertiesPanel from "../panel/PropertiesPanel.svelte";
   import SearchOverlay from "../search/SearchOverlay.svelte";
   import { savedSearchesStore } from "../search/saved-searches-store.svelte.js";
@@ -81,6 +82,8 @@
     themeStore.init();
     // Wire theme/mode commands through themeStore (fixes issue #23 sync gap).
     seedThemeCommands(themeStore);
+    // Restore the persisted vim modal-editor flag (set by the vim-flavor preset).
+    modalStore.init();
     return () => themeStore.destroy();
   });
 
@@ -729,6 +732,7 @@
               externalChange={panelChange}
               externalDocReplace={fullDocReplace}
               groupPath={selectedEntryGroup}
+              modalEditor={modalStore.enabled}
             />
           {:else}
             <div class="editor-empty">Select an entry to begin editing</div>
@@ -1122,6 +1126,7 @@
             externalChange={panelChange}
             externalDocReplace={fullDocReplace}
             groupPath={selectedEntryGroup}
+            modalEditor={modalStore.enabled}
           />
         {:else}
           <div class="editor-empty">Select an entry to begin editing</div>
