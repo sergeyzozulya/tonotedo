@@ -50,7 +50,6 @@
   import type { GroupNode } from "./group-tree.js";
   import type { ChangeSpec } from "../panel/frontmatter-view.js";
   import type { SavedSearch } from "../search/saved-searches-store.svelte.js";
-  import themeMap from "../../styles/THEME-MAP.json";
   // Mobile components (issue #24)
   import MobileTopBar from "./MobileTopBar.svelte";
   import PropertiesSheet from "./PropertiesSheet.svelte";
@@ -70,9 +69,6 @@
   // ── Theme (initialise from persisted user settings, then wire commands) ────────
 
   type ThemeMode = "light" | "dark" | "system";
-
-  const themeKeys = themeMap.themes.map((t) => t.key);
-  const themeNames = Object.fromEntries(themeMap.themes.map((t) => [t.key, t.name]));
 
   $effect(() => {
     // Restore persisted theme/mode before init() applies DOM attributes.
@@ -518,6 +514,25 @@
 
   const groupDisplayName = $derived(resolveGroupName(selectedGroupPath, groupTree));
 
+  // Titlebar chrome (design TNDTitleBar). `boxed`/uppercase flags key off Mono.
+  const boxed = $derived(themeStore.theme === "mono");
+  const rootCrumb = $derived(
+    selectedGroupPath
+      ? selectedGroupPath.split("/")[0].replace(/^\w/, (c) => c.toUpperCase())
+      : "",
+  );
+
+  async function createEntry(): Promise<void> {
+    const base = selectedGroupPath || "inbox";
+    const id = `${base}/untitled-${entries.length + 1}`;
+    const text = `---\ntitle: Untitled\n---\n\n# Untitled\n`;
+    const r = await ipc.write_entry(id, text, "shell-self-tok");
+    if (r.ok) {
+      await loadEntries(selectedGroupPath);
+      await selectEntry(id);
+    }
+  }
+
   /** Group path of the currently selected entry (for PropertiesPanel schema). */
   const selectedEntryGroup = $derived(
     selectedEntryId ? (entries.find((e) => e.id === selectedEntryId)?.group ?? null) : null,
@@ -851,62 +866,132 @@
   {:else}
     <!-- ── Desktop layout ───────────────────────────────────────────────────── -->
 
-    <!-- Title bar -->
+    <!-- Title bar (ported from design TNDTitleBar) -->
     <header class="titlebar">
       <div class="titlebar-left">
-        <span class="titlebar-app-name">ToNoteDo</span>
+        {#if boxed}
+          <span class="titlebar-mono-root">~/library</span>
+        {:else}
+          <span class="titlebar-badge">T</span>
+          <span class="titlebar-app-name">My Library</span>
+          <svg class="titlebar-ico" viewBox="0 0 24 24" width="13" height="13"
+            ><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round" /></svg
+          >
+        {/if}
+      </div>
+
+      <div class="titlebar-divider"></div>
+
+      <div class="titlebar-crumbs">
+        <span class="titlebar-crumb-muted">{selectedGroupPath ? rootCrumb : "All entries"}</span>
         {#if selectedGroupPath}
-          <span class="titlebar-crumb-sep">/</span>
+          <svg class="titlebar-ico" viewBox="0 0 24 24" width="11" height="11"
+            ><path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round" /></svg
+          >
           <span class="titlebar-crumb">{groupDisplayName}</span>
         {/if}
       </div>
 
-      <div class="titlebar-right">
-        <!-- Theme switcher (minimal; #23 will formalise) -->
-        <label class="titlebar-label" for="shell-theme">Theme</label>
-        <select
-          id="shell-theme"
-          class="titlebar-select"
-          value={themeStore.theme}
-          onchange={(e) => themeStore.setTheme((e.target as HTMLSelectElement).value)}
-        >
-          {#each themeKeys as key (key)}
-            <option value={key}>{themeNames[key]}</option>
-          {/each}
-        </select>
+      <div class="titlebar-spacer"></div>
 
-        <label class="titlebar-label" for="shell-mode">Mode</label>
-        <select
-          id="shell-mode"
-          class="titlebar-select"
-          value={themeStore.mode}
-          onchange={(e) => themeStore.setMode((e.target as HTMLSelectElement).value as ThemeMode)}
+      <!-- Search box (opens the ⌘P overlay) -->
+      <button class="titlebar-search" onclick={openSearch} aria-label="Search (⌘P)">
+        <svg viewBox="0 0 24 24" width="14" height="14"
+          ><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2" /><path
+            d="M21 21l-4.3-4.3"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+          /></svg
         >
-          <option value="light">Light</option>
-          <option value="dark">Dark</option>
-          <option value="system">System</option>
-        </select>
+        <span class="titlebar-search-label">Search…</span>
+        <kbd class="titlebar-kbd">⌘P</kbd>
+      </button>
 
-        <button
-          class="titlebar-btn titlebar-btn--toggle"
-          aria-label="Toggle properties panel"
-          aria-pressed={propertiesVisible}
-          onclick={() => (propertiesVisible = !propertiesVisible)}
+      <!-- New entry -->
+      <button class="titlebar-new" onclick={createEntry} aria-label="New entry">
+        <svg viewBox="0 0 24 24" width="15" height="15"
+          ><path
+            d="M12 5v14M5 12h14"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.2"
+            stroke-linecap="round"
+          /></svg
         >
-          Properties
-        </button>
-        <!-- Settings gear affordance -->
-        <button
-          class="titlebar-btn titlebar-btn--settings"
-          class:titlebar-btn--toggle={mainZone === "settings"}
-          aria-label="Open Settings (⌘,)"
-          aria-pressed={mainZone === "settings"}
-          onclick={openSettings}
-          title="Settings (⌘,)"
+        <span>{boxed ? "NEW" : "New entry"}</span>
+      </button>
+
+      <button
+        class="titlebar-icon-btn"
+        class:titlebar-btn--toggle={propertiesVisible}
+        aria-label="Toggle properties panel"
+        aria-pressed={propertiesVisible}
+        onclick={() => (propertiesVisible = !propertiesVisible)}
+        title="Properties"
+      >
+        <svg viewBox="0 0 24 24" width="16" height="16"
+          ><rect
+            x="3"
+            y="4"
+            width="18"
+            height="16"
+            rx="2"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+          /><path d="M15 4v16" stroke="currentColor" stroke-width="1.8" /></svg
         >
-          ⚙
-        </button>
-      </div>
+      </button>
+
+      <!-- Light/dark toggle (the ☀ in the design titlebar) -->
+      <button
+        class="titlebar-icon-btn"
+        aria-label="Toggle light/dark"
+        onclick={() => themeStore.setMode(themeStore.mode === "dark" ? "light" : "dark")}
+        title="Toggle light/dark"
+      >
+        {#if themeStore.mode === "dark"}
+          <svg viewBox="0 0 24 24" width="16" height="16"
+            ><path
+              d="M21 12.8A9 9 0 1111.2 3 7 7 0 0021 12.8z"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linejoin="round"
+            /></svg
+          >
+        {:else}
+          <svg viewBox="0 0 24 24" width="16" height="16"
+            ><circle cx="12" cy="12" r="4.5" fill="none" stroke="currentColor" stroke-width="1.8" /><path
+              d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M19.1 4.9l-1.4 1.4M6.3 17.7l-1.4 1.4"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+            /></svg
+          >
+        {/if}
+      </button>
+
+      <button
+        class="titlebar-icon-btn"
+        class:titlebar-btn--toggle={mainZone === "settings"}
+        aria-label="Open Settings (⌘,)"
+        aria-pressed={mainZone === "settings"}
+        onclick={openSettings}
+        title="Settings (⌘,)"
+      >
+        <svg viewBox="0 0 24 24" width="16" height="16"
+          ><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.8" /><path
+            d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.2 5.2l2.1 2.1M16.7 16.7l2.1 2.1M18.8 5.2l-2.1 2.1M7.3 16.7l-2.1 2.1"
+            stroke="currentColor"
+            stroke-width="1.6"
+            stroke-linecap="round"
+          /></svg
+        >
+      </button>
     </header>
 
     <!-- Body: sidebar + entry-list + editor + properties -->
@@ -1075,100 +1160,172 @@
 
   /* Title bar */
   .titlebar {
-    height: 44px;
+    height: 48px;
     flex-shrink: 0;
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    padding: 0 12px;
-    gap: 12px;
+    gap: 14px;
+    padding: 0 14px 0 16px;
     background: var(--tnd-panel);
-    border-bottom: 1px solid var(--tnd-line-strong);
+    border-bottom: 1px solid var(--tnd-line);
+    color: var(--tnd-text);
+    font-family: var(--tnd-font-ui);
   }
 
   .titlebar-left {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 7px;
     min-width: 0;
+    color: var(--tnd-text);
+  }
+
+  .titlebar-badge {
+    width: 22px;
+    height: 22px;
+    border-radius: var(--tnd-radius);
+    background: var(--tnd-accent);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #fff;
+    font-weight: 800;
+    font-size: 13px;
+    flex-shrink: 0;
+  }
+
+  .titlebar-mono-root {
+    font-family: var(--tnd-font-mono);
+    color: var(--tnd-accent-text);
+    font-weight: 700;
+    font-size: 13px;
   }
 
   .titlebar-app-name {
     font-weight: 700;
-    font-size: 13.5px;
+    font-size: 14px;
     color: var(--tnd-text);
     letter-spacing: -0.01em;
     white-space: nowrap;
   }
 
-  .titlebar-crumb-sep {
+  .titlebar-ico {
     color: var(--tnd-text-faint);
+    flex-shrink: 0;
+  }
+
+  .titlebar-divider {
+    width: 1px;
+    height: 18px;
+    background: var(--tnd-line);
+    flex-shrink: 0;
+  }
+
+  .titlebar-crumbs {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    color: var(--tnd-text-muted);
     font-size: 13px;
+    font-weight: 500;
+    min-width: 0;
+    letter-spacing: var(--tnd-label-spacing);
+    text-transform: var(--tnd-label-transform);
+  }
+
+  .titlebar-crumb-muted {
+    color: var(--tnd-text-muted);
+    white-space: nowrap;
   }
 
   .titlebar-crumb {
-    font-size: 12.5px;
-    font-weight: 500;
-    color: var(--tnd-text-muted);
+    color: var(--tnd-text);
+    font-weight: 600;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
     max-width: 220px;
   }
 
-  .titlebar-right {
+  .titlebar-spacer {
+    flex: 1;
+  }
+
+  .titlebar-search {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 30px;
+    padding: 0 10px 0 11px;
+    border-radius: var(--tnd-radius);
+    border: 1px solid var(--tnd-line);
+    background: var(--tnd-panel2);
+    color: var(--tnd-text-faint);
+    font-size: 12.5px;
+    font-family: var(--tnd-font-ui);
+    min-width: 168px;
+    cursor: pointer;
+  }
+
+  .titlebar-search:hover {
+    border-color: var(--tnd-line-strong);
+  }
+
+  .titlebar-search-label {
+    flex: 1;
+    text-align: left;
+  }
+
+  .titlebar-kbd {
+    font-family: var(--tnd-font-mono);
+    font-size: 11px;
+    color: var(--tnd-text-muted);
+  }
+
+  .titlebar-new {
     display: flex;
     align-items: center;
     gap: 6px;
+    height: 30px;
+    padding: 0 12px 0 9px;
+    border-radius: var(--tnd-radius);
+    border: none;
+    background: var(--tnd-accent);
+    color: #fff;
+    font-family: var(--tnd-font-ui);
+    font-size: 12.5px;
+    font-weight: 700;
+    cursor: pointer;
+    white-space: nowrap;
+    text-transform: var(--tnd-label-transform);
+  }
+
+  .titlebar-new:hover {
+    filter: brightness(1.06);
+  }
+
+  .titlebar-icon-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    border-radius: var(--tnd-radius);
+    border: none;
+    background: transparent;
+    color: var(--tnd-text-muted);
+    cursor: pointer;
     flex-shrink: 0;
   }
 
-  .titlebar-label {
-    font-size: 11.5px;
-    color: var(--tnd-text-faint);
-    white-space: nowrap;
-  }
-
-  .titlebar-select {
-    font-size: 12px;
-    padding: 3px 6px;
+  .titlebar-icon-btn:hover {
     background: var(--tnd-panel2);
     color: var(--tnd-text);
-    border: 1px solid var(--tnd-line-strong);
-    border-radius: 4px;
-    outline: none;
-    cursor: pointer;
-  }
-
-  .titlebar-select:focus {
-    border-color: var(--tnd-accent);
-  }
-
-  .titlebar-btn {
-    background: transparent;
-    border: 1px solid var(--tnd-line-strong);
-    color: var(--tnd-text-muted);
-    font-size: 12px;
-    padding: 3px 8px;
-    border-radius: 4px;
-    cursor: pointer;
-    font-family: inherit;
-    white-space: nowrap;
-  }
-
-  .titlebar-btn:hover {
-    background: var(--tnd-panel2);
   }
 
   .titlebar-btn--toggle[aria-pressed="true"] {
     background: var(--tnd-accent-soft);
     color: var(--tnd-accent-text);
-    border-color: var(--tnd-accent);
-  }
-
-  .titlebar-btn--settings {
-    font-size: 15px;
-    padding: 2px 7px;
   }
 
   /* Body */
