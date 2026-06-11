@@ -1,0 +1,114 @@
+/* Typography + structural-flag tokens, ported verbatim from the design source
+ * (docs/design-src/themes.jsx TND_THEMES.font/flags + desktop.jsx TND_DENSITY).
+ *
+ * The colour tokens in tokens.css already match the design; what was missing was
+ * the half of each theme's identity that lives in TYPE and STRUCTURE — the fonts
+ * (none were loaded, so everything fell back to the system face) and the per-theme
+ * flags (radius, tag shape, density spacing, uppercase labels). Those live here.
+ *
+ * Fonts are loaded from Google Fonts for now; bundling them for offline/local-first
+ * is a follow-up (same @font-face, different src). */
+
+@import url("https://fonts.googleapis.com/css2?family=Mulish:wght@400;500;600;700;800&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&family=JetBrains+Mono:wght@400;500;600;700;800&family=Hanken+Grotesk:wght@400;500;600;700;800&family=Figtree:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap");
+
+/* ── Per-theme type + structural flags (mode-agnostic) ───────────────────────
+ * Values are exact ports of themes.jsx .font/.flags and desktop.jsx TND_DENSITY.
+ * Density → roomy | balanced | compact (rowY, listPad, gap, side, edPad, bodyGap). */
+
+/* :root default = Paper */
+:root,
+[data-tnd-theme="paper"] {
+  --tnd-font-ui: "Mulish", sans-serif;
+  --tnd-font-body: "Newsreader", Georgia, serif;
+  --tnd-font-mono: "IBM Plex Mono", monospace;
+  --tnd-radius: 7px;
+  --tnd-tag-radius: 5px;
+  --tnd-title-weight: 600;
+  --tnd-label-transform: none;
+  --tnd-label-spacing: 0;
+  /* density: roomy */
+  --tnd-row-y: 9px;
+  --tnd-list-pad: 18px;
+  --tnd-row-gap: 3px;
+  --tnd-side-pad: 16px;
+  --tnd-editor-pad: 56px;
+  --tnd-body-gap: 18px;
+}
+
+[data-tnd-theme="fog"] {
+  --tnd-font-ui: "Hanken Grotesk", sans-serif;
+  --tnd-font-body: "Hanken Grotesk", sans-serif;
+  --tnd-font-mono: "IBM Plex Mono", monospace;
+  --tnd-radius: 11px;
+  --tnd-tag-radius: 999px;
+  --tnd-title-weight: 600;
+  --tnd-label-transform: none;
+  --tnd-label-spacing: 0;
+  /* density: balanced */
+  --tnd-row-y: 7px;
+  --tnd-list-pad: 14px;
+  --tnd-row-gap: 2px;
+  --tnd-side-pad: 13px;
+  --tnd-editor-pad: 44px;
+  --tnd-body-gap: 15px;
+}
+
+[data-tnd-theme="mono"] {
+  --tnd-font-ui: "JetBrains Mono", monospace;
+  --tnd-font-body: "JetBrains Mono", monospace;
+  --tnd-font-mono: "JetBrains Mono", monospace;
+  --tnd-radius: 0px;
+  --tnd-tag-radius: 0px;
+  --tnd-title-weight: 700;
+  --tnd-label-transform: uppercase;
+  --tnd-label-spacing: 0.03em;
+  /* density: compact */
+  --tnd-row-y: 4px;
+  --tnd-list-pad: 9px;
+  --tnd-row-gap: 0px;
+  --tnd-side-pad: 9px;
+  --tnd-editor-pad: 30px;
+  --tnd-body-gap: 11px;
+}
+
+[data-tnd-theme="editorial"] {
+  --tnd-font-ui: "Hanken Grotesk", sans-serif;
+  --tnd-font-body: "Newsreader", Georgia, serif;
+  --tnd-font-mono: "IBM Plex Mono", monospace;
+  --tnd-radius: 0px;
+  --tnd-tag-radius: 0px;
+  --tnd-title-weight: 500;
+  --tnd-label-transform: none;
+  --tnd-label-spacing: 0;
+  /* density: roomy */
+  --tnd-row-y: 9px;
+  --tnd-list-pad: 18px;
+  --tnd-row-gap: 3px;
+  --tnd-side-pad: 16px;
+  --tnd-editor-pad: 56px;
+  --tnd-body-gap: 18px;
+}
+
+[data-tnd-theme="soft"] {
+  --tnd-font-ui: "Figtree", sans-serif;
+  --tnd-font-body: "Figtree", sans-serif;
+  --tnd-font-mono: "IBM Plex Mono", monospace;
+  --tnd-radius: 16px;
+  --tnd-tag-radius: 999px;
+  --tnd-title-weight: 600;
+  --tnd-label-transform: none;
+  --tnd-label-spacing: 0;
+  /* density: balanced */
+  --tnd-row-y: 7px;
+  --tnd-list-pad: 14px;
+  --tnd-row-gap: 2px;
+  --tnd-side-pad: 13px;
+  --tnd-editor-pad: 44px;
+  --tnd-body-gap: 15px;
+}
+
+/* Apply the UI face app-wide; body/mono are opt-in per surface (editor body,
+ * code spans). Without this the whole app rendered in the system default. */
+:root {
+  font-family: var(--tnd-font-ui);
+}
