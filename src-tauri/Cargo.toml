@@ -67,12 +67,24 @@ unicode-normalization = "0.1"
 # `Runtime::set_memory_limit` + `Runtime::set_interrupt_handler` API gives the host the
 # memory-cap and deadline-interrupt primitives the design requires, and which the 0.10+
 # line reshuffled. Bundling the C source means no system QuickJS dependency and identical
-# behaviour on all five targets (adr-0005 "interpreter-only on iOS"). `bindgen` stays off
-# so no libclang build dependency is needed — the crate ships pre-generated bindings.
+# behaviour on all five targets (adr-0005 "interpreter-only on iOS").
 # `allocator`: a custom tracking allocator records the per-call high-water memory mark so a
 # catchable OOM still accrues a memory strike (review M2 — QuickJS's `memory_used_size`
 # reports only live tracked-object bytes after GC, so it cannot detect a brushed ceiling).
+#
+# Bindings: rquickjs-sys ships pre-generated C bindings only for common HOST triples, not
+# for Android/iOS — so cross-compiling to mobile fails with "couldn't read
+# src/bindings/<target>.rs". For mobile targets (table below) we enable `bindgen` to
+# generate bindings at build time (needs libclang, which the NDK/Xcode toolchains provide);
+# desktop builds keep the fast pre-generated path with no libclang dependency.
 rquickjs = { version = "0.9", default-features = false, features = ["allocator"] }
+
+# Mobile targets: generate rquickjs bindings at build time (no shipped bindings for these).
+[target.'cfg(target_os = "android")'.dependencies]
+rquickjs = { version = "0.9", default-features = false, features = ["allocator", "bindgen"] }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+rquickjs = { version = "0.9", default-features = false, features = ["allocator", "bindgen"] }
 
 [profile.release]
 codegen-units = 1
