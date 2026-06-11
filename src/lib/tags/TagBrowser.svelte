@@ -130,8 +130,6 @@
       actionError = (result as { ok: false; error: { message: string } }).error.message;
     }
   }
-
-
 </script>
 
 <div class="tag-browser">
