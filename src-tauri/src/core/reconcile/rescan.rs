@@ -52,6 +52,17 @@ pub fn full_rescan(
     // ── Step 1: walk the tree ────────────────────────────────────────────────
     let md_paths = walk_md_files(library_root);
 
+    // NFC-normalized rel-path set of everything the walk actually found. Ledger
+    // paths are also NFC-normalized (reconcile_path::rel_path), so a file that
+    // exists on disk under ANY Unicode normalization is present in this set.
+    // This is the authoritative "present" check for deletion detection: on a
+    // non-normalizing filesystem (ext4) the on-disk bytes may be NFD while the
+    // ledger key is NFC, so re-`stat`-ing the NFC string would falsely miss it.
+    let disk_set: std::collections::HashSet<String> = md_paths
+        .iter()
+        .filter_map(|p| super::reconcile_path::rel_path(library_root, p))
+        .collect();
+
     // ── Step 2: reconcile discovered files ───────────────────────────────────
     let batch: Vec<(PathBuf, RawKind)> = md_paths
         .into_iter()
@@ -68,9 +79,19 @@ pub fn full_rescan(
     let ledger_paths = index.all_ledger_paths().unwrap_or_default();
     let mut removes: Vec<(PathBuf, RawKind)> = Vec::new();
     for ledger_rel in ledger_paths {
+        // Present in the walk (under any normalization) → definitively keep.
+        // This handles non-normalizing filesystems where the on-disk path is
+        // NFD but the ledger key is NFC — the file IS there, the stat below
+        // would falsely miss it.
+        if disk_set.contains(&ledger_rel) {
+            continue;
+        }
         let abs = library_root.join(&ledger_rel);
+        // Not found by the walk. It is either genuinely gone OR under a subtree
+        // the walk could not read. Confirm with a per-path stat (F4 protection):
+        // only NotFound deletes; other I/O errors keep the row and reschedule.
         match std::fs::symlink_metadata(&abs) {
-            Ok(_) => {} // still present → keep
+            Ok(_) => {} // still present (e.g. a path the walk filtered) → keep
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 removes.push((abs, RawKind::Remove));
             }
