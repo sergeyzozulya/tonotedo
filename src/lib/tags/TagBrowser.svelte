@@ -6,11 +6,14 @@
   // bar charts per-count on global tags, scoped tags with tree indent + "└"
   // markers, scope badges, count on right. Per-theme tag rendering follows the
   // same flag conventions as EntryList tag chips (#/bracket/caps/pill).
+  //
+  // New in this PR: edit tag metadata (color/description/icon), declare new tag
+  // (global or scoped with group picker). Existing rename/merge/delete stay.
 
   import { ipc } from "../ipc/index.js";
   import { buildTagTree, flattenTagTree, isNonCanonical } from "./tag-utils.js";
   import type { TagNode } from "./tag-utils.js";
-  import type { TagMeta } from "../ipc/types.js";
+  import type { TagMeta, TagInput, GroupMeta, ChipColor } from "../ipc/types.js";
 
   interface Props {
     /** Called when a tag row is clicked (for future entry filtering). */
@@ -22,19 +25,18 @@
   // ── Data loading ──────────────────────────────────────────────────────────────
 
   let tags = $state<TagMeta[]>([]);
+  let groups = $state<GroupMeta[]>([]);
   let loading = $state(false);
   let loadError = $state<string | null>(null);
 
   async function loadTags(): Promise<void> {
     loading = true;
     loadError = null;
-    const result = await ipc.tag_index();
+    const [tagRes, groupRes] = await Promise.all([ipc.tag_index(), ipc.list_groups()]);
     loading = false;
-    if (result.ok) {
-      tags = result.value;
-    } else {
-      loadError = result.error.message;
-    }
+    if (tagRes.ok) tags = tagRes.value;
+    else loadError = tagRes.error.message;
+    if (groupRes.ok) groups = groupRes.value;
   }
 
   $effect(() => {
@@ -76,7 +78,20 @@
     return true;
   }
 
-  // ── Actions ───────────────────────────────────────────────────────────────────
+  // ── Color palette ─────────────────────────────────────────────────────────────
+
+  const COLOR_OPTIONS: Array<{ value: ChipColor; label: string }> = [
+    { value: "slate", label: "Slate" },
+    { value: "red", label: "Red" },
+    { value: "amber", label: "Amber" },
+    { value: "green", label: "Green" },
+    { value: "teal", label: "Teal" },
+    { value: "blue", label: "Blue" },
+    { value: "violet", label: "Violet" },
+    { value: "pink", label: "Pink" },
+  ];
+
+  // ── Actions (rename / merge / delete) ────────────────────────────────────────
 
   let actionTarget = $state<string | null>(null);
   let actionMode = $state<"rename" | "merge" | "delete" | null>(null);
@@ -89,6 +104,7 @@
     actionMode = mode;
     actionInput = mode === "rename" ? tagName : "";
     actionError = null;
+    closeMetaDialog();
   }
 
   function closeAction(): void {
@@ -131,7 +147,83 @@
     }
   }
 
+  // ── Edit metadata dialog ──────────────────────────────────────────────────────
 
+  // Used for both editing an existing tag and declaring a new one.
+  let metaDialogOpen = $state(false);
+  let metaIsNew = $state(false); // true = declare-new, false = edit-existing
+  let metaName = $state("");
+  let metaColor = $state<ChipColor | "">("");
+  let metaDescription = $state("");
+  let metaIcon = $state("");
+  let metaScopePath = $state(""); // "" = global
+  let metaBusy = $state(false);
+  let metaError = $state<string | null>(null);
+
+  function openEditMeta(node: TagNode): void {
+    metaIsNew = false;
+    metaName = node.name;
+    metaColor = (node.meta?.color ?? "") as ChipColor | "";
+    metaDescription = node.meta?.description ?? "";
+    metaIcon = node.meta?.icon ?? "";
+    metaScopePath = node.meta?.scopePath ?? "";
+    metaError = null;
+    metaDialogOpen = true;
+    closeAction();
+  }
+
+  function openDeclareMeta(): void {
+    metaIsNew = true;
+    metaName = "";
+    metaColor = "";
+    metaDescription = "";
+    metaIcon = "";
+    metaScopePath = "";
+    metaError = null;
+    metaDialogOpen = true;
+    closeAction();
+  }
+
+  function closeMetaDialog(): void {
+    metaDialogOpen = false;
+    metaError = null;
+  }
+
+  function validateTagName(name: string): string | null {
+    if (!name.trim()) return "Tag name is required.";
+    if (!/^[a-zA-Z0-9_\-/]+$/.test(name)) return "Only letters, digits, -, _, / are allowed.";
+    if (name.length > 128) return "Too long (max 128 characters).";
+    return null;
+  }
+
+  const metaNameError = $derived(metaName ? validateTagName(metaName) : null);
+  const metaCanSubmit = $derived(!metaBusy && validateTagName(metaName) === null);
+
+  async function commitMeta(): Promise<void> {
+    const nameErr = validateTagName(metaName);
+    if (nameErr) {
+      metaError = nameErr;
+      return;
+    }
+    metaBusy = true;
+    metaError = null;
+
+    const input: TagInput = {
+      name: metaName.trim(),
+      color: metaColor || undefined,
+      description: metaDescription.trim() || undefined,
+      icon: metaIcon.trim() || undefined,
+      scopePath: metaScopePath || undefined,
+    };
+    const result = await ipc.set_tag(input);
+    metaBusy = false;
+    if (result.ok) {
+      closeMetaDialog();
+      await loadTags();
+    } else {
+      metaError = result.error.message;
+    }
+  }
 </script>
 
 <div class="tag-browser">
@@ -142,6 +234,13 @@
       <span class="tb-subtitle">global + scoped</span>
     </div>
     <span class="tb-total">{tags.length} tags</span>
+    <button
+      class="tb-declare-btn"
+      onclick={openDeclareMeta}
+      title="Declare a new tag with metadata"
+    >
+      + Declare
+    </button>
   </header>
 
   {#if loading}
@@ -186,6 +285,15 @@
               <span class="tb-count-num">{count}</span>
               <!-- Actions (hover) -->
               <span class="tb-actions" role="group" aria-label="Actions for {node.name}">
+                <button
+                  class="tb-action-btn"
+                  onclick={(e) => {
+                    e.stopPropagation();
+                    openEditMeta(node);
+                  }}
+                  title="Edit metadata"
+                  aria-label="Edit metadata for {node.name}">edit</button
+                >
                 <button
                   class="tb-action-btn"
                   onclick={(e) => {
@@ -296,6 +404,15 @@
                     class="tb-action-btn"
                     onclick={(e) => {
                       e.stopPropagation();
+                      openEditMeta(node);
+                    }}
+                    title="Edit metadata"
+                    aria-label="Edit metadata for {node.name}">edit</button
+                  >
+                  <button
+                    class="tb-action-btn"
+                    onclick={(e) => {
+                      e.stopPropagation();
                       openAction("rename", node.name);
                     }}
                     title="Rename"
@@ -328,6 +445,119 @@
     </div>
   {/if}
 </div>
+
+<!-- Metadata edit / declare dialog -->
+{#if metaDialogOpen}
+  <div
+    class="action-backdrop"
+    role="presentation"
+    onclick={(e) => e.target === e.currentTarget && closeMetaDialog()}
+  >
+    <div class="action-dialog meta-dialog" role="dialog" aria-modal="true">
+      <header class="action-dialog-header">
+        <span class="action-dialog-title">
+          {#if metaIsNew}Declare tag{:else}Edit <code>{metaName}</code>{/if}
+        </span>
+        <button class="dialog-close-btn" aria-label="Cancel" onclick={closeMetaDialog}>✕</button>
+      </header>
+
+      <div class="action-dialog-body">
+        <!-- Name (editable for new; read-only for existing) -->
+        <div class="meta-field">
+          <label class="al" for="meta-name"
+            >Name {#if metaIsNew}<span class="required">*</span>{/if}</label
+          >
+          {#if metaIsNew}
+            <input
+              id="meta-name"
+              class="action-input"
+              class:action-input--error={!!metaNameError}
+              type="text"
+              bind:value={metaName}
+              placeholder="e.g. followup or project/atlas"
+              autocomplete="off"
+              spellcheck={false}
+            />
+            {#if metaNameError}
+              <span class="field-error">{metaNameError}</span>
+            {/if}
+          {:else}
+            <span class="meta-name-display"><span class="tb-tag-hash">#</span>{metaName}</span>
+          {/if}
+        </div>
+
+        <!-- Color -->
+        <div class="meta-field">
+          <label class="al" for="meta-color">Color</label>
+          <select id="meta-color" class="action-input action-select" bind:value={metaColor}>
+            <option value="">None</option>
+            {#each COLOR_OPTIONS as opt (opt.value)}
+              <option value={opt.value}>{opt.label}</option>
+            {/each}
+          </select>
+        </div>
+
+        <!-- Description -->
+        <div class="meta-field">
+          <label class="al" for="meta-desc">Description</label>
+          <input
+            id="meta-desc"
+            class="action-input"
+            type="text"
+            bind:value={metaDescription}
+            placeholder="Short note about this tag"
+          />
+        </div>
+
+        <!-- Icon -->
+        <div class="meta-field">
+          <label class="al" for="meta-icon">Icon</label>
+          <input
+            id="meta-icon"
+            class="action-input"
+            type="text"
+            bind:value={metaIcon}
+            placeholder="emoji or icon name"
+          />
+        </div>
+
+        <!-- Scope (only for new; for existing, show read-only) -->
+        {#if metaIsNew}
+          <div class="meta-field">
+            <label class="al" for="meta-scope">Scope (optional)</label>
+            <select id="meta-scope" class="action-input action-select" bind:value={metaScopePath}>
+              <option value="">Global (visible everywhere)</option>
+              {#each groups as g (g.path)}
+                <option value={g.path}>{g.path}</option>
+              {/each}
+            </select>
+            {#if metaScopePath}
+              <span class="field-hint"
+                >Visible only within <code>{metaScopePath}</code> and descendants.</span
+              >
+            {/if}
+          </div>
+        {:else if metaScopePath}
+          <div class="meta-field">
+            <span class="al">Scope</span>
+            <span class="tb-scope-badge" style="font-size: 12px;">{metaScopePath}</span>
+          </div>
+        {/if}
+
+        {#if metaError}
+          <div class="action-error">{metaError}</div>
+        {/if}
+      </div>
+
+      <footer class="action-dialog-footer">
+        <button class="btn btn--secondary" onclick={closeMetaDialog}>Cancel</button>
+        <button class="btn btn--primary" disabled={!metaCanSubmit} onclick={commitMeta}>
+          {#if metaBusy}Saving…{:else if metaIsNew}Declare{:else}Save{/if}
+        </button>
+      </footer>
+    </div>
+  </div>
+{/if}
 
 <!-- Action dialog -->
 {#if actionMode && actionTarget}
@@ -937,5 +1167,76 @@
   .btn--danger:hover:not(:disabled) {
     background: var(--tnd-chip-red-fg);
     color: #fff;
+  }
+
+  /* ── Declare button in header ────────────────────────────────────────────── */
+
+  .tb-declare-btn {
+    font-size: 11.5px;
+    padding: 4px 10px;
+    border: 1px solid var(--tnd-line-strong);
+    border-radius: var(--tnd-radius, 4px);
+    background: transparent;
+    color: var(--tnd-text-muted);
+    cursor: pointer;
+    font-family: var(--tnd-font-ui);
+    font-weight: 600;
+    flex-shrink: 0;
+    transition: background 0.08s;
+  }
+
+  .tb-declare-btn:hover {
+    background: var(--tnd-accent-soft);
+    color: var(--tnd-accent-text);
+    border-color: var(--tnd-accent);
+  }
+
+  /* ── Meta dialog extras ───────────────────────────────────────────────────── */
+
+  .meta-dialog {
+    width: 400px;
+  }
+
+  .meta-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .action-input--error {
+    border-color: var(--tnd-chip-red-fg);
+  }
+
+  .action-select {
+    appearance: auto;
+  }
+
+  .meta-name-display {
+    font-family: var(--tnd-font-ui);
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--tnd-accent-text);
+    padding: 4px 0;
+  }
+
+  .field-error {
+    font-size: 11px;
+    color: var(--tnd-chip-red-fg);
+  }
+
+  .field-hint {
+    font-size: 11px;
+    color: var(--tnd-text-faint);
+  }
+
+  .field-hint code {
+    font-family: var(--tnd-font-mono);
+    background: var(--tnd-panel2);
+    padding: 1px 3px;
+    border-radius: var(--tnd-tag-radius, 2px);
+  }
+
+  .required {
+    color: var(--tnd-chip-red-fg);
   }
 </style>
