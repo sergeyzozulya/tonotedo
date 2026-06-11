@@ -993,9 +993,11 @@ fn parse_group_md_scoped_tags(path: &Path) -> CmdResult<(String, String, Vec<Sco
     let body = entry.body.clone();
 
     // Extract the frontmatter text between the first `---` pair by line scanning.
+    // `start` is the byte offset of the first character after the opening fence line.
+    let fm_start = raw.find('\n').map(|n| n + 1).unwrap_or(0);
     let fm_end = find_fm_end(&raw);
     let fm_lines: &str = if let Some(end) = fm_end {
-        &raw[4..end] // skip "---\n"
+        &raw[fm_start..end] // skip opening "---\n" (or "---\r\n")
     } else {
         ""
     };
@@ -1011,15 +1013,15 @@ fn find_fm_end(raw: &str) -> Option<usize> {
     if !raw.starts_with("---\n") && !raw.starts_with("---\r\n") {
         return None;
     }
-    // Search for \n---\n after the opening fence.
+    // Skip past the opening fence line ("---\n" or "---\r\n").
     let start = raw.find('\n')? + 1;
     let tail = &raw[start..];
-    // Find either "\n---\n" or "\n---\r\n"
+    // Find closing "---\n" or "---\r\n" within the tail.
     for (i, _) in tail.char_indices() {
         let rest = &tail[i..];
         if rest.starts_with("---\n") || rest.starts_with("---\r\n") {
-            // `i` is the position of `---` in `tail`; offset in `raw`:
-            return Some(4 + i); // 4 = len of "---\n"
+            // Return the absolute offset of the closing fence's start in `raw`.
+            return Some(start + i);
         }
     }
     None
@@ -2562,5 +2564,38 @@ pub mod tests {
         let fix = Fixture::new();
         let err = delete_orphan_avatar_inner(&fix.root, "work/note.md").unwrap_err();
         assert_eq!(err.code, "invalid_argument");
+    }
+
+    // ── find_fm_end / CRLF round-trip ─────────────────────────────────────────
+
+    #[test]
+    fn set_tag_scoped_round_trips_crlf_opening_fence() {
+        // _group.md with CRLF opening fence must not corrupt frontmatter.
+        let fix = Fixture::new();
+        std::fs::create_dir_all(fix.root.join("work/atlas")).unwrap();
+        // Write a _group.md with CRLF opening fence.
+        let initial = "---\r\nname: Atlas\n---\nbody\n";
+        std::fs::write(fix.root.join("work/atlas/_group.md"), initial).unwrap();
+
+        let tag = TagInputDto {
+            name: "atlas/blocked".to_string(),
+            color: Some("red".to_string()),
+            description: None,
+            icon: None,
+            scope_path: Some("work/atlas".to_string()),
+        };
+        set_tag_inner(&fix.root, &tag).unwrap();
+
+        let content = std::fs::read_to_string(fix.root.join("work/atlas/_group.md")).unwrap();
+        // The name field from the CRLF file must survive intact.
+        assert!(
+            content.contains("name: Atlas"),
+            "group name must survive CRLF round-trip, got: {:?}",
+            content
+        );
+        assert!(
+            content.contains("atlas/blocked"),
+            "new scoped tag must appear"
+        );
     }
 }

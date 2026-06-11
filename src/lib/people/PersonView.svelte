@@ -220,7 +220,7 @@
   // Spec 0005 §Avatars: scan _people/ for files no longer referenced by any
   // declared person and offer removal with confirmation.
 
-  let todyOpen = $state(false);
+  let tidyOpen = $state(false);
   let orphans = $state<OrphanAvatar[]>([]);
   let tidyBusy = $state(false);
   let tidyError = $state<string | null>(null);
@@ -239,11 +239,11 @@
     } else {
       tidyError = result.error.message;
     }
-    todyOpen = true;
+    tidyOpen = true;
   }
 
   function closeTidy(): void {
-    todyOpen = false;
+    tidyOpen = false;
     orphans = [];
     tidySelected.clear();
     tidyError = null;
@@ -252,14 +252,20 @@
   async function commitTidy(): Promise<void> {
     tidyBusy = true;
     tidyError = null;
-    let failed = 0;
+    const failedPaths: string[] = [];
     for (const path of tidySelected) {
       const r = await ipc.delete_orphan_avatar(path);
-      if (!r.ok) failed++;
+      if (r.ok) {
+        // Remove successfully deleted file from the orphans list immediately.
+        orphans = orphans.filter((o) => o.path !== path);
+        tidySelected.delete(path);
+      } else {
+        failedPaths.push(path);
+      }
     }
     tidyBusy = false;
-    if (failed > 0) {
-      tidyError = `${failed} file(s) could not be deleted.`;
+    if (failedPaths.length > 0) {
+      tidyError = `${failedPaths.length} file(s) could not be deleted.`;
     } else {
       closeTidy();
     }
@@ -498,7 +504,7 @@
 {/if}
 
 <!-- Tidy avatars dialog -->
-{#if todyOpen}
+{#if tidyOpen}
   <div
     class="pv-backdrop"
     role="presentation"
