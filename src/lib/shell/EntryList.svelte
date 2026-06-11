@@ -138,7 +138,11 @@
             {#if entry.tags.length > 0}
               <div class="entry-item-meta">
                 {#each entry.tags.slice(0, 3) as tag (tag)}
-                  <span class="entry-item-tag">#{tag}</span>
+                  <span class="entry-item-tag"
+                    ><span class="entry-item-tag-hash">#</span><span class="entry-item-tag-name"
+                      >{tag}</span
+                    ></span
+                  >
                 {/each}
                 {#if entry.tags.length > 3}
                   <span class="entry-item-tag entry-item-tag--more">+{entry.tags.length - 3}</span>
@@ -344,19 +348,58 @@
     margin-top: 2px;
   }
 
+  /* Tag shapes per theme flag (design bits.jsx TTag): default = hash. */
   .entry-item-tag {
-    font-size: 11px;
+    font-size: 11.5px;
     color: var(--tnd-accent-text);
-    background: var(--tnd-accent-soft);
-    border-radius: 3px;
-    padding: 1px 5px;
-    font-weight: 500;
+    font-weight: 600;
     white-space: nowrap;
+    display: inline-flex;
+    align-items: center;
+  }
+  .entry-item-tag-hash {
+    opacity: 1;
+  }
+
+  /* Mono → bracket: mono-font #name */
+  :global([data-tnd-theme="mono"]) .entry-item-tag {
+    font-family: var(--tnd-font-mono);
+  }
+
+  /* Editorial → caps: UPPERCASE name, mono, hairline underline, no hash */
+  :global([data-tnd-theme="editorial"]) .entry-item-tag {
+    font-family: var(--tnd-font-mono);
+    color: var(--tnd-text);
+    font-size: 9.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    border-bottom: 1px solid var(--tnd-line-strong);
+    padding-bottom: 1px;
+  }
+  :global([data-tnd-theme="editorial"]) .entry-item-tag-hash {
+    display: none;
+  }
+
+  /* Fog + Soft → pill: padded chip with panel2 bg + border, faded hash */
+  :global([data-tnd-theme="fog"]) .entry-item-tag,
+  :global([data-tnd-theme="soft"]) .entry-item-tag {
+    background: var(--tnd-panel2);
+    color: var(--tnd-text-muted);
+    border: 1px solid var(--tnd-line);
+    border-radius: var(--tnd-tag-radius);
+    padding: 1px 8px;
+    gap: 2px;
+  }
+  :global([data-tnd-theme="fog"]) .entry-item-tag-hash,
+  :global([data-tnd-theme="soft"]) .entry-item-tag-hash {
+    opacity: 0.5;
   }
 
   .entry-item-tag--more {
     color: var(--tnd-text-faint);
     background: var(--tnd-panel2);
+    border-radius: var(--tnd-tag-radius);
+    padding: 1px 5px;
   }
 
   /* ── Responsive: on narrow viewports, entry list is a full screen ─────────── */
