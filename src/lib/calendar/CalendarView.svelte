@@ -6,6 +6,7 @@
   //   group        — optional group filter (from sidebar selection)
   //   onSelectEntry — callback when user clicks an item (opens docked side panel)
 
+  import { untrack } from "svelte";
   import { ipc } from "../ipc/index.js";
   import type { CalendarWindowItem } from "../ipc/types.js";
   import type { CalItem, CalDate, CalendarViewMode } from "./types.js";
@@ -47,8 +48,11 @@
   let viewMode = $state<CalendarViewMode>("month");
 
   // Apply externally requested view when it changes.
+  // Use untrack to read viewMode without subscribing to it — the effect
+  // must only re-run when requestedView changes, not on every internal
+  // viewMode mutation (which would override the user's own navigation).
   $effect(() => {
-    if (requestedView && requestedView !== viewMode) {
+    if (requestedView && requestedView !== untrack(() => viewMode)) {
       viewMode = requestedView;
     }
   });
