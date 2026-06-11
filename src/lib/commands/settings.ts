@@ -244,25 +244,26 @@ export function loadUserBindings(): Map<string, ChordString[]> {
 
 /** Persist a single binding override. Merges with existing settings. */
 export function saveBinding(commandId: string, chords: ChordString[]): void {
-  const settings = settingsStore.load();
-  const bindings = settings.bindings ?? {};
-  bindings[commandId] = chords;
-  settingsStore.save({ ...settings, bindings });
+  const bindings = {
+    ...(userSettingsCache.bindings ?? settingsStore.load().bindings ?? {}),
+    [commandId]: chords,
+  };
+  settings_set_user("bindings", bindings);
 }
 
 /** Remove a binding override (falling back to command default). */
 export function removeBindingOverride(commandId: string): void {
-  const settings = settingsStore.load();
-  if (!settings.bindings) return;
+  const existing = userSettingsLoaded ? userSettingsCache.bindings : settingsStore.load().bindings;
+  if (!existing) return;
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const { [commandId]: _removed, ...rest } = settings.bindings;
-  settingsStore.save({ ...settings, bindings: rest });
+  const { [commandId]: _removed, ...rest } = existing;
+  settings_set_user("bindings", rest);
 }
 
 /** Save which preset was last applied (import-once semantics). */
 export function savePreset(id: PresetId, modalEditor: boolean): void {
-  const settings = settingsStore.load();
-  settingsStore.save({ ...settings, preset: id, modalEditor });
+  settings_set_user("preset", id);
+  settings_set_user("modalEditor", modalEditor);
 }
 
 // ── Scoped facade helpers (refs #32) ──────────────────────────────────────────

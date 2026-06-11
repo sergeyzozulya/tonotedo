@@ -90,7 +90,7 @@ describe("initSettingsFromIpc", () => {
   it("keeps the previous cache on IPC failure", async () => {
     const ipc = makeIpc({
       settings_get_user: vi.fn(async () => ({
-        ok: false,
+        ok: false as const,
         error: { code: "io_error" as const, message: "disk full" },
       })),
     });
@@ -124,7 +124,7 @@ describe("settings_set_user write-through", () => {
     await new Promise((r) => setTimeout(r, 0));
 
     expect(setUser).toHaveBeenCalledOnce();
-    const [patch] = setUser.mock.calls[0] as [Record<string, unknown>];
+    const patch = (setUser.mock.calls[0] as unknown as [Record<string, unknown>])[0];
     expect(patch["fontSize"]).toBe(18);
   });
 
@@ -192,7 +192,7 @@ describe("settings_set_library write-through", () => {
     await new Promise((r) => setTimeout(r, 0));
 
     expect(setLib).toHaveBeenCalledOnce();
-    const [patch] = setLib.mock.calls[0] as [Record<string, unknown>];
+    const patch = (setLib.mock.calls[0] as unknown as [Record<string, unknown>])[0];
     // The TS → wire mapping: assetFolder → asset_folder.
     expect(patch["asset_folder"]).toBe("_media");
     expect("assetFolder" in patch).toBe(false);
