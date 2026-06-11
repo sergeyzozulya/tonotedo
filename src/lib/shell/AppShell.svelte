@@ -710,7 +710,14 @@
   function openCalendar(view?: import("../calendar/types.js").CalendarViewMode): void {
     calendarOpen = true;
     mainZone = "editor";
-    if (view) calendarRequestedView = view;
+    if (view) {
+      calendarRequestedView = view;
+      // Reset after one microtask so the effect in CalendarView fires on each
+      // invocation — even if the same view is commanded twice in a row.
+      Promise.resolve().then(() => {
+        calendarRequestedView = null;
+      });
+    }
     if (narrow) mobilePush("calendar");
   }
 
