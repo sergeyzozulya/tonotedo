@@ -76,12 +76,17 @@
 {#if open}
   <div class="sheet-backdrop" role="presentation" onmousedown={handleBackdropClick}>
     <div class="sheet-panel" role="dialog" aria-label="Keyboard Cheatsheet" aria-modal="true">
+      <!-- Header -->
       <div class="sheet-header">
-        <span class="sheet-title">Keyboard Shortcuts</span>
-        <span class="sheet-zone">{zoneTitle}</span>
-        <button class="sheet-close" onclick={close} aria-label="Close cheatsheet">×</button>
+        <span class="sheet-title">Cheatsheet</span>
+        <span class="sheet-header-right">
+          <span class="sheet-zone-label">zone:</span>
+          <span class="sheet-zone">{zoneTitle}</span>
+          <kbd class="sheet-trigger-hint">?</kbd>
+        </span>
       </div>
 
+      <!-- Body: 2-column grid of sections -->
       <div class="sheet-body">
         {#if groupedCommands.length === 0}
           <p class="sheet-empty">No shortcuts available in this zone.</p>
@@ -89,135 +94,158 @@
 
         {#each groupedCommands as group (group.category)}
           <section class="sheet-section">
-            <h3 class="sheet-section-title">{group.category}</h3>
-            <table class="sheet-table">
-              <tbody>
-                {#each group.items as { cmd, binding } (cmd.id)}
-                  <tr class="sheet-row">
-                    <td class="sheet-name">{cmd.name}</td>
-                    <td class="sheet-kbd-cell">
-                      {#if binding === "–"}
-                        <span class="sheet-no-binding">–</span>
-                      {:else}
-                        <kbd class="sheet-kbd">{binding}</kbd>
-                      {/if}
-                    </td>
-                  </tr>
-                {/each}
-              </tbody>
-            </table>
+            <h3 class="sheet-section-title">[ {group.category.toUpperCase()} ]</h3>
+            {#each group.items as { cmd, binding } (cmd.id)}
+              <div class="sheet-row">
+                <span class="sheet-name">{cmd.name}</span>
+                <span class="sheet-kbd-cell">
+                  {#if binding === "–"}
+                    <span class="sheet-no-binding">–</span>
+                  {:else}
+                    <kbd class="sheet-kbd">{binding}</kbd>
+                  {/if}
+                </span>
+              </div>
+            {/each}
           </section>
         {/each}
+      </div>
+
+      <!-- Footer -->
+      <div class="sheet-footer">
+        commands reflect the active zone · rebind any in
+        <span class="sheet-footer-link">Settings → Keymap</span>
       </div>
     </div>
   </div>
 {/if}
 
 <style>
+  /* ── Backdrop: dim the workspace behind ──────────────────────────────────── */
+
   .sheet-backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.35);
+    background: rgba(0, 0, 0, 0.5);
     display: flex;
     align-items: center;
-    justify-content: flex-end;
+    justify-content: center;
     z-index: 8500;
   }
 
+  /* ── Centered modal panel ────────────────────────────────────────────────── */
+
   .sheet-panel {
-    width: min(400px, 95vw);
-    height: 100vh;
-    background: var(--tnd-panel, #fbfaf6);
-    border-left: 1px solid var(--tnd-line-strong, rgba(40, 38, 28, 0.3));
+    width: min(860px, 95vw);
+    max-height: 640px;
+    background: var(--tnd-panel);
+    border: 1px solid var(--tnd-line-strong);
+    border-radius: var(--tnd-radius);
+    box-shadow:
+      var(--tnd-shadow),
+      0 24px 80px rgba(0, 0, 0, 0.5);
     display: flex;
     flex-direction: column;
-    font-family: ui-sans-serif, system-ui, sans-serif;
+    font-family: var(--tnd-font-ui);
     font-size: 13px;
-    color: var(--tnd-text, #1f1e1a);
+    color: var(--tnd-text);
     overflow: hidden;
   }
+
+  /* ── Header ──────────────────────────────────────────────────────────────── */
 
   .sheet-header {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 14px 16px;
-    border-bottom: 1px solid var(--tnd-line, rgba(40, 38, 28, 0.16));
+    justify-content: space-between;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--tnd-line-strong);
+    flex-shrink: 0;
   }
 
   .sheet-title {
-    font-weight: 600;
     font-size: 14px;
-    flex: 1;
+    font-weight: 700;
+    color: var(--tnd-text);
+    text-transform: var(--tnd-label-transform);
+    letter-spacing: var(--tnd-label-spacing);
+  }
+
+  .sheet-header-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .sheet-zone-label {
+    font-size: 11px;
+    color: var(--tnd-text-faint);
   }
 
   .sheet-zone {
     font-size: 11px;
-    color: var(--tnd-text-faint, #a8a393);
-    background: var(--tnd-panel2, #eeebe2);
-    border-radius: 4px;
-    padding: 2px 7px;
+    font-weight: 700;
+    color: var(--tnd-accent-text);
+    padding: 2px 8px;
+    border: 1px solid var(--tnd-line-strong);
+    letter-spacing: 0.02em;
   }
 
-  .sheet-close {
-    border: none;
-    background: none;
-    cursor: pointer;
-    color: var(--tnd-text-muted, #7c7868);
-    font-size: 18px;
-    padding: 0;
-    line-height: 1;
+  .sheet-trigger-hint {
+    font-family: var(--tnd-font-mono);
+    font-size: 11px;
+    color: var(--tnd-text-faint);
+    padding: 2px 6px;
+    border: 1px solid var(--tnd-line);
   }
+
+  /* ── Body: 2-column grid ─────────────────────────────────────────────────── */
 
   .sheet-body {
     flex: 1;
     overflow-y: auto;
-    padding: 8px 0;
+    padding: 20px;
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 0 36px;
+    align-content: start;
+    scrollbar-width: thin;
   }
 
   .sheet-empty {
-    padding: 20px 16px;
-    color: var(--tnd-text-muted, #7c7868);
+    grid-column: 1 / -1;
+    padding: 20px 0;
+    color: var(--tnd-text-muted);
     text-align: center;
   }
 
-  .sheet-section {
-    padding: 8px 0;
-  }
+  /* ── Section ─────────────────────────────────────────────────────────────── */
 
-  .sheet-section + .sheet-section {
-    border-top: 1px solid var(--tnd-line, rgba(40, 38, 28, 0.16));
+  .sheet-section {
+    margin-bottom: 16px;
   }
 
   .sheet-section-title {
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--tnd-text-faint, #a8a393);
-    padding: 6px 16px 4px;
-    margin: 0;
-    font-weight: 600;
-  }
-
-  .sheet-table {
-    width: 100%;
-    border-collapse: collapse;
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: var(--tnd-text-faint);
+    margin: 0 0 6px;
+    padding-bottom: 5px;
+    border-bottom: 1px solid var(--tnd-line);
+    font-family: var(--tnd-font-ui);
   }
 
   .sheet-row {
     display: flex;
-    justify-content: space-between;
     align-items: center;
-    padding: 4px 16px;
-  }
-
-  .sheet-row:hover {
-    background: var(--tnd-panel2, #eeebe2);
+    justify-content: space-between;
+    padding: 5px 0;
   }
 
   .sheet-name {
-    flex: 1;
-    font-size: 13px;
+    font-size: 12.5px;
+    color: var(--tnd-text);
   }
 
   .sheet-kbd-cell {
@@ -225,16 +253,57 @@
   }
 
   .sheet-no-binding {
-    color: var(--tnd-text-faint, #a8a393);
+    color: var(--tnd-text-faint);
+    font-size: 11px;
   }
 
   .sheet-kbd {
-    font-family: ui-monospace, monospace;
+    font-family: var(--tnd-font-mono);
+    font-size: 11.5px;
+    font-weight: 700;
+    color: var(--tnd-accent-text);
+    background: var(--tnd-panel2);
+    border: 1px solid var(--tnd-line);
+    border-radius: var(--tnd-radius);
+    padding: 2px 8px;
+  }
+
+  /* ── Footer ──────────────────────────────────────────────────────────────── */
+
+  .sheet-footer {
+    flex-shrink: 0;
+    padding: 10px 18px;
+    border-top: 1px solid var(--tnd-line-strong);
     font-size: 11px;
-    color: var(--tnd-text-muted, #7c7868);
-    background: var(--tnd-panel2, #eeebe2);
-    border: 1px solid var(--tnd-line-strong, rgba(40, 38, 28, 0.3));
-    border-radius: 4px;
-    padding: 1px 6px;
+    color: var(--tnd-text-faint);
+    font-family: var(--tnd-font-ui);
+  }
+
+  .sheet-footer-link {
+    color: var(--tnd-accent-text);
+  }
+
+  /* ── Per-theme: Mono uses mono font throughout ───────────────────────────── */
+
+  :global([data-tnd-theme="mono"]) .sheet-panel,
+  :global([data-tnd-theme="mono"]) .sheet-title,
+  :global([data-tnd-theme="mono"]) .sheet-name,
+  :global([data-tnd-theme="mono"]) .sheet-section-title,
+  :global([data-tnd-theme="mono"]) .sheet-footer,
+  :global([data-tnd-theme="mono"]) .sheet-zone-label,
+  :global([data-tnd-theme="mono"]) .sheet-zone {
+    font-family: var(--tnd-font-mono);
+  }
+
+  :global([data-tnd-theme="mono"]) .sheet-kbd,
+  :global([data-tnd-theme="mono"]) .sheet-trigger-hint {
+    border-radius: 0;
+  }
+
+  /* ── Per-theme: Editorial → mono font for section headers ───────────────── */
+
+  :global([data-tnd-theme="editorial"]) .sheet-section-title {
+    font-family: var(--tnd-font-mono);
+    letter-spacing: 0.1em;
   }
 </style>
