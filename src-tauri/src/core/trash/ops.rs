@@ -41,6 +41,9 @@ pub enum TrashError {
     NotFound(String),
     /// Manifest could not be parsed.
     BadManifest(serde_json::Error),
+    /// The trash id was not a valid ULID, or a manifest carried an unsafe
+    /// `original_rel_path` (security: final-review F4 — path-join injection).
+    InvalidId(String),
 }
 
 impl std::fmt::Display for TrashError {
@@ -49,6 +52,7 @@ impl std::fmt::Display for TrashError {
             TrashError::Io(e) => write!(f, "trash io error: {e}"),
             TrashError::NotFound(id) => write!(f, "trash slot not found: {id}"),
             TrashError::BadManifest(e) => write!(f, "trash manifest parse error: {e}"),
+            TrashError::InvalidId(id) => write!(f, "invalid trash id: {id}"),
         }
     }
 }
@@ -59,6 +63,16 @@ impl From<io::Error> for TrashError {
     fn from(e: io::Error) -> Self {
         TrashError::Io(e)
     }
+}
+
+/// Reject any trash id that is not a syntactically valid ULID before it is ever
+/// joined into `.tonotedo/trash/<id>`. Without this, `purge("../../x")` or
+/// `purge("/etc/passwd")` would `remove_dir_all` an arbitrary directory
+/// (final-review F4).
+fn validate_trash_id(trash_id: &str) -> Result<(), TrashError> {
+    Ulid::from_string(trash_id)
+        .map(|_| ())
+        .map_err(|_| TrashError::InvalidId(trash_id.to_string()))
 }
 
 // ── Path helpers ─────────────────────────────────────────────────────────────
@@ -317,8 +331,18 @@ pub struct RestoreOutcome {
 /// inserted before the `.md` extension; for groups it is appended to the folder name.
 /// The actual restored path is reported in `RestoreOutcome::path`.
 pub fn restore(library_root: &Path, trash_id: &str) -> Result<RestoreOutcome, TrashError> {
+    validate_trash_id(trash_id)?;
     let manifest = read_manifest(library_root, trash_id)?;
     let slot = slot_dir(library_root, trash_id);
+
+    // The manifest's original_rel_path is data the slot carries; a crafted slot
+    // could point it outside the library. Re-validate before joining (F4).
+    if !crate::core::frontmatter::is_safe_rel_path(&manifest.original_rel_path) {
+        return Err(TrashError::InvalidId(format!(
+            "unsafe original_rel_path in manifest: {}",
+            manifest.original_rel_path
+        )));
+    }
 
     // Locate the trashed item inside the slot (everything except manifest.json).
     let item_name = find_slot_item(&slot)?;
@@ -351,6 +375,7 @@ pub fn restore(library_root: &Path, trash_id: &str) -> Result<RestoreOutcome, Tr
 /// The confirmed-deletion UI lives in the frontend; this function only removes the
 /// files.  Returns `Ok(())` if the slot does not exist (idempotent).
 pub fn purge(library_root: &Path, trash_id: &str) -> Result<(), TrashError> {
+    validate_trash_id(trash_id)?;
     let slot = slot_dir(library_root, trash_id);
     if slot.exists() {
         std::fs::remove_dir_all(&slot)?;
@@ -732,7 +757,7 @@ mod tests {
     fn purge_nonexistent_is_ok() {
         let lib = temp_library();
         // Must not error on a missing slot.
-        purge(&lib, "01NONEXISTENTID0000000000").unwrap();
+        purge(&lib, "00000000000000000000000000").unwrap();
     }
 
     // ── purge_all ─────────────────────────────────────────────────────────────
@@ -794,5 +819,67 @@ mod tests {
         let expected = PathBuf::from("my-group-restored-1");
         assert_eq!(outcome.path, expected);
         assert!(lib.join(&expected).join("entry.md").exists());
+    }
+}
+
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    // F4 — trash id injection.
+    #[test]
+    fn purge_rejects_non_ulid_ids() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let victim = dir.path().parent().unwrap().join("victim-dir");
+        std::fs::create_dir_all(&victim).unwrap();
+        // Absolute, traversal, and junk ids must all be refused before any rm.
+        assert!(matches!(
+            purge(root, "/etc/passwd"),
+            Err(TrashError::InvalidId(_))
+        ));
+        assert!(matches!(
+            purge(root, "../../../victim-dir"),
+            Err(TrashError::InvalidId(_))
+        ));
+        assert!(matches!(
+            purge(root, "not-a-ulid"),
+            Err(TrashError::InvalidId(_))
+        ));
+        assert!(victim.exists(), "purge must not delete an arbitrary dir");
+        std::fs::remove_dir_all(&victim).unwrap();
+    }
+
+    #[test]
+    fn restore_rejects_non_ulid_and_unsafe_manifest() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        assert!(matches!(
+            restore(root, "../escape"),
+            Err(TrashError::InvalidId(_))
+        ));
+        // Craft a slot with a valid ULID name but a malicious original_rel_path.
+        let id = Ulid::new().to_string();
+        let slot = slot_dir(root, &id);
+        std::fs::create_dir_all(&slot).unwrap();
+        std::fs::write(slot.join("note.md"), "x").unwrap();
+        let bad = "{\"original_rel_path\":\"/tmp/evil.md\",\"trashed_at\":\"2026-01-01T00:00:00Z\",\"kind\":\"entry\"}";
+        std::fs::write(slot.join("manifest.json"), bad).unwrap();
+        assert!(
+            restore(root, &id).is_err(),
+            "unsafe manifest path must be refused"
+        );
+    }
+
+    #[test]
+    fn valid_ulid_round_trip_still_works() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("work")).unwrap();
+        std::fs::write(root.join("work/note.md"), "hello").unwrap();
+        let id = trash_entry(root, std::path::Path::new("work/note.md")).unwrap();
+        assert!(restore(root, &id).is_ok());
+        assert!(root.join("work/note.md").exists());
     }
 }

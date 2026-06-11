@@ -30,7 +30,7 @@ use serde::Serialize;
 use tauri::State;
 
 use crate::core::{
-    frontmatter::is_reserved,
+    frontmatter::{is_reserved, is_safe_rel_path},
     trash::{self, RestoreOutcome, TrashManifest},
 };
 
@@ -77,12 +77,25 @@ fn validate_group_name(name: &str) -> CmdResult<()> {
     Ok(())
 }
 
-/// Check every component of `rel_path` for reserved names.
-fn validate_path_components(rel_path: &str) -> CmdResult<()> {
-    for component in rel_path.split('/').filter(|c| !c.is_empty()) {
-        validate_group_name(component)?;
+/// Validate a user-supplied, library-relative path before any filesystem op.
+///
+/// Security (final-review F1-F3): the previous version filtered EMPTY
+/// components, which silently accepted a leading-slash absolute path
+/// (`/tmp/evil` -> ["","tmp","evil"] -> `root.join("/tmp/evil")` discards root).
+/// Delegates to the shared `is_safe_rel_path`, which rejects absolute paths,
+/// `..` traversal, empty/`//` components, and reserved components.
+fn validate_rel_path(rel_path: &str) -> CmdResult<()> {
+    if is_safe_rel_path(rel_path) {
+        Ok(())
+    } else {
+        Err(IpcError {
+            code: "invalid_argument",
+            message: format!(
+                "Unsafe path: '{rel_path}' (must be relative, no '..', no reserved names)."
+            ),
+            detail: None,
+        })
     }
-    Ok(())
 }
 
 /// Signal the reconciler for a full rescan after a structural filesystem change.
@@ -119,7 +132,7 @@ pub fn create_group(path: String, state: State<'_, AppState>) -> CmdResult<()> {
 }
 
 pub fn create_group_inner(root: &Path, rel_path: &str) -> CmdResult<()> {
-    validate_path_components(rel_path)?;
+    validate_rel_path(rel_path)?;
 
     let abs = root.join(rel_path);
     if abs.exists() {
@@ -165,6 +178,7 @@ pub fn rename_group(
 }
 
 pub fn rename_group_inner(root: &Path, old_path: &str, new_name: &str) -> CmdResult<()> {
+    validate_rel_path(old_path)?;
     validate_group_name(new_name)?;
 
     let old_abs = root.join(old_path);
@@ -222,6 +236,10 @@ pub fn move_group(
 }
 
 pub fn move_group_inner(root: &Path, src_path: &str, dst_parent: &str) -> CmdResult<()> {
+    validate_rel_path(src_path)?;
+    if !dst_parent.is_empty() {
+        validate_rel_path(dst_parent)?;
+    }
     let src_abs = root.join(src_path);
     if !src_abs.exists() {
         return Err(IpcError::not_found(format!("Group not found: {src_path}")));
@@ -296,6 +314,10 @@ pub fn move_entry(path: String, dst_group: String, state: State<'_, AppState>) -
 }
 
 pub fn move_entry_inner(root: &Path, rel_path: &str, dst_group: &str) -> CmdResult<()> {
+    validate_rel_path(rel_path)?;
+    if !dst_group.is_empty() {
+        validate_rel_path(dst_group)?;
+    }
     let src_abs = root.join(rel_path);
     if !src_abs.exists() {
         return Err(IpcError::not_found(format!("Entry not found: {rel_path}")));
@@ -810,7 +832,58 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_path_buf();
         std::fs::create_dir_all(root.join(".tonotedo")).unwrap();
-        let err = trash::restore(&root, "01NONEXISTENT0000000000000").unwrap_err();
+        let err = trash::restore(&root, "00000000000000000000000000").unwrap_err();
         assert!(matches!(err, crate::core::trash::TrashError::NotFound(_)));
+    }
+}
+
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    // F1/F2/F3 — path validation across all group fs commands.
+    #[test]
+    fn rejects_absolute_and_traversal_paths() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        // create_group: absolute path must not escape root.
+        assert!(create_group_inner(root, "/tmp/evil").is_err());
+        assert!(!std::path::Path::new("/tmp/evil").exists());
+        assert!(create_group_inner(root, "../escape").is_err());
+        assert!(create_group_inner(root, "_reserved").is_err());
+        // a normal nested group still works (parent must exist first).
+        create_group_inner(root, "work").unwrap();
+        create_group_inner(root, "work/atlas").unwrap();
+        assert!(root.join("work/atlas").is_dir());
+    }
+
+    #[test]
+    fn move_entry_cannot_pull_file_from_outside_root() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let outside = dir.path().parent().unwrap().join("outside-secret.md");
+        let _ = fs::write(&outside, "secret");
+        // absolute src is rejected before any fs op.
+        assert!(move_entry_inner(root, "/etc/hosts", "work").is_err());
+        assert!(move_entry_inner(root, "../outside-secret.md", "work").is_err());
+        // absolute/escaping dst is rejected too.
+        fs::create_dir_all(root.join("work")).unwrap();
+        fs::write(root.join("work/note.md"), "x").unwrap();
+        assert!(move_entry_inner(root, "work/note.md", "/tmp").is_err());
+        assert!(move_entry_inner(root, "work/note.md", "../../tmp").is_err());
+        let _ = fs::remove_file(&outside);
+    }
+
+    #[test]
+    fn move_and_rename_group_reject_unsafe_paths() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("work")).unwrap();
+        assert!(move_group_inner(root, "/abs", "work").is_err());
+        assert!(move_group_inner(root, "work", "/tmp").is_err());
+        assert!(rename_group_inner(root, "/abs", "x").is_err());
+        assert!(rename_group_inner(root, "../up", "x").is_err());
     }
 }

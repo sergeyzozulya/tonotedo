@@ -37,6 +37,36 @@ pub fn has_reserved_component(rel_path: &str) -> bool {
         .any(is_reserved)
 }
 
+/// Validate a user-supplied, library-relative path before it is joined onto the
+/// library root for a filesystem operation (security: final-review F1–F4).
+///
+/// Rejects anything that could escape the library or touch app metadata:
+///   - empty
+///   - absolute (`/foo`, leading `\`, or a Windows drive prefix)
+///   - any `..` component (parent traversal)
+///   - any reserved component (`_`- or `.`-prefixed — app metadata, never entries)
+///
+/// With absolute paths and `..` both rejected, `library_root.join(path)` is
+/// guaranteed to stay lexically under `library_root`, so no post-join
+/// canonicalization is needed for the boundary guarantee.
+pub fn is_safe_rel_path(rel_path: &str) -> bool {
+    if rel_path.is_empty() {
+        return false;
+    }
+    if rel_path.starts_with('/')
+        || rel_path.starts_with('\\')
+        || std::path::Path::new(rel_path).is_absolute()
+    {
+        return false;
+    }
+    for comp in rel_path.split(['/', '\\']) {
+        if comp.is_empty() || comp == ".." || is_reserved(comp) {
+            return false;
+        }
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

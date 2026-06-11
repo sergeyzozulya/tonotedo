@@ -24,7 +24,7 @@ use rusqlite::Connection;
 use super::IndexError;
 
 /// Current target schema version.
-const CURRENT_VERSION: i64 = 3;
+const CURRENT_VERSION: i64 = 4;
 
 /// Apply all pending migrations.
 pub fn run(conn: &mut Connection) -> Result<(), IndexError> {
@@ -49,6 +49,9 @@ pub fn run(conn: &mut Connection) -> Result<(), IndexError> {
     }
     if version < 3 {
         apply_v3(conn)?;
+    }
+    if version < 4 {
+        apply_v4(conn)?;
     }
 
     Ok(())
@@ -271,6 +274,48 @@ fn apply_v3(conn: &mut Connection) -> Result<(), IndexError> {
     Ok(())
 }
 
+/// v4: composite primary key `(tag, scope_path)` on `tag_meta`
+/// (security/correctness: final-review F7).
+///
+/// v3 added `scope_path` as a plain column but left the PRIMARY KEY on `tag`
+/// alone, so a global tag and a same-named scoped tag — or the same tag scoped
+/// in two groups — collided on INSERT (`UNIQUE constraint failed: tag_meta.tag`).
+/// The projection error then flagged a rescan and skipped the ledger row,
+/// producing a *persistent rescan loop* and a group whose metadata never
+/// projected. This rebuilds the table with `PRIMARY KEY (tag, scope_path)`.
+///
+/// SQLite permits NULLs in a non-`NOT NULL` PRIMARY KEY column and treats them
+/// as distinct, so global rows keep their `scope_path IS NULL` semantics
+/// untouched while `(tag, group)` pairs become independently unique. Upsert and
+/// query code is unchanged.
+fn apply_v4(conn: &mut Connection) -> Result<(), IndexError> {
+    let tx = conn.transaction()?;
+
+    // Idempotency: skip if tag_meta_new somehow exists from a partial run.
+    tx.execute_batch(
+        "DROP TABLE IF EXISTS tag_meta_new;
+         CREATE TABLE tag_meta_new (
+            tag         TEXT,
+            description TEXT,
+            color       TEXT,
+            icon        TEXT,
+            scope_path  TEXT,
+            PRIMARY KEY (tag, scope_path)
+         );
+         INSERT INTO tag_meta_new (tag, description, color, icon, scope_path)
+            SELECT tag, description, color, icon, scope_path FROM tag_meta;
+         DROP TABLE tag_meta;
+         ALTER TABLE tag_meta_new RENAME TO tag_meta;",
+    )?;
+
+    tx.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '4')",
+        [],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -368,7 +413,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(ver, 3);
+        assert_eq!(ver, 4);
     }
 
     #[test]
@@ -403,7 +448,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(ver, 3, "schema_version must be 3 after all migrations");
+        assert_eq!(ver, 4, "schema_version must be 4 after all migrations");
 
         // pending column must exist exactly once.
         let col_count: i64 = conn
@@ -448,7 +493,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(ver, 3, "schema_version must be 3 after v3 migration");
+        assert_eq!(ver, 4, "schema_version must be 4 after v3+v4 migrations");
 
         // group_meta table must exist.
         let gm: i64 = conn
