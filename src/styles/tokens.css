@@ -82,12 +82,13 @@
   --tnd-editor-cursor: #b5613e; /* = accent */
   --tnd-editor-syntax: #9a4f30; /* = accent-text */
 
-  /* editor layout — theme-invariant; override per instance via EditorSettings.tokens */
-  --tnd-editor-font: ui-sans-serif, system-ui, sans-serif; /* derived */
-  --tnd-editor-font-size: 15px; /* derived */
-  --tnd-editor-line-height: 1.6; /* derived */
-  --tnd-editor-line-width: 42rem; /* derived */
-  --tnd-editor-code-font: ui-monospace, SFMono-Regular, Menlo, monospace; /* derived */
+  /* editor layout — body/code faces follow the active theme (typography.css);
+     Paper/Editorial = Newsreader serif, Mono = JetBrains Mono, etc. */
+  --tnd-editor-font: var(--tnd-font-body, ui-serif, Georgia, serif);
+  --tnd-editor-font-size: 16px; /* derived */
+  --tnd-editor-line-height: 1.65; /* derived */
+  --tnd-editor-line-width: 44rem; /* derived */
+  --tnd-editor-code-font: var(--tnd-font-mono, ui-monospace, Menlo, monospace);
 
   /* frontmatter fold widget — inline replacement chip */
   --tnd-editor-frontmatter-fold-fg: #8c8475; /* derived: = text-muted */

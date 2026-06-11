@@ -127,6 +127,20 @@
   let host: HTMLDivElement;
   let view: EditorView | undefined;
 
+  /** Offset of the first body character after a leading `---` frontmatter block
+   * (0 if there is none). Used to seat the initial cursor in the prose. */
+  function bodyStartOffset(text: string): number {
+    if (!text.startsWith("---\n") && !text.startsWith("---\r\n")) return 0;
+    const close = text.indexOf("\n---", 3);
+    if (close === -1) return 0;
+    // Skip past the closing fence line and any blank line that follows.
+    let i = text.indexOf("\n", close + 1);
+    if (i === -1) return text.length;
+    i += 1;
+    while (i < text.length && (text[i] === "\n" || text[i] === "\r")) i += 1;
+    return Math.min(i, text.length);
+  }
+
   /** Apply settings as inline `--tnd-*` properties; theme.ts reads them. */
   function applySettings(el: HTMLElement, s: EditorSettings) {
     if (s.font) el.style.setProperty("--tnd-editor-font", s.font);
@@ -148,6 +162,10 @@
       parent: host,
       state: EditorState.create({
         doc,
+        // Land the cursor in the body (past frontmatter) so the YAML stays
+        // folded on open — matches the design, where properties live in the
+        // panel, not the prose. cursor-reveal still expands it on click.
+        selection: { anchor: bodyStartOffset(doc) },
         extensions: [
           // Precedence (design-0003):
           //   layer 1: frontmatterFold (earliest = highest precedence in CM6)
