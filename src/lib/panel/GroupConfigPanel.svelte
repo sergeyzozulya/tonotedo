@@ -158,7 +158,8 @@
     if (localIcon.trim()) config.icon = localIcon.trim();
     if (localColor.trim()) config.color = localColor.trim();
     if (localView) config.view = localView;
-    if (Object.keys(schema).length > 0) config.schema = schema;
+    // Always include schema so that removing all rows clears the stored schema.
+    config.schema = schema;
 
     const res = await ipc.update_group_config(groupPath, config);
     saving = false;

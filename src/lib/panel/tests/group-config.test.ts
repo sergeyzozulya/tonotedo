@@ -279,6 +279,25 @@ describe("mock IPC — group config round-trip", () => {
     expect(res.value.color).toBe("#aabbcc"); // preserved
   });
 
+  it("update_group_config with empty schema clears stored schema", async () => {
+    const { mock } = await import("../../ipc/mock.js");
+    const testPath = "test-clear-schema";
+
+    // Write a config with a schema.
+    await mock.update_group_config(testPath, {
+      schema: { myProp: { type: "string" } },
+    });
+
+    // Clear the schema by sending an empty schema object.
+    await mock.update_group_config(testPath, { schema: {} });
+
+    const res = await mock.get_group_config(testPath);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.schema).toBeDefined();
+    expect(Object.keys(res.value.schema!)).toHaveLength(0);
+  });
+
   it("effective_schema uses groupConfigStore schema", async () => {
     const { mock } = await import("../../ipc/mock.js");
     const res = await mock.effective_schema("work/atlas");

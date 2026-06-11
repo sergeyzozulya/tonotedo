@@ -203,6 +203,9 @@
 
   function openGroupConfig(path: string): void {
     groupConfigPath = path;
+    // Ensure the properties zone is visible so the panel appears immediately.
+    mainZone = "editor";
+    propertiesVisible = true;
   }
 
   function closeGroupConfig(): void {
