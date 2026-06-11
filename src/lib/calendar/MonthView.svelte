@@ -85,25 +85,27 @@
 </script>
 
 <div class="month-view">
-  <!-- Weekday headers -->
+  <!-- Weekday headers: MON TUE … SUN, right-aligned, faint, 10px uppercase -->
   <div class="month-header-row">
-    {#each WEEKDAY_SHORT as day (day)}
-      <div class="month-header-cell">{day}</div>
+    {#each WEEKDAY_SHORT as day, i (day)}
+      <div class="month-header-cell" class:month-header-cell--last={i === 6}>{day}</div>
     {/each}
   </div>
 
-  <!-- Grid rows -->
-  {#each grid as row, ri (ri)}
-    <div class="month-row">
+  <!-- Grid: flat 7-col CSS grid, auto-rows fill height -->
+  <div class="month-grid">
+    {#each grid as row, ri (ri)}
       {#each row as d, ci (ci)}
         {@const dayItems = itemsForDay(d)}
         {@const [visible, overflow] = overflowSplit(dayItems, MAX_VISIBLE)}
         {@const isActive = isCurrentMonth(d)}
+        {@const today = isToday(d)}
         <div
           class="month-cell"
-          class:month-cell--today={isToday(d)}
+          class:month-cell--today={today}
           class:month-cell--other-month={!isActive}
           class:month-cell--drop={dropTarget === dayKey(d)}
+          class:month-cell--last-col={ci === 6}
           role="gridcell"
           tabindex="0"
           aria-label={`${d.year}-${String(d.month).padStart(2, "0")}-${String(d.day).padStart(2, "0")}`}
@@ -111,15 +113,19 @@
           ondragleave={onDragLeave}
           ondrop={(e) => onDrop(e, d)}
         >
-          <span class="month-cell-num" class:month-cell-num--today={isToday(d)}>{d.day}</span>
+          <!-- Date number: top-right, badge style when today -->
+          <div class="month-cell-date-row">
+            <span class="month-cell-num" class:month-cell-num--today={today}>{d.day}</span>
+          </div>
 
+          <!-- Event bars -->
           <div class="month-cell-items">
             {#each visible as item (item.entryId + (item.occurrenceKey ?? ""))}
               <button
-                class="cal-chip"
-                class:cal-chip--selected={selectedItemId === item.entryId}
-                class:cal-chip--past={isPast(d)}
-                style={item.groupColor ? `--chip-color: ${item.groupColor}` : ""}
+                class="cal-bar"
+                class:cal-bar--selected={selectedItemId === item.entryId}
+                class:cal-bar--past={isPast(d)}
+                style={item.groupColor ? `--bar-color: ${item.groupColor}` : ""}
                 draggable="true"
                 ondragstart={(e) => onDragStart(e, item)}
                 onclick={() => onSelectItem(item)}
@@ -133,8 +139,8 @@
           </div>
         </div>
       {/each}
-    </div>
-  {/each}
+    {/each}
+  </div>
 </div>
 
 <style>
@@ -145,6 +151,9 @@
     overflow: hidden;
   }
 
+  /* ── Weekday header row ───────────────────────────────────────────────────────
+     Design: 7-col grid, 10px uppercase fw700 letterSpacing 0.08em, faint,
+     right-aligned per cell, borderBottom lineStrong. */
   .month-header-row {
     display: grid;
     grid-template-columns: repeat(7, 1fr);
@@ -154,27 +163,38 @@
   }
 
   .month-header-cell {
-    padding: 6px 0;
-    text-align: center;
-    font-size: 10.5px;
+    padding: 6px 8px;
+    text-align: right;
+    font-size: 10px;
     font-weight: 700;
-    letter-spacing: 0.06em;
+    letter-spacing: 0.08em;
     text-transform: uppercase;
     color: var(--tnd-text-faint);
+    border-right: 1px solid var(--tnd-line);
+    font-family: var(--tnd-font-ui);
   }
 
-  .month-row {
+  .month-header-cell--last {
+    border-right: none;
+  }
+
+  /* ── Grid: flex:1, 7-col × auto-rows filling height ──────────────────────── */
+  .month-grid {
+    flex: 1;
     display: grid;
     grid-template-columns: repeat(7, 1fr);
-    flex: 1;
+    grid-auto-rows: 1fr;
     min-height: 0;
+    overflow: hidden;
   }
 
+  /* ── Day cell ────────────────────────────────────────────────────────────────
+     Design: padding 5px, gap 2px, borderRight line, borderBottom line.
+     Today cell: accentSoft bg.  Other-month: faint/muted opacity. */
   .month-cell {
     border-right: 1px solid var(--tnd-line);
     border-bottom: 1px solid var(--tnd-line);
-    padding: 4px 5px;
-    min-height: 72px;
+    padding: 5px;
     display: flex;
     flex-direction: column;
     gap: 2px;
@@ -182,20 +202,30 @@
     transition: background 0.08s;
   }
 
-  .month-cell:last-child {
+  .month-cell--last-col {
     border-right: none;
   }
 
   .month-cell--today {
-    background: var(--tnd-sel);
+    background: var(--tnd-accent-soft);
   }
 
   .month-cell--other-month {
-    opacity: 0.45;
+    opacity: 0.4;
   }
 
   .month-cell--drop {
     background: var(--tnd-accent-soft) !important;
+    outline: 1px solid var(--tnd-accent);
+    outline-offset: -1px;
+  }
+
+  /* ── Date number: top-right ──────────────────────────────────────────────────
+     Design: right-justified row; number 11.5px fw500 muted; today: accent
+     background, 18×18 badge, white text fw700. */
+  .month-cell-date-row {
+    display: flex;
+    justify-content: flex-end;
   }
 
   .month-cell-num {
@@ -203,23 +233,27 @@
     font-weight: 500;
     color: var(--tnd-text-muted);
     line-height: 1;
-    margin-bottom: 2px;
-    align-self: flex-start;
+    min-width: 18px;
+    height: 18px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 2px;
+    font-family: var(--tnd-font-ui);
   }
 
+  /* Today badge: accent bg, white text, radius from --tnd-radius token.
+     Mono/Editorial → 0px (square).  Soft/Fog → rounded. */
   .month-cell-num--today {
     background: var(--tnd-accent);
     color: #fff;
-    border-radius: 50%;
-    width: 20px;
-    height: 20px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 11px;
     font-weight: 700;
+    border-radius: var(--tnd-radius);
   }
 
+  /* ── Event bars ───────────────────────────────────────────────────────────────
+     Design: height 15px (compact), padding 0 4px, borderLeft 2px group-color,
+     bg panel2, font ui 10.5px, text overflow ellipsis.  No border-radius. */
   .month-cell-items {
     display: flex;
     flex-direction: column;
@@ -228,45 +262,51 @@
     overflow: hidden;
   }
 
-  .month-overflow {
-    font-size: 10px;
-    color: var(--tnd-text-faint);
-    padding: 0 2px;
-    cursor: default;
-  }
-
-  /* Chips */
-  .cal-chip {
+  .cal-bar {
     display: flex;
     align-items: center;
-    padding: 1px 5px;
-    border-radius: 3px;
-    font-size: 11px;
+    height: 15px;
+    padding: 0 4px;
+    border-left: 2px solid var(--bar-color, var(--tnd-accent-text));
+    background: var(--tnd-panel2);
+    font-family: var(--tnd-font-ui);
+    font-size: 10.5px;
     font-weight: 500;
-    font-family: inherit;
-    cursor: pointer;
-    border: none;
-    text-align: left;
-    white-space: nowrap;
+    color: var(--tnd-text);
     overflow: hidden;
+    white-space: nowrap;
     text-overflow: ellipsis;
     width: 100%;
-    background: var(--chip-color, var(--tnd-accent-soft));
-    color: var(--tnd-text);
-    line-height: 1.5;
+    text-align: left;
+    border-top: none;
+    border-right: none;
+    border-bottom: none;
+    cursor: pointer;
+    border-radius: 0;
     transition: opacity 0.1s;
   }
 
-  .cal-chip:hover {
+  .cal-bar:hover {
     opacity: 0.8;
   }
 
-  .cal-chip--selected {
-    outline: 2px solid var(--tnd-accent);
-    outline-offset: 1px;
+  .cal-bar--selected {
+    outline: 1px solid var(--tnd-accent);
+    outline-offset: 0;
   }
 
-  .cal-chip--past {
-    opacity: 0.48;
+  .cal-bar--past {
+    opacity: 0.45;
+  }
+
+  /* ── +N more overflow ────────────────────────────────────────────────────────
+     Design: 10px faint. */
+  .month-overflow {
+    font-size: 10px;
+    color: var(--tnd-text-faint);
+    padding: 0 4px;
+    cursor: default;
+    font-family: var(--tnd-font-ui);
+    white-space: nowrap;
   }
 </style>

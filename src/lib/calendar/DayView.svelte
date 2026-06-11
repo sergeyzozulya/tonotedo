@@ -47,8 +47,9 @@
     }),
   );
 
+  // HOUR_HEIGHT: design uses HOUR_PX = 58px for the day view.
   const HOURS = Array.from({ length: 24 }, (_, i) => i);
-  const HOUR_HEIGHT = 60; // px per hour
+  const HOUR_HEIGHT = 58; // px per hour (design: HOUR_PX = 58)
 
   function timedTop(item: CalItem): number {
     const v = item.value;
@@ -108,27 +109,25 @@
 </script>
 
 <div class="day-view">
-  <!-- All-day row -->
-  {#if allDayItems.length > 0}
-    <div class="day-allday-row">
-      <div class="day-allday-label">All day</div>
-      <div class="day-allday-chips">
-        {#each allDayItems as item (item.entryId + (item.occurrenceKey ?? ""))}
-          <button
-            class="cal-chip"
-            class:cal-chip--selected={selectedItemId === item.entryId}
-            class:cal-chip--past={isPast(date)}
-            style={item.groupColor ? `--chip-color: ${item.groupColor}` : ""}
-            onclick={() => onSelectItem(item)}
-          >
-            {item.title}
-          </button>
-        {/each}
-      </div>
+  <!-- All-day row: 56px label gutter + inline event bars -->
+  <div class="day-allday-row">
+    <span class="day-allday-label">all-day</span>
+    <div class="day-allday-chips">
+      {#each allDayItems as item (item.entryId + (item.occurrenceKey ?? ""))}
+        <button
+          class="cal-bar"
+          class:cal-bar--selected={selectedItemId === item.entryId}
+          class:cal-bar--past={isPast(date)}
+          style={item.groupColor ? `--bar-color: ${item.groupColor}` : ""}
+          onclick={() => onSelectItem(item)}
+        >
+          {item.title}
+        </button>
+      {/each}
     </div>
-  {/if}
+  </div>
 
-  <!-- Timed column -->
+  <!-- Timed column: scrollable, hour grid + positioned event blocks -->
   <div
     class="day-time-col"
     class:day-drop-target={dragOverActive}
@@ -138,7 +137,7 @@
     ondragleave={onDragLeave}
     ondrop={(e) => onDrop(e)}
   >
-    <!-- Hour labels + grid lines -->
+    <!-- Hour rows: label (56px) + borderTop grid line -->
     {#each HOURS as h (h)}
       <div class="day-hour-row" style="top: {h * HOUR_HEIGHT}px; height: {HOUR_HEIGHT}px;">
         <div class="day-hour-label">{formatHour(h)}</div>
@@ -146,22 +145,21 @@
       </div>
     {/each}
 
-    <!-- Timed event chips -->
+    <!-- Timed event blocks: left 62px, right 18px per design -->
     {#each timedItems as item (item.entryId + (item.occurrenceKey ?? ""))}
       <button
-        class="cal-chip cal-chip--timed"
-        class:cal-chip--selected={selectedItemId === item.entryId}
-        class:cal-chip--past={isPast(date)}
-        style="
-          top: {timedTop(item)}px;
-          height: {timedHeight(item)}px;
-          {item.groupColor ? `--chip-color: ${item.groupColor}` : ''}
-        "
+        class="cal-block"
+        class:cal-block--selected={selectedItemId === item.entryId}
+        class:cal-block--past={isPast(date)}
+        style="top: {timedTop(item) + 1}px; height: {Math.max(
+          timedHeight(item) - 3,
+          18,
+        )}px;{item.groupColor ? ` --bar-color: ${item.groupColor}` : ''}"
         draggable="true"
         ondragstart={(e) => onDragStart(e, item)}
         onclick={() => onSelectItem(item)}
       >
-        {item.title}
+        <span class="cal-block-title">{item.title}</span>
       </button>
     {/each}
   </div>
@@ -175,43 +173,49 @@
     overflow: hidden;
   }
 
+  /* ── All-day row ─────────────────────────────────────────────────────────────
+     Design: flex row, minHeight 26, borderBottom line, alignItems center.
+     Label 56px, 9.5px faint, right-aligned. */
   .day-allday-row {
     display: flex;
-    align-items: flex-start;
-    gap: 8px;
-    padding: 6px 8px;
+    align-items: center;
     border-bottom: 1px solid var(--tnd-line);
-    background: var(--tnd-panel);
+    min-height: 26px;
     flex-shrink: 0;
+    background: var(--tnd-panel);
   }
 
   .day-allday-label {
-    font-size: 10.5px;
-    color: var(--tnd-text-faint);
-    padding-top: 2px;
-    white-space: nowrap;
-    width: 44px;
+    width: 56px;
     flex-shrink: 0;
+    font-size: 9.5px;
+    color: var(--tnd-text-faint);
+    padding: 0 6px;
+    text-align: right;
+    font-family: var(--tnd-font-ui);
   }
 
   .day-allday-chips {
     display: flex;
     flex-wrap: wrap;
-    gap: 4px;
+    gap: 3px;
+    padding: 3px 0;
   }
 
+  /* ── Timed scroll area ────────────────────────────────────────────────────── */
   .day-time-col {
     position: relative;
     flex: 1;
     overflow-y: auto;
     min-height: 0;
-    height: calc(24 * 60px);
+    height: calc(24 * 58px);
   }
 
   .day-drop-target {
     background: var(--tnd-accent-soft);
   }
 
+  /* Hour rows: absolute, full width, flex for label + line */
   .day-hour-row {
     position: absolute;
     left: 0;
@@ -221,13 +225,16 @@
     pointer-events: none;
   }
 
+  /* Design: label 56px, 10px faint, right-aligned, padding 2px 6px */
   .day-hour-label {
-    width: 52px;
+    width: 56px;
     flex-shrink: 0;
-    font-size: 10.5px;
+    font-size: 10px;
     color: var(--tnd-text-faint);
     padding: 2px 6px 0;
     text-align: right;
+    box-sizing: border-box;
+    font-family: var(--tnd-font-ui);
   }
 
   .day-hour-line {
@@ -236,50 +243,84 @@
     margin-top: 8px;
   }
 
-  /* Calendar chips */
-  .cal-chip {
-    display: inline-flex;
-    align-items: center;
-    padding: 2px 7px;
-    border-radius: 3px;
-    font-size: 11.5px;
-    font-weight: 500;
-    font-family: inherit;
-    cursor: pointer;
-    border: none;
-    text-align: left;
-    white-space: nowrap;
+  /* ── Timed event block ────────────────────────────────────────────────────────
+     Design: position absolute, left 62px right 18px, panel2 bg, borderLeft 3px
+     group-color, padding 3px 10px, title 12px fw700. */
+  .cal-block {
+    position: absolute;
+    left: 62px;
+    right: 18px;
+    background: var(--tnd-panel2);
+    border-left: 3px solid var(--bar-color, var(--tnd-accent-text));
+    border-top: none;
+    border-right: none;
+    border-bottom: none;
+    padding: 3px 10px;
     overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 200px;
-    background: var(--chip-color, var(--tnd-accent-soft));
-    color: var(--tnd-text);
+    font-family: var(--tnd-font-ui);
+    cursor: pointer;
+    text-align: left;
+    border-radius: 0;
     transition: opacity 0.1s;
-    line-height: 1.4;
   }
 
-  .cal-chip:hover {
+  .cal-block:hover {
     opacity: 0.82;
   }
 
-  .cal-chip--selected {
+  .cal-block--selected {
     outline: 2px solid var(--tnd-accent);
     outline-offset: 1px;
   }
 
-  .cal-chip--past {
+  .cal-block--past {
     opacity: 0.5;
   }
 
-  .cal-chip--timed {
-    position: absolute;
-    left: 56px;
-    right: 8px;
-    max-width: none;
-    border-radius: 4px;
-    padding: 3px 7px;
+  .cal-block-title {
+    display: block;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--tnd-text);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  /* ── All-day bar ──────────────────────────────────────────────────────────── */
+  .cal-bar {
+    display: inline-flex;
+    align-items: center;
+    height: 17px;
+    padding: 0 8px;
+    margin: 1px 0;
+    border-left: 2px solid var(--bar-color, var(--tnd-accent-text));
+    background: var(--tnd-panel2);
+    font-family: var(--tnd-font-ui);
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--tnd-text);
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    text-align: left;
+    border-top: none;
+    border-right: none;
+    border-bottom: none;
+    cursor: pointer;
+    border-radius: 0;
+    transition: opacity 0.1s;
+  }
+
+  .cal-bar:hover {
+    opacity: 0.8;
+  }
+
+  .cal-bar--selected {
+    outline: 1px solid var(--tnd-accent);
+  }
+
+  .cal-bar--past {
+    opacity: 0.5;
   }
 </style>
