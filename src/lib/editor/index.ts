@@ -81,3 +81,13 @@ export { extractHeadings } from "./outline.js";
 export type { OutlineHeading } from "./outline.js";
 export { resolveWikilink } from "./wikilink-resolve.js";
 export type { WikilinkResolution, WikilinkCandidate, ResolveInput } from "./wikilink-resolve.js";
+export {
+  vimCompartment,
+  modalEnabled,
+  vimModeField,
+  setVimMode,
+  currentMode,
+  isModalActive,
+  registerModeListener,
+} from "./vim/index.js";
+export type { VimMode } from "./vim/index.js";

@@ -45,6 +45,7 @@
   import { getActiveEditorView } from "../editor/active-view.js";
   import { resolveWikilink, type WikilinkCandidate } from "../editor/index.js";
   import WikilinkPicker from "../editor/WikilinkPicker.svelte";
+  import { modalStore } from "../editor/vim/modal-store.svelte.js";
   import PropertiesPanel from "../panel/PropertiesPanel.svelte";
   import SearchOverlay from "../search/SearchOverlay.svelte";
   import { savedSearchesStore } from "../search/saved-searches-store.svelte.js";
@@ -100,6 +101,8 @@
     themeStore.init();
     // Wire theme/mode commands through themeStore (fixes issue #23 sync gap).
     seedThemeCommands(themeStore);
+    // Restore the persisted vim modal-editor flag (set by the vim-flavor preset).
+    modalStore.init();
     return () => themeStore.destroy();
   });
 
@@ -994,6 +997,7 @@
               externalDocReplace={fullDocReplace}
               groupPath={selectedEntryGroup}
               onFocusChange={(f) => (editorFocused = f)}
+              modalEditor={modalStore.enabled}
             />
           {:else}
             <div class="editor-empty">Select an entry to begin editing</div>
@@ -1406,6 +1410,7 @@
                 externalDocReplace={fullDocReplace}
                 groupPath={selectedEntryGroup}
                 onFocusChange={(f) => (editorFocused = f)}
+                modalEditor={modalStore.enabled}
               />
             </div>
             {#if outlineVisible}
