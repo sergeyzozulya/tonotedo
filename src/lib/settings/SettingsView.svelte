@@ -51,8 +51,16 @@
 
   // ── Appearance section ────────────────────────────────────────────────────────
 
-  const themeKeys = themeMap.themes.map((t) => t.key);
-  const themeNames = Object.fromEntries(themeMap.themes.map((t) => [t.key, t.name]));
+  const themeEntries = themeMap.themes.map((t) => ({
+    key: t.key,
+    name: t.name,
+    tagline: t.tagline,
+    // Use the current-mode accent for the swatch; fall back to light.
+    accentLight: t.tokens.light.accent,
+    accentDark: t.tokens.dark.accent,
+    panelLight: t.tokens.light.panel,
+    panelDark: t.tokens.dark.panel,
+  }));
 
   // Reactive derived values from themeStore so pickers stay in sync with store.
   let currentTheme = $derived(themeStore.theme);
@@ -319,28 +327,30 @@
       onClose?.();
     }
   }
+
+  // ── Section label helper ──────────────────────────────────────────────────────
+
+  const SECTION_LABELS: Record<Section, string> = {
+    appearance: "Appearance",
+    editor: "Editor",
+    keybindings: "Keybindings",
+    presets: "Presets",
+    library: "Library",
+  };
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <div class="settings-view" role="region" aria-label="Settings" onkeydown={onViewKeyDown}>
   <!-- Sidebar nav -->
   <nav class="settings-nav" aria-label="Settings sections">
-    <div class="settings-nav-header">Settings</div>
+    <div class="settings-nav-title">Settings</div>
     {#each ["appearance", "editor", "keybindings", "presets", "library"] as Section[] as section (section)}
       <button
         class="settings-nav-item"
         class:active={activeSection === section}
         onclick={() => (activeSection = section)}
       >
-        {section === "appearance"
-          ? "Appearance"
-          : section === "editor"
-            ? "Editor"
-            : section === "keybindings"
-              ? "Keybindings"
-              : section === "presets"
-                ? "Presets"
-                : "Library"}
+        {SECTION_LABELS[section]}
       </button>
     {/each}
   </nav>
@@ -349,61 +359,88 @@
   <div class="settings-content">
     <!-- ── Appearance ──────────────────────────────────────────────────────── -->
     {#if activeSection === "appearance"}
-      <section class="settings-section">
-        <h2 class="settings-section-title">Appearance</h2>
-        <p class="settings-scope-label">User setting — follows you across libraries</p>
+      <div class="content-header">
+        <span class="content-title">Appearance</span>
+        <span
+          class="content-close"
+          role="button"
+          tabindex="0"
+          aria-label="Close settings"
+          onclick={() => onClose?.()}
+          onkeydown={(e) => e.key === "Enter" && onClose?.()}>✕</span
+        >
+      </div>
 
-        <div class="settings-field">
-          <label class="settings-label" for="settings-theme">Theme</label>
-          <select
-            id="settings-theme"
-            class="settings-select"
-            value={currentTheme}
-            onchange={(e) => onThemeChange((e.target as HTMLSelectElement).value)}
-          >
-            {#each themeKeys as key (key)}
-              <option value={key}>{themeNames[key]}</option>
-            {/each}
-          </select>
+      <div class="section-body">
+        <div class="field-group-label">THEME</div>
+        <div class="theme-swatches">
+          {#each themeEntries as t (t.key)}
+            {@const isActive = currentTheme === t.key}
+            {@const swatchAccent = currentMode === "dark" ? t.accentDark : t.accentLight}
+            {@const swatchPanel = currentMode === "dark" ? t.panelDark : t.panelLight}
+            <button
+              class="theme-swatch"
+              class:theme-swatch--active={isActive}
+              onclick={() => onThemeChange(t.key)}
+              title={t.tagline}
+              aria-label="Select {t.name} theme"
+              aria-pressed={isActive}
+            >
+              <span
+                class="theme-swatch-dot"
+                style="background: {swatchAccent}; box-shadow: 0 0 0 3px {swatchPanel}, 0 0 0 5px {swatchAccent};"
+              ></span>
+              <span class="theme-swatch-name">{t.name}</span>
+            </button>
+          {/each}
         </div>
 
-        <div class="settings-field">
-          <label class="settings-label" for="settings-mode">Mode</label>
-          <select
-            id="settings-mode"
-            class="settings-select"
-            value={currentMode}
-            onchange={(e) => onModeChange((e.target as HTMLSelectElement).value as ThemeMode)}
-          >
-            <option value="light">Light</option>
-            <option value="dark">Dark</option>
-            <option value="system">System (follow OS)</option>
-          </select>
+        <div class="field-group-label" style="margin-top: 20px;">MODE</div>
+        <div class="mode-toggle">
+          {#each [["light", "Light"], ["dark", "Dark"], ["system", "System"]] as [val, label] (val)}
+            <button
+              class="mode-btn"
+              class:mode-btn--active={currentMode === val}
+              onclick={() => onModeChange(val as ThemeMode)}
+              aria-pressed={currentMode === val}
+            >
+              {label}
+            </button>
+          {/each}
         </div>
 
-        <div class="settings-preview">
-          <div class="settings-preview-label">Preview</div>
-          <div class="settings-preview-chips">
-            {#each ["slate", "red", "amber", "green", "teal", "blue", "violet", "pink"] as color (color)}
-              <span class="chip chip--{color}">{color}</span>
-            {/each}
-          </div>
+        <div class="scope-note">User setting — follows you across libraries</div>
+
+        <div class="field-group-label" style="margin-top: 20px;">PREVIEW</div>
+        <div class="chip-preview">
+          {#each ["slate", "red", "amber", "green", "teal", "blue", "violet", "pink"] as color (color)}
+            <span class="chip chip--{color}">{color}</span>
+          {/each}
         </div>
-      </section>
+      </div>
 
       <!-- ── Editor ─────────────────────────────────────────────────────────── -->
     {:else if activeSection === "editor"}
-      <section class="settings-section">
-        <h2 class="settings-section-title">Editor</h2>
-        <p class="settings-scope-label">User setting — follows you across libraries</p>
+      <div class="content-header">
+        <span class="content-title">Editor</span>
+        <span
+          class="content-close"
+          role="button"
+          tabindex="0"
+          aria-label="Close settings"
+          onclick={() => onClose?.()}
+          onkeydown={(e) => e.key === "Enter" && onClose?.()}>✕</span
+        >
+      </div>
 
-        <div class="settings-field">
-          <label class="settings-label" for="settings-font-size">
-            Font size <span class="settings-unit">px</span>
-          </label>
+      <div class="section-body">
+        <div class="scope-note">User setting — follows you across libraries</div>
+
+        <div class="field-group-label">FONT SIZE</div>
+        <div class="inline-field">
           <input
             id="settings-font-size"
-            class="settings-number"
+            class="num-input"
             type="number"
             min="10"
             max="24"
@@ -411,16 +448,15 @@
             value={fontSize}
             oninput={(e) => onFontSizeChange(Number((e.target as HTMLInputElement).value))}
           />
-          <span class="settings-hint">Default: 14</span>
+          <span class="field-unit">px</span>
+          <span class="field-hint">Default: 14</span>
         </div>
 
-        <div class="settings-field">
-          <label class="settings-label" for="settings-line-width">
-            Line width <span class="settings-unit">chars</span>
-          </label>
+        <div class="field-group-label" style="margin-top: 16px;">LINE WIDTH</div>
+        <div class="inline-field">
           <input
             id="settings-line-width"
-            class="settings-number"
+            class="num-input"
             type="number"
             min="40"
             max="200"
@@ -428,19 +464,38 @@
             value={lineWidth}
             oninput={(e) => onLineWidthChange(Number((e.target as HTMLInputElement).value))}
           />
-          <span class="settings-hint">Default: 72</span>
+          <span class="field-unit">chars</span>
+          <span class="field-hint">Default: 72</span>
         </div>
-      </section>
+      </div>
 
       <!-- ── Keybindings ────────────────────────────────────────────────────── -->
     {:else if activeSection === "keybindings"}
-      <section class="settings-section settings-section--keybindings">
-        <h2 class="settings-section-title">Keybindings</h2>
-        <p class="settings-scope-label">User setting — follows you across libraries</p>
+      <div class="content-header">
+        <span class="content-title">Keymap</span>
+        <span
+          class="content-close"
+          role="button"
+          tabindex="0"
+          aria-label="Close settings"
+          onclick={() => onClose?.()}
+          onkeydown={(e) => e.key === "Enter" && onClose?.()}>✕</span
+        >
+      </div>
+
+      <div class="section-body section-body--wide">
+        <div class="scope-note">
+          User setting — follows you across libraries · bindings travel with you, not the library
+        </div>
 
         {#if rebindState.phase === "capturing"}
           <div class="capture-banner">
-            <span>Press a key combination for <strong>{rebindState.commandId}</strong>…</span>
+            <span
+              >Press a key combination for <strong class="capture-cmd"
+                >{rebindState.commandId}</strong
+              >…</span
+            >
+            <kbd class="capture-waiting">press keys…<span class="capture-cursor"></span></kbd>
             <button class="capture-cancel" onclick={cancelCapture}>Cancel</button>
             <!-- Hidden input captures the keystroke -->
             <!-- svelte-ignore a11y_autofocus -->
@@ -457,7 +512,8 @@
         {:else if rebindState.phase === "conflict"}
           <div class="conflict-banner">
             <div class="conflict-title">
-              Conflict: <kbd>{rebindState.capturedChord}</kbd> is already used
+              Conflict: <kbd class="kb-chip kb-chip--accent">{rebindState.capturedChord}</kbd> is already
+              used
             </div>
             {#each rebindState.conflicts as c (c.existing.commandId + c.kind)}
               <div class="conflict-row">
@@ -481,61 +537,94 @@
           </div>
         {/if}
 
-        {#each commandGroups as group (group.category)}
-          <div class="kb-group">
+        <div class="kb-hint-row">
+          <span class="field-group-label" style="margin-bottom: 0;">BINDINGS</span>
+          <span class="kb-hint-text">click a key to rebind · conflicts are flagged before save</span
+          >
+        </div>
+
+        <div class="kb-table">
+          {#each commandGroups as group (group.category)}
             <div class="kb-group-header">{group.category}</div>
             {#each group.rows as row (row.commandId)}
-              <div class="kb-row" class:kb-row--overridden={row.isOverridden}>
-                <div class="kb-name">
-                  <span class="kb-command-name">{row.name}</span>
-                  {#if row.when}
-                    <span class="kb-when">{row.when}</span>
-                  {/if}
-                </div>
-                <div class="kb-bindings">
-                  {#if row.effectiveBindings.length > 0}
+              <div
+                class="kb-row"
+                class:kb-row--overridden={row.isOverridden}
+                class:kb-row--capturing={rebindState.phase === "capturing" &&
+                  rebindState.commandId === row.commandId}
+              >
+                <span class="kb-cmd-id">{row.commandId}</span>
+                <span class="kb-cmd-name">{row.name}</span>
+                <span class="kb-bindings">
+                  {#if rebindState.phase === "capturing" && rebindState.commandId === row.commandId}
+                    <kbd class="kb-chip kb-chip--capturing"
+                      >press keys…<span class="capture-cursor"></span></kbd
+                    >
+                  {:else if row.effectiveBindings.length > 0}
                     {#each row.effectiveBindings as chord (chord)}
-                      <kbd class="kb-chord">{chord}</kbd>
+                      <kbd
+                        class="kb-chip"
+                        class:kb-chip--overridden={row.isOverridden}
+                        onclick={() => startCapture(row.commandId)}
+                        title="Click to rebind"
+                        role="button"
+                        tabindex="0"
+                        onkeydown={(e) => e.key === "Enter" && startCapture(row.commandId)}
+                        aria-label="Rebind {row.name}: current binding {chord}">{chord}</kbd
+                      >
                     {/each}
                   {:else}
-                    <span class="kb-no-binding">—</span>
+                    <span
+                      class="kb-no-binding"
+                      onclick={() => startCapture(row.commandId)}
+                      role="button"
+                      tabindex="0"
+                      onkeydown={(e) => e.key === "Enter" && startCapture(row.commandId)}
+                      aria-label="Bind {row.name} (currently unbound)">—</span
+                    >
                   {/if}
-                </div>
-                <div class="kb-actions">
+                </span>
+                <span class="kb-actions">
                   <button
                     class="kb-btn"
                     onclick={() => startCapture(row.commandId)}
                     title="Rebind this command"
-                    aria-label="Rebind {row.name}"
+                    aria-label="Rebind {row.name}">Rebind</button
                   >
-                    Rebind
-                  </button>
                   {#if row.isOverridden}
                     <button
                       class="kb-btn kb-btn--reset"
                       onclick={() => resetToDefault(row.commandId)}
                       title="Reset to default"
-                      aria-label="Reset {row.name} to default binding"
+                      aria-label="Reset {row.name} to default binding">Reset</button
                     >
-                      Reset
-                    </button>
                   {/if}
-                </div>
+                </span>
               </div>
             {/each}
-          </div>
-        {/each}
-      </section>
+          {/each}
+        </div>
+      </div>
 
       <!-- ── Presets ─────────────────────────────────────────────────────────── -->
     {:else if activeSection === "presets"}
-      <section class="settings-section">
-        <h2 class="settings-section-title">Keymap Presets</h2>
-        <p class="settings-scope-label">User setting — follows you across libraries</p>
-        <p class="settings-desc">
+      <div class="content-header">
+        <span class="content-title">Presets</span>
+        <span
+          class="content-close"
+          role="button"
+          tabindex="0"
+          aria-label="Close settings"
+          onclick={() => onClose?.()}
+          onkeydown={(e) => e.key === "Enter" && onClose?.()}>✕</span
+        >
+      </div>
+
+      <div class="section-body">
+        <div class="scope-note">
           Applying a preset overwrites all current keybindings. After applying, further edits are
           yours — presets are import-once.
-        </p>
+        </div>
 
         {#if confirmPreset}
           <div class="preset-confirm">
@@ -553,6 +642,7 @@
           </div>
         {/if}
 
+        <div class="field-group-label">KEYMAP PRESETS</div>
         <div class="preset-list">
           {#each presets as preset (preset.id)}
             <div class="preset-row" class:preset-row--active={appliedPresetId === preset.id}>
@@ -560,10 +650,10 @@
                 <div class="preset-name">
                   {preset.name}
                   {#if appliedPresetId === preset.id}
-                    <span class="preset-applied-badge">applied</span>
+                    <span class="preset-badge">applied</span>
                   {/if}
                 </div>
-                <div class="preset-description">{preset.description}</div>
+                <div class="preset-desc">{preset.description}</div>
                 {#if preset.modal}
                   <div class="preset-modal-tag">Enables modal editing</div>
                 {/if}
@@ -571,256 +661,306 @@
               <button
                 class="btn btn--sm"
                 onclick={() => requestApplyPreset(preset)}
-                disabled={confirmPreset !== null}
+                disabled={confirmPreset !== null}>Apply</button
               >
-                Apply
-              </button>
             </div>
           {/each}
         </div>
-      </section>
+      </div>
 
       <!-- ── Library ─────────────────────────────────────────────────────────── -->
     {:else if activeSection === "library"}
-      <section class="settings-section">
-        <h2 class="settings-section-title">Library</h2>
-        <p class="settings-scope-label">
-          Library setting — stored in _settings.md, travels with the library
-        </p>
+      <div class="content-header">
+        <span class="content-title">Library</span>
+        <span
+          class="content-close"
+          role="button"
+          tabindex="0"
+          aria-label="Close settings"
+          onclick={() => onClose?.()}
+          onkeydown={(e) => e.key === "Enter" && onClose?.()}>✕</span
+        >
+      </div>
 
-        <div class="settings-field">
-          <label class="settings-label" for="settings-primary-date"> Primary date property </label>
+      <div class="section-body">
+        <div class="scope-note">
+          Library setting — stored in _settings.md, travels with the library
+        </div>
+
+        <div class="field-group-label">PRIMARY DATE PROPERTY</div>
+        <div class="inline-field">
           <input
             id="settings-primary-date"
-            class="settings-text"
+            class="mono-input"
             type="text"
             value={primaryDatePropValue}
             onchange={(e) => onPrimaryDatePropChange((e.target as HTMLInputElement).value)}
             placeholder="due"
             spellcheck={false}
           />
-          <span class="settings-hint">
-            The frontmatter field the calendar reads. Default: <code>due</code>.
-          </span>
+        </div>
+        <div class="field-hint-block">
+          The frontmatter field the calendar reads. Default: <code class="inline-code">due</code>.
         </div>
 
-        <div class="settings-field settings-field--readonly">
-          <label class="settings-label" for="settings-asset-folder"> Asset folder </label>
+        <div class="field-group-label" style="margin-top: 16px; opacity: 0.5;">ASSET FOLDER</div>
+        <div class="inline-field" style="opacity: 0.5;">
           <input
             id="settings-asset-folder"
-            class="settings-text"
+            class="mono-input"
             type="text"
             value={assetFolderValue}
             disabled
             placeholder="_assets"
           />
-          <span class="settings-hint">Display-only — editing not yet supported.</span>
         </div>
-      </section>
+        <div class="field-hint-block" style="opacity: 0.5;">
+          Display-only — editing not yet supported.
+        </div>
+      </div>
     {/if}
   </div>
 </div>
 
 <style>
-  /* ── Shell ──────────────────────────────────────────────────────────────────── */
+  /* ── Root shell ──────────────────────────────────────────────────────────────── */
 
   .settings-view {
     display: flex;
     height: 100%;
-    background: var(--tnd-bg);
+    background: var(--tnd-panel);
     color: var(--tnd-text);
-    font-family: ui-sans-serif, system-ui, sans-serif;
-    font-size: 13.5px;
+    font-family: var(--tnd-font-ui);
+    font-size: 13px;
+    overflow: hidden;
   }
 
-  /* ── Sidebar nav ────────────────────────────────────────────────────────────── */
+  /* ── Sidebar nav ─────────────────────────────────────────────────────────────── */
 
   .settings-nav {
-    width: 160px;
+    width: 188px;
     flex-shrink: 0;
-    background: var(--tnd-panel);
+    background: var(--tnd-panel2);
     border-right: 1px solid var(--tnd-line-strong);
-    padding: 20px 0 12px;
+    padding: 14px 0;
     display: flex;
     flex-direction: column;
   }
 
-  .settings-nav-header {
-    font-size: 11px;
+  .settings-nav-title {
+    font-family: var(--tnd-font-mono);
+    font-size: 13px;
     font-weight: 700;
-    letter-spacing: 0.07em;
-    text-transform: uppercase;
-    color: var(--tnd-text-faint);
+    letter-spacing: 0.03em;
+    text-transform: var(--tnd-label-transform, uppercase);
+    color: var(--tnd-text);
     padding: 0 16px 10px;
   }
 
   .settings-nav-item {
     background: none;
     border: none;
+    border-left: 2px solid transparent;
     text-align: left;
     padding: 7px 16px;
-    font-size: 13px;
+    font-family: var(--tnd-font-ui);
+    font-size: 12.5px;
+    font-weight: 500;
     color: var(--tnd-text-muted);
     cursor: pointer;
-    border-radius: 0;
-    font-family: inherit;
-    transition: background 0.1s;
+    transition:
+      background 0.1s,
+      color 0.1s;
+    display: flex;
+    align-items: center;
+    gap: 9px;
   }
 
   .settings-nav-item:hover {
-    background: var(--tnd-panel2);
+    background: var(--tnd-accent-soft);
     color: var(--tnd-text);
   }
 
   .settings-nav-item.active {
     background: var(--tnd-accent-soft);
     color: var(--tnd-accent-text);
-    font-weight: 500;
+    font-weight: 700;
+    border-left-color: var(--tnd-accent);
   }
 
-  /* ── Content area ───────────────────────────────────────────────────────────── */
+  /* ── Content area ────────────────────────────────────────────────────────────── */
 
   .settings-content {
     flex: 1;
-    overflow-y: auto;
-    padding: 28px 32px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
     min-width: 0;
   }
 
-  .settings-section {
-    max-width: 580px;
+  /* Sticky content header row */
+  .content-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 15px 20px;
+    border-bottom: 1px solid var(--tnd-line-strong);
+    flex-shrink: 0;
   }
 
-  .settings-section-title {
-    font-size: 17px;
-    font-weight: 600;
+  .content-title {
+    font-family: var(--tnd-font-mono);
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    text-transform: var(--tnd-label-transform, uppercase);
     color: var(--tnd-text);
-    margin: 0 0 4px;
   }
 
-  .settings-scope-label {
-    font-size: 11.5px;
+  .content-close {
+    font-family: var(--tnd-font-mono);
+    font-size: 12px;
     color: var(--tnd-text-faint);
-    margin: 0 0 20px;
-    font-style: italic;
+    cursor: pointer;
+    padding: 2px 4px;
+    user-select: none;
   }
 
-  .settings-desc {
-    font-size: 13px;
+  .content-close:hover {
     color: var(--tnd-text-muted);
-    margin: 0 0 16px;
+  }
+
+  /* Scrollable body below header */
+  .section-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px;
+    max-width: 640px;
+  }
+
+  .section-body--wide {
+    max-width: 900px;
+  }
+
+  /* ── Section label (group headings within panels) ────────────────────────────── */
+
+  .field-group-label {
+    font-family: var(--tnd-font-mono);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    color: var(--tnd-text-faint);
+    text-transform: uppercase;
+    margin-bottom: 9px;
+  }
+
+  .scope-note {
+    font-family: var(--tnd-font-ui);
+    font-size: 11.5px;
+    color: var(--tnd-text-muted);
+    margin-bottom: 18px;
     line-height: 1.5;
   }
 
-  /* ── Form controls ──────────────────────────────────────────────────────────── */
+  /* ── Theme swatches ──────────────────────────────────────────────────────────── */
 
-  .settings-field {
+  .theme-swatches {
     display: flex;
-    align-items: baseline;
-    gap: 10px;
-    margin-bottom: 14px;
     flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 4px;
   }
 
-  .settings-field--readonly {
-    opacity: 0.6;
-  }
-
-  .settings-label {
-    width: 160px;
-    flex-shrink: 0;
-    font-size: 13px;
-    color: var(--tnd-text-muted);
-    font-weight: 500;
-  }
-
-  .settings-unit {
-    font-weight: 400;
-    color: var(--tnd-text-faint);
-    font-size: 11px;
-  }
-
-  .settings-select {
-    font-size: 13px;
-    padding: 4px 8px;
+  .theme-swatch {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 12px;
     background: var(--tnd-panel2);
-    color: var(--tnd-text);
     border: 1px solid var(--tnd-line-strong);
-    border-radius: 4px;
-    outline: none;
+    border-radius: var(--tnd-radius);
     cursor: pointer;
-    font-family: inherit;
+    font-family: var(--tnd-font-ui);
+    font-size: 12.5px;
+    font-weight: 500;
+    color: var(--tnd-text-muted);
+    transition:
+      border-color 0.12s,
+      background 0.12s;
   }
 
-  .settings-select:focus {
+  .theme-swatch:hover {
     border-color: var(--tnd-accent);
+    color: var(--tnd-text);
   }
 
-  .settings-number {
-    width: 80px;
-    font-size: 13px;
-    padding: 4px 8px;
+  .theme-swatch--active {
+    border-color: var(--tnd-accent);
+    background: var(--tnd-accent-soft);
+    color: var(--tnd-accent-text);
+    font-weight: 700;
+  }
+
+  .theme-swatch-dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    display: inline-block;
+  }
+
+  .theme-swatch-name {
+    white-space: nowrap;
+  }
+
+  /* ── Mode toggle ─────────────────────────────────────────────────────────────── */
+
+  .mode-toggle {
+    display: flex;
+    border: 1px solid var(--tnd-line-strong);
+    width: fit-content;
+    margin-bottom: 4px;
+    border-radius: var(--tnd-radius);
+    overflow: hidden;
+  }
+
+  .mode-btn {
+    padding: 6px 16px;
+    background: transparent;
+    border: none;
+    border-right: 1px solid var(--tnd-line-strong);
+    font-family: var(--tnd-font-ui);
+    font-size: 12.5px;
+    font-weight: 700;
+    color: var(--tnd-text-muted);
+    cursor: pointer;
+    transition:
+      background 0.1s,
+      color 0.1s;
+  }
+
+  .mode-btn:last-child {
+    border-right: none;
+  }
+
+  .mode-btn:hover {
     background: var(--tnd-panel2);
     color: var(--tnd-text);
-    border: 1px solid var(--tnd-line-strong);
-    border-radius: 4px;
-    outline: none;
-    font-family: inherit;
   }
 
-  .settings-number:focus {
-    border-color: var(--tnd-accent);
+  .mode-btn--active {
+    background: var(--tnd-accent);
+    color: #fff;
   }
 
-  .settings-text {
-    flex: 1;
-    min-width: 0;
-    max-width: 240px;
-    font-size: 13px;
-    padding: 4px 8px;
-    background: var(--tnd-panel2);
-    color: var(--tnd-text);
-    border: 1px solid var(--tnd-line-strong);
-    border-radius: 4px;
-    outline: none;
-    font-family: ui-monospace, monospace;
+  .mode-btn--active:hover {
+    background: var(--tnd-accent);
+    opacity: 0.9;
   }
 
-  .settings-text:focus {
-    border-color: var(--tnd-accent);
-  }
+  /* ── Chip preview (appearance section) ──────────────────────────────────────── */
 
-  .settings-text:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  .settings-hint {
-    font-size: 11.5px;
-    color: var(--tnd-text-faint);
-    width: 100%;
-    margin-left: 170px;
-  }
-
-  /* ── Appearance preview ─────────────────────────────────────────────────────── */
-
-  .settings-preview {
-    margin-top: 24px;
-    padding: 14px 16px;
-    background: var(--tnd-panel2);
-    border: 1px solid var(--tnd-line);
-    border-radius: 6px;
-  }
-
-  .settings-preview-label {
-    font-size: 11px;
-    color: var(--tnd-text-faint);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    margin-bottom: 8px;
-  }
-
-  .settings-preview-chips {
+  .chip-preview {
     display: flex;
     flex-wrap: wrap;
     gap: 6px;
@@ -830,7 +970,8 @@
     display: inline-flex;
     align-items: center;
     padding: 2px 8px;
-    border-radius: 10px;
+    border-radius: var(--tnd-tag-radius);
+    font-family: var(--tnd-font-ui);
     font-size: 12px;
     font-weight: 500;
   }
@@ -868,11 +1009,262 @@
     background: var(--tnd-chip-pink-bg);
   }
 
-  /* ── Keybindings ────────────────────────────────────────────────────────────── */
+  /* ── Inline field row (editor/library inputs) ────────────────────────────────── */
 
-  .settings-section--keybindings {
-    max-width: 720px;
+  .inline-field {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin-bottom: 4px;
   }
+
+  .num-input {
+    width: 80px;
+    font-family: var(--tnd-font-mono);
+    font-size: 13px;
+    padding: 5px 8px;
+    background: var(--tnd-panel2);
+    color: var(--tnd-text);
+    border: 1px solid var(--tnd-line-strong);
+    border-radius: var(--tnd-radius);
+    outline: none;
+  }
+
+  .num-input:focus {
+    border-color: var(--tnd-accent);
+  }
+
+  .mono-input {
+    min-width: 200px;
+    max-width: 280px;
+    font-family: var(--tnd-font-mono);
+    font-size: 13px;
+    padding: 5px 8px;
+    background: var(--tnd-panel2);
+    color: var(--tnd-text);
+    border: 1px solid var(--tnd-line-strong);
+    border-radius: var(--tnd-radius);
+    outline: none;
+  }
+
+  .mono-input:focus {
+    border-color: var(--tnd-accent);
+  }
+
+  .mono-input:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .field-unit {
+    font-family: var(--tnd-font-mono);
+    font-size: 11px;
+    color: var(--tnd-text-faint);
+  }
+
+  .field-hint {
+    font-family: var(--tnd-font-ui);
+    font-size: 11.5px;
+    color: var(--tnd-text-faint);
+  }
+
+  .field-hint-block {
+    font-family: var(--tnd-font-ui);
+    font-size: 11.5px;
+    color: var(--tnd-text-faint);
+    margin-bottom: 4px;
+    line-height: 1.5;
+  }
+
+  .inline-code {
+    font-family: var(--tnd-font-mono);
+    font-size: 11px;
+    background: var(--tnd-panel2);
+    padding: 1px 4px;
+    border-radius: 2px;
+  }
+
+  /* ── Keymap section ──────────────────────────────────────────────────────────── */
+
+  .kb-hint-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 9px;
+  }
+
+  .kb-hint-text {
+    font-family: var(--tnd-font-mono);
+    font-size: 11px;
+    color: var(--tnd-text-faint);
+  }
+
+  /* The bindings table: bordered container, rows separated by line */
+  .kb-table {
+    border: 1px solid var(--tnd-line);
+  }
+
+  .kb-group-header {
+    font-family: var(--tnd-font-mono);
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--tnd-text-faint);
+    padding: 6px 12px 4px;
+    background: var(--tnd-panel2);
+    border-bottom: 1px solid var(--tnd-line);
+  }
+
+  .kb-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--tnd-line);
+    transition: background 0.1s;
+  }
+
+  .kb-row:last-child {
+    border-bottom: none;
+  }
+
+  .kb-row:hover {
+    background: var(--tnd-panel2);
+  }
+
+  .kb-row--capturing {
+    background: var(--tnd-accent-soft);
+  }
+
+  /* Command ID column */
+  .kb-cmd-id {
+    width: 200px;
+    flex-shrink: 0;
+    font-family: var(--tnd-font-mono);
+    font-size: 11.5px;
+    color: var(--tnd-text-faint);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* Human name column */
+  .kb-cmd-name {
+    flex: 1;
+    font-family: var(--tnd-font-ui);
+    font-size: 12.5px;
+    color: var(--tnd-text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .kb-row--overridden .kb-cmd-name {
+    color: var(--tnd-accent-text);
+    font-weight: 600;
+  }
+
+  /* Key chips */
+  .kb-bindings {
+    display: flex;
+    gap: 4px;
+    flex-shrink: 0;
+    align-items: center;
+  }
+
+  .kb-chip {
+    display: inline-block;
+    font-family: var(--tnd-font-mono);
+    font-size: 11.5px;
+    font-weight: 700;
+    color: var(--tnd-text);
+    padding: 3px 10px;
+    border: 1px solid var(--tnd-line);
+    background: var(--tnd-panel2);
+    white-space: nowrap;
+    cursor: pointer;
+    user-select: none;
+    transition:
+      border-color 0.1s,
+      background 0.1s;
+  }
+
+  .kb-chip:hover {
+    border-color: var(--tnd-accent);
+    color: var(--tnd-accent-text);
+  }
+
+  .kb-chip--overridden {
+    color: var(--tnd-accent-text);
+    border-color: var(--tnd-line-strong);
+  }
+
+  .kb-chip--accent {
+    color: var(--tnd-accent-text);
+    border-color: var(--tnd-accent);
+    background: var(--tnd-panel);
+    cursor: default;
+  }
+
+  .kb-chip--capturing {
+    color: var(--tnd-accent-text);
+    border-color: var(--tnd-accent);
+    background: var(--tnd-panel);
+    cursor: default;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .kb-no-binding {
+    font-family: var(--tnd-font-mono);
+    font-size: 13px;
+    color: var(--tnd-text-faint);
+    cursor: pointer;
+    padding: 3px 4px;
+  }
+
+  .kb-no-binding:hover {
+    color: var(--tnd-accent-text);
+  }
+
+  /* Action buttons — hidden until row hover */
+  .kb-actions {
+    display: flex;
+    gap: 4px;
+    opacity: 0;
+    flex-shrink: 0;
+  }
+
+  .kb-row:hover .kb-actions {
+    opacity: 1;
+  }
+
+  .kb-btn {
+    background: none;
+    border: 1px solid var(--tnd-line-strong);
+    color: var(--tnd-text-muted);
+    font-family: var(--tnd-font-mono);
+    font-size: 11px;
+    padding: 2px 7px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition:
+      background 0.1s,
+      color 0.1s;
+  }
+
+  .kb-btn:hover {
+    background: var(--tnd-panel2);
+    color: var(--tnd-text);
+  }
+
+  .kb-btn--reset {
+    color: var(--tnd-text-faint);
+  }
+
+  /* ── Capture/conflict banners ────────────────────────────────────────────────── */
 
   .capture-banner {
     display: flex;
@@ -881,10 +1273,47 @@
     padding: 10px 14px;
     background: var(--tnd-accent-soft);
     border: 1px solid var(--tnd-accent);
-    border-radius: 6px;
-    margin-bottom: 16px;
+    font-family: var(--tnd-font-ui);
     font-size: 13px;
     position: relative;
+    margin-bottom: 16px;
+  }
+
+  .capture-cmd {
+    font-family: var(--tnd-font-mono);
+    color: var(--tnd-accent-text);
+  }
+
+  .capture-waiting {
+    font-family: var(--tnd-font-mono);
+    font-size: 11.5px;
+    font-weight: 700;
+    color: var(--tnd-accent-text);
+    padding: 3px 10px;
+    border: 1px solid var(--tnd-accent);
+    background: var(--tnd-panel);
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .capture-cursor {
+    display: inline-block;
+    width: 1.5px;
+    height: 12px;
+    background: var(--tnd-accent);
+    vertical-align: -2px;
+    animation: blink 1s step-end infinite;
+  }
+
+  @keyframes blink {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0;
+    }
   }
 
   .capture-cancel {
@@ -892,14 +1321,12 @@
     background: none;
     border: 1px solid var(--tnd-line-strong);
     color: var(--tnd-text-muted);
-    font-size: 12px;
+    font-family: var(--tnd-font-mono);
+    font-size: 11px;
     padding: 3px 10px;
-    border-radius: 4px;
     cursor: pointer;
-    font-family: inherit;
   }
 
-  /* Hidden trap input for key capture */
   .capture-trap {
     position: absolute;
     width: 0;
@@ -914,14 +1341,18 @@
     padding: 12px 14px;
     background: var(--tnd-panel2);
     border: 1px solid var(--tnd-line-strong);
-    border-radius: 6px;
-    margin-bottom: 16px;
+    font-family: var(--tnd-font-ui);
     font-size: 13px;
+    margin-bottom: 16px;
   }
 
   .conflict-title {
     font-weight: 500;
     margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
   }
 
   .conflict-row {
@@ -933,7 +1364,8 @@
   }
 
   .conflict-cmd {
-    font-family: ui-monospace, monospace;
+    font-family: var(--tnd-font-mono);
+    color: var(--tnd-text);
   }
 
   .conflict-kind {
@@ -946,120 +1378,14 @@
     margin-top: 10px;
   }
 
-  .kb-group {
-    margin-bottom: 20px;
-  }
-
-  .kb-group-header {
-    font-size: 11px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.07em;
-    color: var(--tnd-text-faint);
-    padding: 4px 0;
-    border-bottom: 1px solid var(--tnd-line);
-    margin-bottom: 4px;
-  }
-
-  .kb-row {
-    display: grid;
-    grid-template-columns: 1fr auto auto;
-    align-items: center;
-    gap: 12px;
-    padding: 5px 6px;
-    border-radius: 4px;
-  }
-
-  .kb-row:hover {
-    background: var(--tnd-panel2);
-  }
-
-  .kb-row--overridden .kb-command-name {
-    font-weight: 500;
-    color: var(--tnd-accent-text);
-  }
-
-  .kb-name {
-    min-width: 0;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-
-  .kb-command-name {
-    font-size: 13px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .kb-when {
-    font-size: 10.5px;
-    color: var(--tnd-text-faint);
-    font-family: ui-monospace, monospace;
-    flex-shrink: 0;
-  }
-
-  .kb-bindings {
-    display: flex;
-    gap: 4px;
-  }
-
-  .kb-chord {
-    display: inline-block;
-    background: var(--tnd-panel2);
-    border: 1px solid var(--tnd-line-strong);
-    border-radius: 3px;
-    padding: 1px 5px;
-    font-size: 11.5px;
-    font-family: ui-monospace, monospace;
-    white-space: nowrap;
-  }
-
-  .kb-no-binding {
-    color: var(--tnd-text-faint);
-    font-size: 13px;
-  }
-
-  .kb-actions {
-    display: flex;
-    gap: 4px;
-    opacity: 0;
-  }
-
-  .kb-row:hover .kb-actions {
-    opacity: 1;
-  }
-
-  .kb-btn {
-    background: none;
-    border: 1px solid var(--tnd-line-strong);
-    color: var(--tnd-text-muted);
-    font-size: 11.5px;
-    padding: 2px 7px;
-    border-radius: 3px;
-    cursor: pointer;
-    font-family: inherit;
-    white-space: nowrap;
-  }
-
-  .kb-btn:hover {
-    background: var(--tnd-panel2);
-    color: var(--tnd-text);
-  }
-
-  .kb-btn--reset {
-    color: var(--tnd-text-faint);
-  }
-
-  /* ── Presets ────────────────────────────────────────────────────────────────── */
+  /* ── Presets ─────────────────────────────────────────────────────────────────── */
 
   .preset-confirm {
     padding: 14px;
     background: var(--tnd-accent-soft);
     border: 1px solid var(--tnd-accent);
-    border-radius: 6px;
     margin-bottom: 16px;
+    font-family: var(--tnd-font-ui);
     font-size: 13px;
   }
 
@@ -1082,7 +1408,8 @@
   .preset-list {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 0;
+    border: 1px solid var(--tnd-line-strong);
   }
 
   .preset-row {
@@ -1090,13 +1417,19 @@
     align-items: center;
     gap: 12px;
     padding: 12px 14px;
-    background: var(--tnd-panel);
-    border: 1px solid var(--tnd-line);
-    border-radius: 6px;
+    border-bottom: 1px solid var(--tnd-line);
+    transition: background 0.1s;
+  }
+
+  .preset-row:last-child {
+    border-bottom: none;
+  }
+
+  .preset-row:hover {
+    background: var(--tnd-panel2);
   }
 
   .preset-row--active {
-    border-color: var(--tnd-accent);
     background: var(--tnd-accent-soft);
   }
 
@@ -1106,6 +1439,7 @@
   }
 
   .preset-name {
+    font-family: var(--tnd-font-ui);
     font-size: 13.5px;
     font-weight: 600;
     color: var(--tnd-text);
@@ -1115,38 +1449,44 @@
     gap: 8px;
   }
 
-  .preset-applied-badge {
-    font-size: 10.5px;
-    font-weight: 500;
-    padding: 1px 6px;
+  .preset-badge {
+    font-family: var(--tnd-font-mono);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    padding: 2px 6px;
     background: var(--tnd-accent);
     color: #fff;
-    border-radius: 10px;
   }
 
-  .preset-description {
+  .preset-desc {
+    font-family: var(--tnd-font-ui);
     font-size: 12.5px;
     color: var(--tnd-text-muted);
   }
 
   .preset-modal-tag {
-    font-size: 11.5px;
+    font-family: var(--tnd-font-mono);
+    font-size: 11px;
     color: var(--tnd-accent-text);
     margin-top: 3px;
   }
 
-  /* ── Shared buttons ─────────────────────────────────────────────────────────── */
+  /* ── Shared buttons ──────────────────────────────────────────────────────────── */
 
   .btn {
     background: var(--tnd-panel2);
     border: 1px solid var(--tnd-line-strong);
     color: var(--tnd-text-muted);
+    font-family: var(--tnd-font-ui);
     font-size: 13px;
     padding: 5px 12px;
-    border-radius: 4px;
     cursor: pointer;
-    font-family: inherit;
     white-space: nowrap;
+    transition:
+      background 0.1s,
+      color 0.1s;
   }
 
   .btn:hover {
