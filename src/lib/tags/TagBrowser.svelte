@@ -2,13 +2,10 @@
   // TagBrowser — main-zone view for browsing and managing the tag hierarchy
   // (spec 0004, issue #22).
   //
-  // Features:
-  //   • Hierarchy display: parent/child nesting via "/" in tag names.
-  //   • Metadata: description shown on hover, color chip, icon.
-  //   • Counts per tag.
-  //   • Unmanaged/non-canonical flags (disallowed characters).
-  //   • Actions: rename, merge, delete — calls ipc.rename_tag / merge_tag / delete_tag.
-  //   • Expandable/collapsible parent nodes.
+  // Design: per screens-dir.jsx TagsDesktop — section labels GLOBAL/SCOPED,
+  // bar charts per-count on global tags, scoped tags with tree indent + "└"
+  // markers, scope badges, count on right. Per-theme tag rendering follows the
+  // same flag conventions as EntryList tag chips (#/bracket/caps/pill).
 
   import { ipc } from "../ipc/index.js";
   import { buildTagTree, flattenTagTree, isNonCanonical } from "./tag-utils.js";
@@ -51,6 +48,13 @@
   const tree = $derived(buildTagTree(tags));
   const flat = $derived(flattenTagTree(tree));
 
+  // Partition into global (no scopePath) and scoped
+  const globalNodes = $derived(flat.filter((n) => !n.meta?.scopePath && n.depth === 0));
+  const scopedNodes = $derived(flat.filter((n) => n.meta?.scopePath || n.depth > 0));
+  const maxCount = $derived(
+    globalNodes.length > 0 ? Math.max(...globalNodes.map((n) => n.meta?.count ?? 0), 1) : 1,
+  );
+
   // ── Collapsed state ───────────────────────────────────────────────────────────
 
   const collapsed = $state(new Map<string, boolean>());
@@ -63,7 +67,6 @@
     collapsed.set(name, !isCollapsed(name));
   }
 
-  /** Returns true if this node should be rendered (no collapsed ancestor). */
   function isVisible(node: TagNode): boolean {
     const parts = node.name.split("/");
     for (let i = 1; i < parts.length; i++) {
@@ -128,25 +131,17 @@
     }
   }
 
-  // ── Color helpers ─────────────────────────────────────────────────────────────
 
-  function chipBg(color: string): string {
-    const named = ["slate", "red", "amber", "green", "teal", "blue", "violet", "pink"];
-    if (named.includes(color)) return `var(--tnd-chip-${color}-bg)`;
-    return color;
-  }
-
-  function chipFg(color: string): string {
-    const named = ["slate", "red", "amber", "green", "teal", "blue", "violet", "pink"];
-    if (named.includes(color)) return `var(--tnd-chip-${color}-fg)`;
-    return color;
-  }
 </script>
 
 <div class="tag-browser">
-  <header class="tb-header">
-    <h2 class="tb-title">Tags</h2>
-    <span class="tb-count">{tags.length} tags</span>
+  <!-- Screen head -->
+  <header class="tb-head">
+    <div class="tb-head-main">
+      <h2 class="tb-title">Tags</h2>
+      <span class="tb-subtitle">global + scoped</span>
+    </div>
+    <span class="tb-total">{tags.length} tags</span>
   </header>
 
   {#if loading}
@@ -156,115 +151,185 @@
   {:else if flat.length === 0}
     <div class="tb-status">No tags yet.</div>
   {:else}
-    <ul class="tb-list" role="tree">
-      {#each flat as node (node.name)}
-        {#if isVisible(node)}
-          {@const hasChildren = node.children.length > 0}
-          {@const open = hasChildren && !isCollapsed(node.name)}
-          {@const nonCanon = isNonCanonical(node.name)}
-          <li
-            class="tb-row"
-            class:tb-row--selected={actionTarget === node.name}
-            role="treeitem"
-            aria-selected={actionTarget === node.name}
-            aria-expanded={hasChildren ? open : undefined}
-            style="--depth: {node.depth};"
-          >
-            <!-- Chevron for parent nodes -->
-            <span
-              class="tb-chevron"
-              class:tb-chevron--visible={hasChildren}
-              onclick={() => hasChildren && toggleCollapsed(node.name)}
+    <div class="tb-body">
+      <div class="tb-content">
+        <!-- ── GLOBAL section ─────────────────────────────────────────────── -->
+        {#if globalNodes.length > 0}
+          <div class="tb-section-label">Global</div>
+          {#each globalNodes as node (node.name)}
+            {@const nonCanon = isNonCanonical(node.name)}
+            {@const count = node.meta?.count ?? 0}
+            <div
+              class="tb-global-row"
+              class:tb-row--selected={actionTarget === node.name}
               role="button"
-              tabindex={hasChildren ? 0 : -1}
-              onkeydown={(e) => e.key === "Enter" && hasChildren && toggleCollapsed(node.name)}
-              aria-label={open ? "Collapse" : "Expand"}
-            >
-              {#if hasChildren}
-                {open ? "▾" : "▸"}
-              {/if}
-            </span>
-
-            <!-- Color chip / icon -->
-            {#if node.meta}
-              <span
-                class="tb-color-chip"
-                style="background: {chipBg(node.meta.color)}; color: {chipFg(node.meta.color)};"
-                title={node.meta.description ?? ""}
-              >
-                {node.meta.icon ?? "#"}
-              </span>
-            {:else}
-              <span class="tb-color-chip tb-color-chip--synth" title="Synthesised parent">#</span>
-            {/if}
-
-            <!-- Label -->
-            <button
-              class="tb-label-btn"
+              tabindex="0"
               onclick={() => onTagSelect?.(node.name)}
-              title={node.meta?.description ?? node.name}
+              onkeydown={(e) => (e.key === "Enter" || e.key === " ") && onTagSelect?.(node.name)}
             >
-              {node.label}
-              {#if node.synthesised}
-                <span class="tb-badge tb-badge--synth" title="No metadata for this tag"
-                  >virtual</span
+              <!-- Tag name chip -->
+              <span class="tb-tag-name">
+                <span class="tb-tag-hash">#</span>{node.label}
+                {#if nonCanon}
+                  <span class="tb-badge tb-badge--noncanon">!</span>
+                {/if}
+                {#if node.synthesised}
+                  <span class="tb-badge tb-badge--synth">virtual</span>
+                {/if}
+              </span>
+              <!-- Count bar -->
+              <span class="tb-bar-track">
+                <span class="tb-bar-fill" style="width: {Math.round((count / maxCount) * 100)}%;"
+                ></span>
+              </span>
+              <!-- Count -->
+              <span class="tb-count-num">{count}</span>
+              <!-- Actions (hover) -->
+              <span class="tb-actions" role="group" aria-label="Actions for {node.name}">
+                <button
+                  class="tb-action-btn"
+                  onclick={(e) => {
+                    e.stopPropagation();
+                    openAction("rename", node.name);
+                  }}
+                  title="Rename"
+                  aria-label="Rename {node.name}">rn</button
                 >
-              {/if}
-              {#if nonCanon}
-                <span
-                  class="tb-badge tb-badge--noncanon"
-                  title="Tag contains non-canonical characters">!</span
+                <button
+                  class="tb-action-btn"
+                  onclick={(e) => {
+                    e.stopPropagation();
+                    openAction("merge", node.name);
+                  }}
+                  title="Merge"
+                  aria-label="Merge {node.name}">→</button
                 >
-              {/if}
-              {#if node.meta?.scopePath}
-                <span
-                  class="tb-badge tb-badge--scoped"
-                  title="Scoped to group: {node.meta.scopePath}"
-                  >scope:{node.meta.scopePath.split("/").at(-1)}</span
+                <button
+                  class="tb-action-btn tb-action-btn--delete"
+                  onclick={(e) => {
+                    e.stopPropagation();
+                    openAction("delete", node.name);
+                  }}
+                  title="Delete"
+                  aria-label="Delete {node.name}">✕</button
                 >
-              {/if}
-            </button>
-
-            <!-- Count -->
-            {#if (node.meta?.count ?? 0) > 0}
-              <span class="tb-count-badge">{node.meta!.count}</span>
-            {/if}
-
-            <!-- Action buttons -->
-            <span class="tb-actions" role="group" aria-label="Actions for {node.name}">
-              <button
-                class="tb-action-btn"
-                onclick={() => openAction("rename", node.name)}
-                title="Rename"
-                aria-label="Rename {node.name}"
-              >
-                ✏️
-              </button>
-              <button
-                class="tb-action-btn"
-                onclick={() => openAction("merge", node.name)}
-                title="Merge into another tag"
-                aria-label="Merge {node.name}"
-              >
-                ⇢
-              </button>
-              <button
-                class="tb-action-btn tb-action-btn--delete"
-                onclick={() => openAction("delete", node.name)}
-                title="Delete tag metadata"
-                aria-label="Delete {node.name}"
-              >
-                ✕
-              </button>
-            </span>
-          </li>
+              </span>
+            </div>
+          {/each}
         {/if}
-      {/each}
-    </ul>
+
+        <!-- ── SCOPED section ─────────────────────────────────────────────── -->
+        {#if scopedNodes.length > 0}
+          <div class="tb-section-label tb-section-label--scoped">Scoped</div>
+          {#each scopedNodes as node (node.name)}
+            {#if isVisible(node)}
+              {@const hasChildren = node.children.length > 0}
+              {@const open = hasChildren && !isCollapsed(node.name)}
+              {@const nonCanon = isNonCanonical(node.name)}
+              {@const isChild = node.depth > 0}
+              <div
+                class="tb-scoped-row"
+                class:tb-scoped-row--child={isChild}
+                class:tb-row--selected={actionTarget === node.name}
+                role="treeitem"
+                aria-selected={actionTarget === node.name}
+                aria-expanded={hasChildren ? open : undefined}
+                style="--depth: {node.depth};"
+                tabindex="0"
+                onclick={() => onTagSelect?.(node.name)}
+                onkeydown={(e) => (e.key === "Enter" || e.key === " ") && onTagSelect?.(node.name)}
+              >
+                <!-- Tree indent + connector -->
+                {#if isChild}
+                  <span class="tb-tree-connector" aria-hidden="true">└</span>
+                {/if}
+
+                <!-- Collapse chevron for parents -->
+                {#if hasChildren}
+                  <button
+                    class="tb-chevron"
+                    onclick={(e) => {
+                      e.stopPropagation();
+                      toggleCollapsed(node.name);
+                    }}
+                    aria-label={open ? "Collapse" : "Expand"}
+                    tabindex="-1">{open ? "▾" : "▸"}</button
+                  >
+                {/if}
+
+                <!-- Tag name -->
+                <button
+                  class="tb-scoped-label-btn"
+                  onclick={(e) => {
+                    e.stopPropagation();
+                    onTagSelect?.(node.name);
+                  }}
+                  title={node.meta?.description ?? node.name}
+                  tabindex="-1"
+                >
+                  <span class="tb-tag-hash">#</span>{node.label}
+                  {#if node.synthesised}
+                    <span class="tb-badge tb-badge--synth">virtual</span>
+                  {/if}
+                  {#if nonCanon}
+                    <span class="tb-badge tb-badge--noncanon">!</span>
+                  {/if}
+                </button>
+
+                <!-- Scope badge -->
+                {#if node.meta?.scopePath}
+                  <span class="tb-scope-badge" title="Scoped to: {node.meta.scopePath}">
+                    {node.meta.scopePath.split("/").at(-1)}
+                  </span>
+                {/if}
+
+                <div class="tb-spacer"></div>
+
+                <!-- Count -->
+                {#if (node.meta?.count ?? 0) > 0}
+                  <span class="tb-count-num">{node.meta!.count}</span>
+                {/if}
+
+                <!-- Actions (hover) -->
+                <span class="tb-actions" role="group" aria-label="Actions for {node.name}">
+                  <button
+                    class="tb-action-btn"
+                    onclick={(e) => {
+                      e.stopPropagation();
+                      openAction("rename", node.name);
+                    }}
+                    title="Rename"
+                    aria-label="Rename {node.name}">rn</button
+                  >
+                  <button
+                    class="tb-action-btn"
+                    onclick={(e) => {
+                      e.stopPropagation();
+                      openAction("merge", node.name);
+                    }}
+                    title="Merge"
+                    aria-label="Merge {node.name}">→</button
+                  >
+                  <button
+                    class="tb-action-btn tb-action-btn--delete"
+                    onclick={(e) => {
+                      e.stopPropagation();
+                      openAction("delete", node.name);
+                    }}
+                    title="Delete"
+                    aria-label="Delete {node.name}">✕</button
+                  >
+                </span>
+              </div>
+            {/if}
+          {/each}
+        {/if}
+      </div>
+    </div>
   {/if}
 </div>
 
-<!-- Action popover / inline form -->
+<!-- Action dialog -->
 {#if actionMode && actionTarget}
   <div
     class="action-backdrop"
@@ -344,9 +409,9 @@
     overflow: hidden;
   }
 
-  /* ── Header ──────────────────────────────────────────────────────────────── */
+  /* ── Screen head ──────────────────────────────────────────────────────────── */
 
-  .tb-header {
+  .tb-head {
     display: flex;
     align-items: center;
     gap: 10px;
@@ -356,136 +421,283 @@
     flex-shrink: 0;
   }
 
-  .tb-title {
-    font-size: 18px;
-    font-weight: 700;
-    color: var(--tnd-text);
-    margin: 0;
+  .tb-head-main {
+    flex: 1;
+    min-width: 0;
   }
 
-  .tb-count {
+  .tb-title {
+    font-size: 17px;
+    font-weight: var(--tnd-title-weight, 700);
+    color: var(--tnd-text);
+    margin: 0;
+    font-family: var(--tnd-font-ui);
+    line-height: 1.2;
+  }
+
+  .tb-subtitle {
+    font-size: 11px;
+    color: var(--tnd-text-faint);
+    font-family: var(--tnd-font-mono);
+    display: block;
+    margin-top: 1px;
+  }
+
+  .tb-total {
     font-size: 11px;
     color: var(--tnd-text-faint);
     font-variant-numeric: tabular-nums;
+    font-family: var(--tnd-font-ui);
+    flex-shrink: 0;
   }
 
-  /* ── Status ──────────────────────────────────────────────────────────────── */
+  /* ── Status ───────────────────────────────────────────────────────────────── */
 
   .tb-status {
     padding: 24px;
     font-size: 13px;
     color: var(--tnd-text-faint);
+    font-family: var(--tnd-font-ui);
   }
 
   .tb-status--error {
     color: var(--tnd-chip-red-fg);
   }
 
-  /* ── Tag list ────────────────────────────────────────────────────────────── */
+  /* ── Body scroll ──────────────────────────────────────────────────────────── */
 
-  .tb-list {
-    list-style: none;
-    margin: 0;
-    padding: 8px 0;
-    overflow-y: auto;
+  .tb-body {
     flex: 1;
+    overflow-y: auto;
+    padding: 18px 0;
   }
 
-  .tb-row {
+  .tb-content {
+    max-width: 700px;
+    margin: 0 auto;
+    padding: 0 24px;
+  }
+
+  /* ── Section label ────────────────────────────────────────────────────────── */
+
+  .tb-section-label {
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: var(--tnd-label-spacing, 0.06em);
+    text-transform: var(--tnd-label-transform, uppercase);
+    color: var(--tnd-text-faint);
+    margin-bottom: 10px;
+    font-family: var(--tnd-font-ui);
+    user-select: none;
+  }
+
+  .tb-section-label--scoped {
+    margin-top: 24px;
+  }
+
+  /* ── Global rows (tag + bar + count) ─────────────────────────────────────── */
+
+  .tb-global-row {
     display: flex;
     align-items: center;
-    gap: 6px;
-    height: 32px;
-    /* depth-based indent */
-    padding: 0 12px 0 calc(12px + var(--depth, 0) * 18px);
-    cursor: default;
+    gap: 12px;
+    padding: 7px 0;
+    cursor: pointer;
     position: relative;
-    color: var(--tnd-text-muted);
-    font-size: 13px;
-    transition: background 0.07s;
   }
 
-  .tb-row:hover {
-    background: var(--tnd-panel2);
-  }
-
-  .tb-row:hover .tb-actions {
+  .tb-global-row:hover .tb-actions {
     opacity: 1;
   }
 
-  .tb-row--selected {
-    background: var(--tnd-accent-soft);
+  .tb-global-row:focus-visible {
+    outline: 2px solid var(--tnd-accent);
+    outline-offset: 2px;
+    border-radius: var(--tnd-radius, 3px);
   }
 
-  /* Chevron */
-  .tb-chevron {
-    width: 12px;
+  /* Tag name column (fixed width) */
+  .tb-tag-name {
+    width: 150px;
     flex-shrink: 0;
-    font-size: 10px;
-    color: var(--tnd-text-faint);
-    cursor: pointer;
-    visibility: hidden;
-    user-select: none;
-    border: none;
-    background: transparent;
-    padding: 0;
-    line-height: 1;
-  }
-
-  .tb-chevron--visible {
-    visibility: visible;
-  }
-
-  /* Color chip */
-  .tb-color-chip {
-    width: 20px;
-    height: 20px;
-    border-radius: 4px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 11px;
-    flex-shrink: 0;
-    user-select: none;
-    cursor: help;
-  }
-
-  .tb-color-chip--synth {
-    background: var(--tnd-panel2);
-    color: var(--tnd-text-faint);
-  }
-
-  /* Label button */
-  .tb-label-btn {
-    flex: 1;
-    background: transparent;
-    border: none;
-    cursor: pointer;
-    font-family: inherit;
+    font-family: var(--tnd-font-ui);
     font-size: 13px;
-    color: var(--tnd-text);
-    font-weight: 500;
-    text-align: left;
-    padding: 0;
+    font-weight: 700;
+    color: var(--tnd-accent-text);
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    display: flex;
-    align-items: center;
-    gap: 5px;
   }
 
-  .tb-label-btn:hover {
+  /* Count bar */
+  .tb-bar-track {
+    flex: 1;
+    height: 7px;
+    background: var(--tnd-panel2);
+    position: relative;
+    display: block;
+    border-radius: var(--tnd-radius, 0px);
+    overflow: hidden;
+  }
+
+  .tb-bar-fill {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    background: var(--tnd-accent);
+    transition: width 0.3s ease;
+  }
+
+  /* ── Scoped rows ──────────────────────────────────────────────────────────── */
+
+  .tb-scoped-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 0;
+    border-bottom: 1px solid var(--tnd-line);
+    cursor: pointer;
+    position: relative;
+  }
+
+  .tb-scoped-row--child {
+    padding-left: calc(var(--depth, 1) * 20px);
+  }
+
+  .tb-scoped-row:hover .tb-actions {
+    opacity: 1;
+  }
+
+  .tb-scoped-row:focus-visible {
+    outline: 2px solid var(--tnd-accent);
+    outline-offset: 2px;
+  }
+
+  /* Tree connector "└" */
+  .tb-tree-connector {
+    color: var(--tnd-text-faint);
+    font-size: 12px;
+    flex-shrink: 0;
+    line-height: 1;
+    user-select: none;
+  }
+
+  /* Chevron for parents */
+  .tb-chevron {
+    width: 14px;
+    flex-shrink: 0;
+    font-size: 10px;
+    color: var(--tnd-text-faint);
+    background: transparent;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    line-height: 1;
+    user-select: none;
+  }
+
+  /* Scoped label button */
+  .tb-scoped-label-btn {
+    flex: 0 0 auto;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    font-family: var(--tnd-font-ui);
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--tnd-chip-amber-fg, var(--tnd-accent-text));
+    text-align: left;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    white-space: nowrap;
+  }
+
+  .tb-scoped-label-btn:hover {
     color: var(--tnd-accent-text);
   }
 
-  /* Badges */
+  /* Scope badge */
+  .tb-scope-badge {
+    font-size: 10px;
+    color: var(--tnd-text-faint);
+    font-family: var(--tnd-font-mono);
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+
+  .tb-spacer {
+    flex: 1;
+  }
+
+  /* ── Shared: tag hash prefix ──────────────────────────────────────────────── */
+
+  /* Default (Paper/Editorial hash) — the hash is part of the label */
+  .tb-tag-hash {
+    opacity: 1;
+  }
+
+  /* Mono → bracket style: mono font on the hash too */
+  :global([data-tnd-theme="mono"]) .tb-tag-name,
+  :global([data-tnd-theme="mono"]) .tb-scoped-label-btn {
+    font-family: var(--tnd-font-mono);
+  }
+
+  /* Editorial → caps: uppercase, mono, hairline underline, no hash */
+  :global([data-tnd-theme="editorial"]) .tb-tag-name,
+  :global([data-tnd-theme="editorial"]) .tb-scoped-label-btn {
+    font-family: var(--tnd-font-mono);
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    border-bottom: 1px solid var(--tnd-line-strong);
+    padding-bottom: 1px;
+    color: var(--tnd-text);
+    gap: 0;
+  }
+
+  :global([data-tnd-theme="editorial"]) .tb-tag-hash {
+    display: none;
+  }
+
+  /* Fog + Soft → pill: padded chip */
+  :global([data-tnd-theme="fog"]) .tb-tag-name,
+  :global([data-tnd-theme="soft"]) .tb-tag-name {
+    background: var(--tnd-panel2);
+    color: var(--tnd-text-muted);
+    border: 1px solid var(--tnd-line);
+    border-radius: var(--tnd-tag-radius);
+    padding: 1px 8px;
+    width: auto;
+  }
+
+  :global([data-tnd-theme="fog"]) .tb-scoped-label-btn,
+  :global([data-tnd-theme="soft"]) .tb-scoped-label-btn {
+    background: var(--tnd-accent-soft);
+    color: var(--tnd-accent-text);
+    border: none;
+    border-radius: var(--tnd-tag-radius);
+    padding: 1px 8px;
+  }
+
+  :global([data-tnd-theme="fog"]) .tb-tag-hash,
+  :global([data-tnd-theme="soft"]) .tb-tag-hash {
+    opacity: 0.5;
+  }
+
+  /* ── Badges ───────────────────────────────────────────────────────────────── */
+
   .tb-badge {
     font-size: 9px;
     font-weight: 700;
     letter-spacing: 0.04em;
     padding: 1px 4px;
-    border-radius: 3px;
+    border-radius: var(--tnd-tag-radius, 3px);
     text-transform: uppercase;
     flex-shrink: 0;
   }
@@ -500,20 +712,20 @@
     color: var(--tnd-chip-amber-fg);
   }
 
-  .tb-badge--scoped {
-    background: var(--tnd-chip-teal-bg, #e0f7f4);
-    color: var(--tnd-chip-teal-fg, #147a6e);
-  }
+  /* ── Count ────────────────────────────────────────────────────────────────── */
 
-  /* Count */
-  .tb-count-badge {
-    font-size: 11px;
-    color: var(--tnd-text-faint);
+  .tb-count-num {
+    font-size: 12px;
+    color: var(--tnd-text-muted);
     font-variant-numeric: tabular-nums;
     flex-shrink: 0;
+    width: 32px;
+    text-align: right;
+    font-family: var(--tnd-font-ui);
   }
 
-  /* Actions */
+  /* ── Actions ──────────────────────────────────────────────────────────────── */
+
   .tb-actions {
     display: flex;
     gap: 2px;
@@ -526,11 +738,11 @@
     background: transparent;
     border: none;
     cursor: pointer;
-    font-size: 11px;
+    font-size: 10px;
     padding: 2px 5px;
-    border-radius: 3px;
+    border-radius: var(--tnd-radius, 3px);
     color: var(--tnd-text-faint);
-    font-family: inherit;
+    font-family: var(--tnd-font-ui);
     line-height: 1;
     transition: background 0.07s;
   }
@@ -545,7 +757,17 @@
     color: var(--tnd-chip-red-fg);
   }
 
-  /* ── Action dialog ───────────────────────────────────────────────────────── */
+  /* Row hover shows actions */
+  .tb-global-row:hover .tb-actions,
+  .tb-scoped-row:hover .tb-actions {
+    opacity: 1;
+  }
+
+  .tb-row--selected {
+    background: var(--tnd-accent-soft);
+  }
+
+  /* ── Action dialog ────────────────────────────────────────────────────────── */
 
   .action-backdrop {
     position: fixed;
@@ -560,7 +782,7 @@
   .action-dialog {
     background: var(--tnd-panel);
     border: 1px solid var(--tnd-line-strong);
-    border-radius: 8px;
+    border-radius: var(--tnd-radius, 8px);
     box-shadow: var(--tnd-shadow);
     width: 360px;
     max-width: calc(100vw - 32px);
@@ -581,14 +803,15 @@
     font-size: 13.5px;
     font-weight: 600;
     color: var(--tnd-text);
+    font-family: var(--tnd-font-ui);
   }
 
   .action-dialog-title code {
-    font-family: ui-monospace, monospace;
+    font-family: var(--tnd-font-mono);
     font-size: 12px;
     background: var(--tnd-panel2);
     padding: 1px 4px;
-    border-radius: 3px;
+    border-radius: var(--tnd-tag-radius, 3px);
   }
 
   .dialog-close-btn {
@@ -598,8 +821,8 @@
     color: var(--tnd-text-faint);
     font-size: 13px;
     padding: 2px 6px;
-    border-radius: 3px;
-    font-family: inherit;
+    border-radius: var(--tnd-radius, 3px);
+    font-family: var(--tnd-font-ui);
   }
 
   .dialog-close-btn:hover {
@@ -614,20 +837,23 @@
   }
 
   .al {
-    font-size: 11.5px;
+    font-size: 11px;
     font-weight: 600;
     color: var(--tnd-text-muted);
     user-select: none;
+    font-family: var(--tnd-font-ui);
+    text-transform: var(--tnd-label-transform, none);
+    letter-spacing: var(--tnd-label-spacing, 0);
   }
 
   .action-input {
     font-size: 13px;
     padding: 6px 8px;
     border: 1px solid var(--tnd-line-strong);
-    border-radius: 4px;
+    border-radius: var(--tnd-radius, 4px);
     background: var(--tnd-bg);
     color: var(--tnd-text);
-    font-family: inherit;
+    font-family: var(--tnd-font-ui);
     outline: none;
   }
 
@@ -640,13 +866,14 @@
     color: var(--tnd-text-faint);
     margin: 0;
     line-height: 1.5;
+    font-family: var(--tnd-font-ui);
   }
 
   .action-note code {
-    font-family: ui-monospace, monospace;
+    font-family: var(--tnd-font-mono);
     background: var(--tnd-panel2);
     padding: 1px 3px;
-    border-radius: 2px;
+    border-radius: var(--tnd-tag-radius, 2px);
   }
 
   .action-error {
@@ -654,7 +881,7 @@
     color: var(--tnd-chip-red-fg);
     background: var(--tnd-chip-red-bg);
     padding: 6px 8px;
-    border-radius: 4px;
+    border-radius: var(--tnd-radius, 4px);
   }
 
   .action-dialog-footer {
@@ -668,9 +895,9 @@
   .btn {
     font-size: 13px;
     padding: 5px 14px;
-    border-radius: 5px;
+    border-radius: var(--tnd-radius, 5px);
     cursor: pointer;
-    font-family: inherit;
+    font-family: var(--tnd-font-ui);
     font-weight: 600;
     border: 1px solid transparent;
     transition: background 0.08s;
