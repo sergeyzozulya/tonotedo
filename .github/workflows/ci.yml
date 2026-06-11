@@ -85,10 +85,15 @@ jobs:
 
       - name: Build Android debug APK (aarch64)
         # rquickjs (plugin host) has no shipped bindings for android triples, so
-        # rquickjs-sys generates them with bindgen at build time — point it at the
-        # NDK's libclang. CC/AR/linker are wired by `tauri android build`.
+        # rquickjs-sys generates them with bindgen at build time. bindgen needs:
+        #   - LIBCLANG_PATH → the NDK's libclang
+        #   - BINDGEN_EXTRA_CLANG_ARGS → the NDK sysroot + target, else clang parses
+        #     the host's /usr/include and dies on 'bits/libc-header-start.h not found'.
+        # CC/AR/linker are wired by `tauri android build`.
         run: |
-          export LIBCLANG_PATH="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/lib"
+          TC="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64"
+          export LIBCLANG_PATH="$TC/lib"
+          export BINDGEN_EXTRA_CLANG_ARGS="--sysroot=$TC/sysroot --target=aarch64-linux-android"
           pnpm tauri android build --apk --target aarch64 --ci
         env:
           JAVA_HOME: ${{ env.JAVA_HOME }}
