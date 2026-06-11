@@ -97,22 +97,55 @@ pub fn list_groups_inner(lib: &OpenLibrary) -> CmdResult<Vec<GroupMetaDto>> {
         }
     }
 
+    // Augment with group_meta data (name/color/order from _group.md).
+    let all_meta = lib.index.all_group_meta().unwrap_or_default();
+    let meta_map: std::collections::HashMap<String, crate::core::index::GroupMetaRow> =
+        all_meta.into_iter().map(|r| (r.path.clone(), r)).collect();
+
     let result = counts
         .into_iter()
         .filter(|(p, _)| !p.is_empty())
         .map(|(path, count)| {
-            let name = path.split('/').next_back().unwrap_or(&path).to_string();
+            let default_name = path.split('/').next_back().unwrap_or(&path).to_string();
+            let (name, color, order) = if let Some(meta) = meta_map.get(&path) {
+                (
+                    meta.name.clone().unwrap_or(default_name),
+                    meta.color.clone(),
+                    meta.sort_order,
+                )
+            } else {
+                (default_name, None, None)
+            };
             GroupMetaDto {
                 path,
                 name,
                 count,
-                order: None,
-                color: None,
+                order,
+                color,
             }
         })
         .collect();
 
     Ok(result)
+}
+
+// ── effective_schema ──────────────────────────────────────────────────────────
+
+/// `effective_schema(group_path)` — merged property schema for a group's
+/// ancestor chain.  Child overrides parent.
+///
+/// Returns the JSON-encoded property schema map, or `null` when no group in
+/// the chain has a schema defined.
+#[tauri::command]
+pub fn effective_schema(
+    group_path: String,
+    state: State<'_, AppState>,
+) -> CmdResult<Option<String>> {
+    let guard = require_open!(state);
+    let lib = guard.as_ref().ok_or_else(IpcError::not_open)?;
+    lib.index
+        .effective_schema(&group_path)
+        .map_err(|e| IpcError::io(format!("effective_schema failed: {e}")))
 }
 
 // ── Group 1: Assets ───────────────────────────────────────────────────────────

@@ -143,6 +143,13 @@ pub fn reconcile_batch(
             // Handled as rename_entry in pass 2.
             continue;
         }
+        // If a _group.md was deleted, remove its group_meta row.
+        if abs_path.file_name().and_then(|n| n.to_str()) == Some("_group.md") {
+            let gp = group_path_for_rel(&rel);
+            if let Err(e) = index.remove_group_meta(&gp) {
+                log_index_error("remove_group_meta", &rel, &e, needs_full_rescan);
+            }
+        }
         if let Some(ev) = do_remove(index, &rel, abs_path, needs_full_rescan) {
             out.push(ev);
         }
@@ -314,14 +321,12 @@ fn do_upsert(
 
     // ── Reserved gate ────────────────────────────────────────────────────────
     // Any path with a reserved (`_`/`.`-prefixed) component is NOT an entry.
-    // The two root-level projection files are the only exception, handled below.
-    //
-    // Note: `_group.md` is intentionally NOT indexed as an entry (spec 0002): it
-    // is openable/editable but excluded from lists and search, and wikilinks to a
-    // group resolve via groups, not entry rows.  It therefore falls through this
-    // gate as a plain reserved file (ledger row only, no entry row).
+    // Exceptions:
+    //   - Root-level `_tags.md` and `_people.md` → global projection files.
+    //   - Any `_group.md` (in any group directory) → group-local projection file.
     let is_root_projection = group_path.is_empty() && (name == "_tags.md" || name == "_people.md");
-    if has_reserved_component(&rel) && !is_root_projection {
+    let is_group_projection = name == "_group.md";
+    if has_reserved_component(&rel) && !is_root_projection && !is_group_projection {
         // Keep the ledger row so the rescan fast-path skips it next time, but
         // never index it as an entry.
         return reserved_ledger_only(index, abs_path, &rel, needs_full_rescan);
@@ -408,6 +413,18 @@ fn do_upsert(
             name,
             &bytes,
             &rel,
+            file_stat.mtime,
+            file_stat.size,
+            &hash_hex,
+            needs_full_rescan,
+        );
+    }
+    if is_group_projection {
+        return do_group_projection(
+            index,
+            &bytes,
+            &rel,
+            &group_path,
             file_stat.mtime,
             file_stat.size,
             &hash_hex,
@@ -697,6 +714,39 @@ fn do_projection(
 
     if let Err(e) = index.upsert_files_row(rel, mtime, size, hash_hex) {
         log_index_error("upsert_files_row(projection)", rel, &e, needs_full_rescan);
+    }
+    Vec::new()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn do_group_projection(
+    index: &mut Index,
+    bytes: &[u8],
+    rel: &str,
+    group_path: &str,
+    mtime: i64,
+    size: i64,
+    hash_hex: &str,
+    needs_full_rescan: &AtomicBool,
+) -> Vec<ChangeEvent> {
+    match projection::apply_group_projection(index, group_path, bytes) {
+        Ok(()) => {}
+        Err(ProjectionError::Parse) => {
+            eprintln!("reconcile: _group.md ({rel}) failed to parse; keeping previous group meta");
+        }
+        Err(ProjectionError::Index(e)) => {
+            log_index_error("group_projection", rel, &e, needs_full_rescan);
+            return Vec::new();
+        }
+    }
+
+    if let Err(e) = index.upsert_files_row(rel, mtime, size, hash_hex) {
+        log_index_error(
+            "upsert_files_row(group_projection)",
+            rel,
+            &e,
+            needs_full_rescan,
+        );
     }
     Vec::new()
 }

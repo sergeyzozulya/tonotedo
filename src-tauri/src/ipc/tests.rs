@@ -225,6 +225,9 @@ impl Fixture {
                     name: tag,
                     color,
                     count,
+                    scope_path: None,
+                    description: None,
+                    icon: None,
                 }
             })
             .collect())

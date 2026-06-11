@@ -64,6 +64,14 @@ export interface AutocompleteConfig {
    * No text is inserted — creation is the caller's responsibility.
    */
   onCreatePerson?: (slug: string) => void;
+  /**
+   * Mutable ref holding the group path of the entry being edited.
+   * The ref is read on every completion invocation so it reflects the latest
+   * entry without requiring an editor rebuild when the user switches entries.
+   * When provided (and current is non-null), scoped tags are ranked:
+   * in-scope first, globals second; out-of-scope scoped tags excluded.
+   */
+  groupPath?: { current: string | null | undefined };
 }
 
 // ── Syntax-tree guards ──────────────────────────────────────────────────────────
@@ -148,6 +156,63 @@ export function rankTags(tags: TagMeta[], query: string): TagMeta[] {
 }
 
 /**
+ * Returns true when `groupPath` is inside or equal to `scopePath`.
+ * A group is "in scope" when its path equals the scope or starts with `scope/`.
+ */
+export function isInScope(groupPath: string | null | undefined, scopePath: string): boolean {
+  if (!groupPath) return false;
+  return groupPath === scopePath || groupPath.startsWith(scopePath + "/");
+}
+
+/**
+ * Filter and rank tags with scope awareness.
+ *
+ * Rules:
+ *  1. Scoped tags whose `scopePath` is an ancestor-or-equal of `groupPath` → visible, tier 1.
+ *  2. Global tags (scopePath is null/undefined) → visible, tier 2.
+ *  3. Scoped tags from sibling/unrelated groups → excluded.
+ *  4. Global collision: if a global and a scoped tag share the same name, the
+ *     global tag takes the slot (scoped declaration is redundant/warned).
+ *
+ * When `groupPath` is null/undefined, all scoped tags are excluded and only
+ * globals are returned (safe default for entries without a group).
+ */
+export function rankTagsScoped(
+  tags: TagMeta[],
+  groupPath: string | null | undefined,
+  query: string,
+): TagMeta[] {
+  const globalNames = new Set(
+    tags.filter((t) => !t.scopePath).map((t) => t.name),
+  );
+
+  const visible = tags.filter((t) => {
+    if (!t.scopePath) return true; // global: always visible
+    if (globalNames.has(t.name)) return false; // global collision: global wins
+    return isInScope(groupPath, t.scopePath); // scoped: only if in scope
+  });
+
+  const scored = visible
+    .map((t) => ({ tag: t, score: matchScore(t.name, query) }))
+    .filter((x) => x.score > 0);
+
+  scored.sort((a, b) => {
+    // Scoped-in-scope first (tier 1).
+    const scopedA = a.tag.scopePath ? 1 : 0;
+    const scopedB = b.tag.scopePath ? 1 : 0;
+    if (scopedB !== scopedA) return scopedB - scopedA;
+    // Higher matchScore first.
+    if (b.score !== a.score) return b.score - a.score;
+    // Count desc.
+    if (b.tag.count !== a.tag.count) return b.tag.count - a.tag.count;
+    // Name asc.
+    return a.tag.name.localeCompare(b.tag.name);
+  });
+
+  return scored.map((x) => x.tag);
+}
+
+/**
  * Rank people: declared (displayName differs from slug → real full_name set)
  * first, then undeclared. Within each tier, sort by count desc then slug asc.
  */
@@ -206,7 +271,7 @@ function initialSpan(person: PersonMeta): HTMLElement {
  * a restart — consistent with the chips layer's refreshMetadata approach.
  */
 export function buildCompletionSources(config: AutocompleteConfig): CompletionSource[] {
-  const { ipc, onCreatePerson } = config;
+  const { ipc, onCreatePerson, groupPath } = config;
 
   // ── Tag source ─────────────────────────────────────────────────────────────
 
@@ -224,7 +289,11 @@ export function buildCompletionSources(config: AutocompleteConfig): CompletionSo
 
     const result = await ipc.tag_index();
     if (!result.ok) return null;
-    const tags = rankTags(result.value, query);
+    const currentGroupPath = groupPath?.current;
+    const tags =
+      currentGroupPath != null
+        ? rankTagsScoped(result.value, currentGroupPath, query)
+        : rankTags(result.value, query);
 
     const options: Completion[] = tags.map((tag) => {
       // Hierarchical display: replace `/` with ` / ` in the label.

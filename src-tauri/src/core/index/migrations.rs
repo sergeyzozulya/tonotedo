@@ -24,7 +24,7 @@ use rusqlite::Connection;
 use super::IndexError;
 
 /// Current target schema version.
-const CURRENT_VERSION: i64 = 2;
+const CURRENT_VERSION: i64 = 3;
 
 /// Apply all pending migrations.
 pub fn run(conn: &mut Connection) -> Result<(), IndexError> {
@@ -46,6 +46,9 @@ pub fn run(conn: &mut Connection) -> Result<(), IndexError> {
     }
     if version < 2 {
         apply_v2(conn)?;
+    }
+    if version < 3 {
+        apply_v3(conn)?;
     }
 
     Ok(())
@@ -175,8 +178,8 @@ fn apply_v1(conn: &mut Connection) -> Result<(), IndexError> {
     )?;
 
     tx.execute(
-        "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?1)",
-        rusqlite::params![CURRENT_VERSION.to_string()],
+        "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '1')",
+        [],
     )?;
     tx.commit()?;
     Ok(())
@@ -207,8 +210,62 @@ fn apply_v2(conn: &mut Connection) -> Result<(), IndexError> {
     }
 
     tx.execute(
-        "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?1)",
-        rusqlite::params![CURRENT_VERSION.to_string()],
+        "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '2')",
+        [],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// v3: add `group_meta` table and `scope_path` column on `tag_meta`.
+///
+/// `group_meta` stores parsed `_group.md` frontmatter (name, icon, color, order,
+/// view, schema_json).  `tag_meta.scope_path` is the group path that owns a
+/// scoped tag declaration (NULL for global tags from `_tags.md`).
+fn apply_v3(conn: &mut Connection) -> Result<(), IndexError> {
+    let tx = conn.transaction()?;
+
+    // group_meta: one row per group folder that has a _group.md file.
+    let table_exists: bool = tx
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='group_meta'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
+        > 0;
+
+    if !table_exists {
+        tx.execute_batch(
+            "CREATE TABLE IF NOT EXISTS group_meta (
+                path        TEXT PRIMARY KEY,   -- vault-relative group path
+                name        TEXT,               -- display name override
+                icon        TEXT,               -- emoji/icon string
+                color       TEXT,               -- color token
+                sort_order  INTEGER,            -- explicit ordering hint (0003)
+                view        TEXT,               -- default view mode
+                schema_json TEXT                -- JSON-encoded property schema map
+            );",
+        )?;
+    }
+
+    // tag_meta.scope_path: NULL = global (_tags.md), non-NULL = scoped to a group.
+    let scope_col_exists: bool = tx
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('tag_meta') WHERE name='scope_path'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
+        > 0;
+
+    if !scope_col_exists {
+        tx.execute_batch("ALTER TABLE tag_meta ADD COLUMN scope_path TEXT;")?;
+    }
+
+    tx.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '3')",
+        [],
     )?;
     tx.commit()?;
     Ok(())
@@ -269,6 +326,32 @@ mod tests {
             pending_col, 1,
             "files.pending column must exist after v2 migration"
         );
+
+        // v3: group_meta table exists.
+        let gm_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='group_meta'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            gm_count, 1,
+            "group_meta table must exist after v3 migration"
+        );
+
+        // v3: tag_meta.scope_path column exists.
+        let scope_col: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('tag_meta') WHERE name='scope_path'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            scope_col, 1,
+            "tag_meta.scope_path column must exist after v3 migration"
+        );
     }
 
     #[test]
@@ -285,7 +368,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(ver, CURRENT_VERSION);
+        assert_eq!(ver, 3);
     }
 
     #[test]
@@ -320,7 +403,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(ver, 2, "schema_version must be 2 after v2 migration");
+        assert_eq!(ver, 3, "schema_version must be 3 after all migrations");
 
         // pending column must exist exactly once.
         let col_count: i64 = conn
@@ -331,5 +414,60 @@ mod tests {
             )
             .unwrap();
         assert_eq!(col_count, 1, "pending column must exist exactly once");
+    }
+
+    #[test]
+    fn v3_migration_is_idempotent_on_existing_v2_database() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+        )
+        .unwrap();
+        apply_v1(&mut conn).expect("v1 must succeed");
+        // Force version to 1 so v2 runs.
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '1')",
+            [],
+        )
+        .unwrap();
+        apply_v2(&mut conn).expect("v2 must succeed");
+        // Now force to 2 so v3 runs.
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '2')",
+            [],
+        )
+        .unwrap();
+        run(&mut conn).expect("v3 on top of v2 must succeed");
+        run(&mut conn).expect("second run must be a no-op");
+
+        let ver: i64 = conn
+            .query_row(
+                "SELECT CAST(value AS INTEGER) FROM meta WHERE key='schema_version'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(ver, 3, "schema_version must be 3 after v3 migration");
+
+        // group_meta table must exist.
+        let gm: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='group_meta'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(gm, 1, "group_meta table must exist after v3");
+
+        // scope_path column on tag_meta must exist exactly once.
+        let sc: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('tag_meta') WHERE name='scope_path'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(sc, 1, "scope_path column must exist exactly once");
     }
 }

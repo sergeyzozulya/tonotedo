@@ -216,6 +216,12 @@
                   title="Tag contains non-canonical characters">!</span
                 >
               {/if}
+              {#if node.meta?.scopePath}
+                <span
+                  class="tb-badge tb-badge--scoped"
+                  title="Scoped to group: {node.meta.scopePath}">scope:{node.meta.scopePath.split("/").at(-1)}</span
+                >
+              {/if}
             </button>
 
             <!-- Count -->
@@ -491,6 +497,11 @@
   .tb-badge--noncanon {
     background: var(--tnd-chip-amber-bg);
     color: var(--tnd-chip-amber-fg);
+  }
+
+  .tb-badge--scoped {
+    background: var(--tnd-chip-teal-bg, #e0f7f4);
+    color: var(--tnd-chip-teal-fg, #147a6e);
   }
 
   /* Count */

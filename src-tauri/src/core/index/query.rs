@@ -1,8 +1,119 @@
 // Query layer for the index.
 
 use rusqlite::{params, Connection};
+use serde_json;
 
 use super::IndexError;
+
+// ── FTS query sanitisation ────────────────────────────────────────────────────
+
+/// Escape a raw user query string into a safe FTS5 MATCH expression.
+///
+/// Rules (FTS5 §Full-text query syntax):
+///   - Split on whitespace.
+///   - Preserve quoted phrases ("exact phrase") as a single token.
+///   - Each bare token is wrapped in double-quotes with any internal double-
+///     quotes doubled (e.g. `O"Reilly` → `"O""Reilly"`).
+///   - The last bare/phrase token gets a `*` suffix for prefix matching
+///     (spec 0009: prefix matching is the floor).
+///   - Tokens are joined with a single space (FTS5 implicit AND).
+///
+/// Empty or whitespace-only input returns an empty string (caller must handle
+/// the empty-query path before calling this).
+pub fn sanitize_fts_query(raw: &str) -> String {
+    if raw.trim().is_empty() {
+        return String::new();
+    }
+
+    let mut tokens: Vec<String> = Vec::new();
+    let chars: Vec<char> = raw.chars().collect();
+    let mut i = 0;
+
+    while i < chars.len() {
+        // Skip whitespace between tokens.
+        if chars[i].is_whitespace() {
+            i += 1;
+            continue;
+        }
+
+        if chars[i] == '"' {
+            // Quoted phrase: consume up to the next unescaped `"`.
+            i += 1; // skip opening `"`
+            let mut phrase = String::new();
+            while i < chars.len() && chars[i] != '"' {
+                phrase.push(chars[i]);
+                i += 1;
+            }
+            if i < chars.len() {
+                i += 1; // skip closing `"`
+            }
+            if !phrase.is_empty() {
+                // Re-wrap the phrase, doubling any internal quotes.
+                let escaped = phrase.replace('"', "\"\"");
+                tokens.push(format!("\"{}\"", escaped));
+            }
+        } else {
+            // Bare word: consume until whitespace.
+            let mut word = String::new();
+            while i < chars.len() && !chars[i].is_whitespace() {
+                word.push(chars[i]);
+                i += 1;
+            }
+            if !word.is_empty() {
+                // Double any internal double-quotes, then wrap.
+                let escaped = word.replace('"', "\"\"");
+                tokens.push(format!("\"{}\"", escaped));
+            }
+        }
+    }
+
+    if tokens.is_empty() {
+        return String::new();
+    }
+
+    // Append `*` to the last token for prefix matching (strip the trailing `"`,
+    // append `*`, then re-add the `"`).
+    if let Some(last) = tokens.last_mut() {
+        // last looks like `"something"` — strip the trailing quote and add `*"`.
+        if last.ends_with('"') {
+            last.pop();
+            last.push('*');
+            last.push('"');
+        }
+    }
+
+    tokens.join(" ")
+}
+
+/// Expand a raw user query into FTS slugs via the people table.
+///
+/// For each whitespace-separated token in `raw` (case-insensitive):
+/// - If a people row exists whose `slug` or `full_name` contains the token
+///   (LIKE `%token%`) → collect those slugs.
+///
+/// Returns the set of matching slugs (may be empty).
+fn slugs_matching_query(conn: &Connection, raw: &str) -> Vec<String> {
+    let mut slugs: Vec<String> = Vec::new();
+    for token in raw.split_whitespace() {
+        let pattern = format!("%{}%", token.to_lowercase());
+        let mut stmt = match conn.prepare(
+            "SELECT slug FROM people \
+             WHERE lower(slug) LIKE ?1 OR lower(full_name) LIKE ?1",
+        ) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let rows = stmt.query_map(params![pattern], |r| r.get::<_, String>(0));
+        if let Ok(rows) = rows {
+            for row in rows.flatten() {
+                if !slugs.contains(&row) {
+                    slugs.push(row);
+                }
+            }
+        }
+    }
+    slugs
+}
 
 /// One FTS search hit.
 #[derive(Debug, Clone, PartialEq)]
@@ -67,6 +178,14 @@ pub struct BacklinkRow {
 ///
 /// Empty `text` returns the 50 most-recently-updated entries (spec 0009 "Empty
 /// query: show recently updated entries (top 50)").
+///
+/// ## People-name join (spec 0005 AC10)
+///
+/// For each whitespace-separated token in the query the people table is checked
+/// for slugs whose `full_name` or `slug` contains the token (case-insensitive
+/// LIKE).  Entries that mention any of those slugs (via the `mentions` table,
+/// both surfaces) are unioned into the result set, ranked below direct FTS hits
+/// (rank = 0, recency-ordered), and deduplicated.
 pub fn search(
     conn: &Connection,
     text: &str,
@@ -76,27 +195,69 @@ pub fn search(
         return recent_entries(conn, limit.min(50));
     }
 
-    let mut stmt = conn.prepare(
-        "SELECT e.id, e.entry_id, e.path, e.title, e.updated, bm25(fts, 10, 1) AS rank
-         FROM fts
-         JOIN entries e ON e.id = fts.rowid
-         WHERE fts MATCH ?1
-         ORDER BY rank, e.updated DESC
-         LIMIT ?2",
-    )?;
+    let fts_query = sanitize_fts_query(text);
 
-    let rows = stmt.query_map(params![text, limit as i64], |r| {
-        Ok(SearchResult {
-            id: r.get(0)?,
-            entry_id: r.get(1)?,
-            path: r.get(2)?,
-            title: r.get(3)?,
-            updated: r.get(4)?,
-            rank: r.get(5)?,
-        })
-    })?;
+    // Direct FTS hits (title/body).
+    let mut fts_results: Vec<SearchResult> = if !fts_query.is_empty() {
+        let mut stmt = conn.prepare(
+            "SELECT e.id, e.entry_id, e.path, e.title, e.updated, bm25(fts, 10, 1) AS rank
+             FROM fts
+             JOIN entries e ON e.id = fts.rowid
+             WHERE fts MATCH ?1
+             ORDER BY rank, e.updated DESC
+             LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![fts_query, limit as i64], |r| {
+            Ok(SearchResult {
+                id: r.get(0)?,
+                entry_id: r.get(1)?,
+                path: r.get(2)?,
+                title: r.get(3)?,
+                updated: r.get(4)?,
+                rank: r.get(5)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    } else {
+        Vec::new()
+    };
 
-    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    // People-name join (AC10): expand tokens to slugs via the people table,
+    // then find entries that mention those slugs.
+    let matched_slugs = slugs_matching_query(conn, text);
+    if !matched_slugs.is_empty() {
+        // Collect ids already in fts_results to avoid duplicates.
+        let seen_ids: std::collections::HashSet<i64> = fts_results.iter().map(|r| r.id).collect();
+
+        for slug in &matched_slugs {
+            let mut stmt = conn.prepare(
+                "SELECT DISTINCT e.id, e.entry_id, e.path, e.title, e.updated
+                 FROM mentions m
+                 JOIN entries e ON e.id = m.entry_id
+                 WHERE lower(m.slug) = lower(?1)
+                 ORDER BY e.updated DESC",
+            )?;
+            let rows = stmt.query_map(params![slug], |r| {
+                Ok(SearchResult {
+                    id: r.get(0)?,
+                    entry_id: r.get(1)?,
+                    path: r.get(2)?,
+                    title: r.get(3)?,
+                    updated: r.get(4)?,
+                    rank: 0.0, // ranked below direct FTS hits
+                })
+            })?;
+            for row in rows {
+                let sr = row?;
+                if !seen_ids.contains(&sr.id) {
+                    fts_results.push(sr);
+                }
+            }
+        }
+    }
+
+    fts_results.truncate(limit);
+    Ok(fts_results)
 }
 
 fn recent_entries(conn: &Connection, limit: usize) -> Result<Vec<SearchResult>, IndexError> {
@@ -318,19 +479,116 @@ pub fn frontmatter_id_for_path(
 
 // ── tag_meta_index ────────────────────────────────────────────────────────────
 
-/// All rows from the `tag_meta` projection table.
+/// All rows from the `tag_meta` projection table (includes scoped rows).
 pub fn tag_meta_index(conn: &Connection) -> Result<Vec<super::TagMetaRow>, IndexError> {
-    let mut stmt =
-        conn.prepare("SELECT tag, description, color, icon FROM tag_meta ORDER BY tag")?;
+    let mut stmt = conn
+        .prepare("SELECT tag, description, color, icon, scope_path FROM tag_meta ORDER BY tag")?;
     let rows = stmt.query_map([], |r| {
         Ok(super::TagMetaRow {
             tag: r.get(0)?,
             description: r.get(1)?,
             color: r.get(2)?,
             icon: r.get(3)?,
+            scope_path: r.get(4)?,
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+// ── group_meta queries ────────────────────────────────────────────────────────
+
+/// Fetch the group_meta row for a given path.
+pub fn group_meta_for_path(
+    conn: &Connection,
+    path: &str,
+) -> Result<Option<super::GroupMetaRow>, IndexError> {
+    let result = conn.query_row(
+        "SELECT path, name, icon, color, sort_order, view, schema_json \
+         FROM group_meta WHERE path = ?1",
+        params![path],
+        |r| {
+            Ok(super::GroupMetaRow {
+                path: r.get(0)?,
+                name: r.get(1)?,
+                icon: r.get(2)?,
+                color: r.get(3)?,
+                sort_order: r.get(4)?,
+                view: r.get(5)?,
+                schema_json: r.get(6)?,
+            })
+        },
+    );
+    match result {
+        Ok(row) => Ok(Some(row)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// All group_meta rows.
+pub fn all_group_meta(conn: &Connection) -> Result<Vec<super::GroupMetaRow>, IndexError> {
+    let mut stmt = conn.prepare(
+        "SELECT path, name, icon, color, sort_order, view, schema_json \
+         FROM group_meta ORDER BY path",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok(super::GroupMetaRow {
+            path: r.get(0)?,
+            name: r.get(1)?,
+            icon: r.get(2)?,
+            color: r.get(3)?,
+            sort_order: r.get(4)?,
+            view: r.get(5)?,
+            schema_json: r.get(6)?,
+        })
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+/// Compute the effective schema for a group by merging ancestor chain.
+///
+/// The chain is built from the root down to `group_path` (e.g. for
+/// "work/atlas/phase1" the chain is ["work", "work/atlas", "work/atlas/phase1"]).
+/// Child properties override ancestor properties.  Returns a JSON string of the
+/// merged property map, or `None` when no group in the chain has a schema.
+pub fn effective_schema(conn: &Connection, group_path: &str) -> Result<Option<String>, IndexError> {
+    if group_path.is_empty() {
+        return Ok(None);
+    }
+
+    // Build ancestor chain from root to the target group.
+    let parts: Vec<&str> = group_path.split('/').collect();
+    let mut chain: Vec<String> = Vec::with_capacity(parts.len());
+    for i in 1..=parts.len() {
+        chain.push(parts[..i].join("/"));
+    }
+
+    // Collect schema_json from each level (root first, child last).
+    // We merge: child overrides parent.
+    let mut merged: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+    let mut any_schema = false;
+
+    for ancestor in &chain {
+        let row = group_meta_for_path(conn, ancestor)?;
+        if let Some(r) = row {
+            if let Some(schema_str) = r.schema_json {
+                if let Ok(serde_json::Value::Object(map)) =
+                    serde_json::from_str::<serde_json::Value>(&schema_str)
+                {
+                    for (k, v) in map {
+                        merged.insert(k, v);
+                    }
+                    any_schema = true;
+                }
+            }
+        }
+    }
+
+    if any_schema {
+        Ok(Some(serde_json::to_string(&merged).unwrap_or_default()))
+    } else {
+        Ok(None)
+    }
 }
 
 // ── entries_by_slug ───────────────────────────────────────────────────────────

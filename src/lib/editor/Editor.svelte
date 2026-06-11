@@ -93,6 +93,11 @@
      * option. No text is inserted; creation is the caller's responsibility.
      */
     onCreatePerson?: (slug: string) => void;
+    /**
+     * Group path of the entry being edited. Passed to the autocomplete source
+     * so scoped tags (from _group.md) are ranked/filtered correctly (phase 6).
+     */
+    groupPath?: string | null;
   }
 
   let {
@@ -108,7 +113,16 @@
     onCreatePerson,
     externalChange = null,
     externalDocReplace = null,
+    groupPath = null,
   }: Props = $props();
+
+  // groupPathRef is a mutable box so the autocomplete source always reads the
+  // latest value without requiring an editor rebuild when the user switches entries.
+  // Initialized to null; $effect syncs it on every change to the `groupPath` prop.
+  const groupPathRef: { current: string | null | undefined } = { current: null };
+  $effect(() => {
+    groupPathRef.current = groupPath; // runs reactively whenever groupPath changes
+  });
 
   let host: HTMLDivElement;
   let view: EditorView | undefined;
@@ -146,7 +160,7 @@
           cursorReveal,
           blocksPlugin(ipc, blockCallbacks),
           pasteDropHandlers(ipc, () => entryPath),
-          autocomplete({ ipc, onCreatePerson }),
+          autocomplete({ ipc, onCreatePerson, groupPath: groupPathRef }),
           markdownExtension,
           baseSetup,
           editorTheme,

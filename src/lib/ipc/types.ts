@@ -79,6 +79,11 @@ export interface TagMeta {
   description?: string;
   /** Optional icon (emoji or name) from _tags.md metadata. */
   icon?: string;
+  /**
+   * When non-null, this tag is scoped to the given group path (and its
+   * descendants). Null = global tag visible everywhere.
+   */
+  scopePath?: string | null;
 }
 
 // ── People types ──────────────────────────────────────────────────────────────
@@ -411,6 +416,13 @@ export interface IpcCommands {
 
   /** Permanently delete a single trash slot. Idempotent on missing id. */
   trash_purge(id: string): Promise<Result<void>>;
+
+  /**
+   * Return the effective property schema for a group (merged ancestor chain,
+   * child overrides parent). Returns null when no group in the chain has a
+   * schema defined. The JSON shape is `{ [propName]: { type: string, default?: unknown } }`.
+   */
+  effective_schema(groupPath: GroupPath): Promise<Result<string | null>>;
 
   /**
    * Return all calendar items (entries with a primary date property) whose

@@ -192,17 +192,67 @@ pub fn set_people(
     Ok(())
 }
 
-/// Replace all tag_meta rows atomically.
+/// Replace all global tag_meta rows (scope_path IS NULL) atomically.
+/// Scoped rows from _group.md are left untouched.
 pub fn set_tag_meta(conn: &mut Connection, rows: &[super::TagMetaRow]) -> Result<(), IndexError> {
     let tx = conn.transaction()?;
-    tx.execute("DELETE FROM tag_meta", [])?;
+    tx.execute("DELETE FROM tag_meta WHERE scope_path IS NULL", [])?;
     for r in rows {
         tx.execute(
-            "INSERT INTO tag_meta (tag, description, color, icon) VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO tag_meta (tag, description, color, icon, scope_path) \
+             VALUES (?1, ?2, ?3, ?4, NULL)",
             params![r.tag, r.description, r.color, r.icon],
         )?;
     }
     tx.commit()?;
+    Ok(())
+}
+
+/// Replace all scoped tag_meta rows for a given `scope_path` atomically.
+/// Global rows (scope_path IS NULL) are not touched.
+pub fn set_scoped_tag_meta(
+    conn: &mut Connection,
+    scope_path: &str,
+    rows: &[super::TagMetaRow],
+) -> Result<(), IndexError> {
+    let tx = conn.transaction()?;
+    tx.execute(
+        "DELETE FROM tag_meta WHERE scope_path = ?1",
+        params![scope_path],
+    )?;
+    for r in rows {
+        tx.execute(
+            "INSERT INTO tag_meta (tag, description, color, icon, scope_path) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![r.tag, r.description, r.color, r.icon, scope_path],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// Upsert a single group_meta row.
+pub fn set_group_meta(conn: &mut Connection, row: &super::GroupMetaRow) -> Result<(), IndexError> {
+    conn.execute(
+        "INSERT INTO group_meta (path, name, icon, color, sort_order, view, schema_json)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT(path) DO UPDATE SET
+             name        = excluded.name,
+             icon        = excluded.icon,
+             color       = excluded.color,
+             sort_order  = excluded.sort_order,
+             view        = excluded.view,
+             schema_json = excluded.schema_json",
+        params![
+            row.path,
+            row.name,
+            row.icon,
+            row.color,
+            row.sort_order,
+            row.view,
+            row.schema_json,
+        ],
+    )?;
     Ok(())
 }
 

@@ -10,9 +10,10 @@
     docText?: string;
     onEdit?: (change: ChangeSpec) => void;
     onClose?: () => void;
+    groupPath?: string | null;
   }
 
-  let { open = false, docText = "", onEdit, onClose }: Props = $props();
+  let { open = false, docText = "", onEdit, onClose, groupPath = null }: Props = $props();
 
   function handleBackdrop(e: MouseEvent): void {
     if (e.target === e.currentTarget) onClose?.();
@@ -37,7 +38,7 @@
       </div>
 
       <div class="props-sheet-body">
-        <PropertiesPanel {docText} {onEdit} />
+        <PropertiesPanel {docText} {onEdit} {groupPath} />
       </div>
     </div>
   </div>

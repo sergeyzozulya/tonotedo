@@ -565,6 +565,13 @@ pub struct TagMetaDto {
     pub name: String,
     pub color: String,
     pub count: u64,
+    /// Vault-relative group path when this tag is scoped; null = global.
+    #[serde(rename = "scopePath")]
+    pub scope_path: Option<String>,
+    /// Optional human-readable description from tag metadata.
+    pub description: Option<String>,
+    /// Optional icon from tag metadata.
+    pub icon: Option<String>,
 }
 
 #[tauri::command]
@@ -583,28 +590,43 @@ pub fn tag_index(state: State<'_, AppState>) -> CmdResult<Vec<TagMetaDto>> {
         *counts.entry(row.tag.clone()).or_default() += 1;
     }
 
-    // Get tag_meta for colors.
+    // Get tag_meta for colors, descriptions, icons, and scope_path.
     let meta_rows = lib.index.tag_meta_index().unwrap_or_default();
-    let meta_map: std::collections::HashMap<_, _> = meta_rows
-        .iter()
-        .map(|r| (r.tag.clone(), r.color.clone()))
-        .collect();
+    // There may be multiple rows per tag name (global + scoped). Use the first match
+    // for color/description/icon; emit one TagMetaDto per (tag, scope_path) pair.
+    let mut meta_by_tag: std::collections::HashMap<String, Vec<crate::core::index::TagMetaRow>> =
+        std::collections::HashMap::new();
+    for r in meta_rows {
+        meta_by_tag.entry(r.tag.clone()).or_default().push(r);
+    }
 
-    let result = counts
-        .into_iter()
-        .map(|(tag, count)| {
-            let color = meta_map
-                .get(&tag)
-                .and_then(|c| c.as_deref())
-                .unwrap_or("slate")
-                .to_string();
-            TagMetaDto {
-                name: tag,
-                color,
-                count,
+    // Emit one DTO per (tag, scope_path). Tags that only appear in entries but
+    // have no tag_meta rows get a single global DTO.
+    let mut result: Vec<TagMetaDto> = Vec::new();
+    for (tag, count) in &counts {
+        if let Some(meta_entries) = meta_by_tag.get(tag) {
+            for m in meta_entries {
+                result.push(TagMetaDto {
+                    name: tag.clone(),
+                    color: m.color.as_deref().unwrap_or("slate").to_string(),
+                    count: *count,
+                    scope_path: m.scope_path.clone(),
+                    description: m.description.clone(),
+                    icon: m.icon.clone(),
+                });
             }
-        })
-        .collect();
+        } else {
+            result.push(TagMetaDto {
+                name: tag.clone(),
+                color: "slate".to_string(),
+                count: *count,
+                scope_path: None,
+                description: None,
+                icon: None,
+            });
+        }
+    }
+    result.sort_by(|a, b| a.name.cmp(&b.name));
 
     Ok(result)
 }

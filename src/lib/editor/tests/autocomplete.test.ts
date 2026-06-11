@@ -18,7 +18,13 @@ import { EditorState, EditorSelection } from "@codemirror/state";
 import { CompletionContext } from "@codemirror/autocomplete";
 
 import { markdownExtension } from "../extensions/markdown.js";
-import { rankTags, rankPeople, buildCompletionSources } from "../extensions/autocomplete.js";
+import {
+  rankTags,
+  rankPeople,
+  rankTagsScoped,
+  isInScope,
+  buildCompletionSources,
+} from "../extensions/autocomplete.js";
 import type { TagMeta, PersonMeta, Ipc } from "../../ipc/types.js";
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -119,6 +125,7 @@ function stubIpc(overrides?: {
     trash_list: vi.fn() as never,
     trash_restore: vi.fn() as never,
     trash_purge: vi.fn() as never,
+    effective_schema: vi.fn() as never,
     on: vi.fn(() => () => {}),
   };
 }
@@ -538,5 +545,104 @@ describe("wikilinkSource — recency ordering", () => {
     const journalIdx = ids.indexOf("journal/2026-05-20");
     const atlasIdx = ids.indexOf("work/atlas/project-overview");
     expect(journalIdx).toBeLessThan(atlasIdx);
+  });
+});
+
+// ── Scoped tag visibility matrix (phase 6 / issue #28) ────────────────────────
+
+/**
+ * Fixture tags for scoped-tag tests.
+ *
+ * Scope layout:
+ *   global:          "global-a"  (scopePath null)
+ *   scoped work:     "work-only" (scopePath "work")
+ *   scoped atlas:    "atlas-tag" (scopePath "work/atlas")
+ *   scoped other:    "other-tag" (scopePath "other")
+ *   collision:       "collision" appears as both global and scoped (global wins)
+ */
+const SCOPED_TAGS: TagMeta[] = [
+  { name: "global-a", color: "slate", count: 5, scopePath: null },
+  { name: "work-only", color: "blue", count: 3, scopePath: "work" },
+  { name: "atlas-tag", color: "green", count: 2, scopePath: "work/atlas" },
+  { name: "other-tag", color: "red", count: 1, scopePath: "other" },
+  { name: "collision", color: "slate", count: 4, scopePath: null },
+  { name: "collision", color: "amber", count: 0, scopePath: "work/atlas" },
+];
+
+describe("isInScope", () => {
+  it("exact match is in scope", () => {
+    expect(isInScope("work", "work")).toBe(true);
+  });
+
+  it("descendant is in scope", () => {
+    expect(isInScope("work/atlas", "work")).toBe(true);
+    expect(isInScope("work/atlas/phase1", "work")).toBe(true);
+    expect(isInScope("work/atlas/phase1", "work/atlas")).toBe(true);
+  });
+
+  it("sibling is NOT in scope", () => {
+    expect(isInScope("work/other", "work/atlas")).toBe(false);
+  });
+
+  it("unrelated group is NOT in scope", () => {
+    expect(isInScope("journal", "work")).toBe(false);
+  });
+
+  it("null/undefined groupPath is never in scope", () => {
+    expect(isInScope(null, "work")).toBe(false);
+    expect(isInScope(undefined, "work")).toBe(false);
+  });
+});
+
+describe("rankTagsScoped — scope-visibility matrix", () => {
+  it("global tags always visible regardless of groupPath", () => {
+    const result = rankTagsScoped(SCOPED_TAGS, "journal", "");
+    const names = result.map((t) => `${t.name}${t.scopePath ? "@" + t.scopePath : ""}`);
+    expect(names).toContain("global-a");
+    expect(names).toContain("collision"); // global collision wins
+  });
+
+  it("in-scope scoped tags visible (work/atlas inside work)", () => {
+    const result = rankTagsScoped(SCOPED_TAGS, "work/atlas", "");
+    const names = result.map((t) => t.name);
+    expect(names).toContain("work-only"); // ancestor scope "work" ✓
+    expect(names).toContain("atlas-tag"); // exact scope "work/atlas" ✓
+    expect(names).toContain("global-a"); // global ✓
+  });
+
+  it("out-of-scope scoped tags excluded", () => {
+    const result = rankTagsScoped(SCOPED_TAGS, "work/atlas", "");
+    const names = result.map((t) => t.name);
+    expect(names).not.toContain("other-tag"); // scoped to "other" — not visible from "work/atlas"
+  });
+
+  it("sibling scope excluded (work/atlas vs other)", () => {
+    const result = rankTagsScoped(SCOPED_TAGS, "other", "");
+    const names = result.map((t) => t.name);
+    expect(names).toContain("other-tag"); // in scope ✓
+    expect(names).not.toContain("atlas-tag"); // sibling ✗
+    expect(names).not.toContain("work-only"); // sibling ✗
+  });
+
+  it("null groupPath shows only globals", () => {
+    const result = rankTagsScoped(SCOPED_TAGS, null, "");
+    expect(result.every((t) => !t.scopePath)).toBe(true);
+  });
+
+  it("global collision wins: scoped duplicate suppressed", () => {
+    // "collision" exists as both global (scopePath null) and scoped (scopePath "work/atlas")
+    const result = rankTagsScoped(SCOPED_TAGS, "work/atlas", "collision");
+    const matches = result.filter((t) => t.name === "collision");
+    // Only the global one should be returned.
+    expect(matches).toHaveLength(1);
+    expect(matches[0].scopePath).toBeNull();
+  });
+
+  it("in-scope scoped tags ranked before globals", () => {
+    const result = rankTagsScoped(SCOPED_TAGS, "work/atlas", "");
+    const firstScopedIdx = result.findIndex((t) => t.scopePath);
+    const firstGlobalIdx = result.findIndex((t) => !t.scopePath);
+    // Scoped tags should appear before globals (tier 1 > tier 2).
+    expect(firstScopedIdx).toBeLessThan(firstGlobalIdx);
   });
 });
