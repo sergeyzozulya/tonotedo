@@ -33,7 +33,17 @@ export type PropType =
   | "range"
   | "tags"
   | "mentions"
+  | "enum" // one of a fixed list; allowed values come from the effective schema
+  | "ref" // link to another entry (slug); stored as string
+  | "ref[]" // chip list of entry refs; stored as string[]
   | "complex"; // unknown/object/nested → read-only raw display
+
+/** A schema property declaration passed to the panel for type override. */
+export interface SchemaPropDecl {
+  type: string;
+  default?: unknown;
+  enumValues?: string[];
+}
 
 /** A single property row in the display model. */
 export interface PropRow {
@@ -55,6 +65,8 @@ export interface PropRow {
   readOnly: boolean;
   /** Raw string as it appears after `key: ` in the YAML source (for raw display). */
   rawValue: string;
+  /** For enum type: allowed values from the effective schema. */
+  enumValues?: string[];
 }
 
 /** The full display model derived from a doc's frontmatter. */
@@ -131,6 +143,46 @@ export function inferType(value: unknown, key: string): PropType {
   return "complex";
 }
 
+/**
+ * Resolve the PropType for a key, letting a schema declaration override inference.
+ * Schema-declared types ALWAYS win over inference (spec 0002).
+ */
+export function resolveType(
+  inferredType: PropType,
+  key: string,
+  schema: Record<string, SchemaPropDecl> | null | undefined,
+): PropType {
+  if (!schema) return inferredType;
+  const decl = schema[key];
+  if (!decl) return inferredType;
+  switch (decl.type) {
+    case "enum":
+      return "enum";
+    case "ref":
+      return "ref";
+    case "ref[]":
+      return "ref[]";
+    case "tag[]":
+    case "tag":
+      return "tags";
+    case "string":
+    case "text":
+      return "string";
+    case "number":
+      return "number";
+    case "boolean":
+      return "boolean";
+    case "date":
+      return "date";
+    case "datetime":
+      return "datetime";
+    case "range":
+      return "range";
+    default:
+      return inferredType;
+  }
+}
+
 // ── Builtin property classification ──────────────────────────────────────────
 
 const HIDDEN_BUILTINS = new Set(["title"]);
@@ -189,7 +241,10 @@ function findKeyLines(
 const FENCE_RE = /^---\s*$/;
 
 /** Parse the document text into a FmModel. Pure, no side-effects. */
-export function parseFrontmatter(docText: string): FmModel {
+export function parseFrontmatter(
+  docText: string,
+  schema?: Record<string, SchemaPropDecl> | null,
+): FmModel {
   const docLines = docText.split("\n");
   const empty: FmModel = {
     hasFrontmatter: false,
@@ -237,26 +292,28 @@ export function parseFrontmatter(docText: string): FmModel {
     if (HIDDEN_BUILTINS.has(key)) continue;
 
     const value = parsed[key];
-    const type = inferType(value, key);
+    const inferredType = inferType(value, key);
+    const type = resolveType(inferredType, key, schema);
     const lines = findKeyLines(docLines, key, 2, closeLine);
     if (lines.length === 0) continue; // key not found in source (shouldn't happen)
 
     const rawLine = docLines[lines[0] - 1] ?? "";
     const rawValue = rawValueOnLine(rawLine, key);
 
-    const row: PropRow = {
+    // Enum values from schema declaration.
+    const enumValues = type === "enum" ? (schema?.[key]?.enumValues ?? []) : undefined;
+
+    // Correct: complex is always read-only, readonly builtins are read-only.
+    const resolvedReadOnly = type === "complex" || READONLY_BUILTINS.has(key);
+    const rowFinal: PropRow = {
       key,
       value,
       type,
       lines,
-      readOnly:
-        type === "complex" || READONLY_BUILTINS.has(key) || (type === "range" ? false : false), // range IS editable
+      readOnly: resolvedReadOnly,
       rawValue,
+      enumValues,
     };
-
-    // Correct: complex is always read-only, readonly builtins are read-only.
-    const resolvedReadOnly = type === "complex" || READONLY_BUILTINS.has(key);
-    const rowFinal: PropRow = { ...row, readOnly: resolvedReadOnly };
 
     if (ADVANCED_BUILTINS.has(key)) {
       advancedRows.push(rowFinal);

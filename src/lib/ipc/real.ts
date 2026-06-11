@@ -19,6 +19,7 @@ import type {
   TagInput,
   PersonMeta,
   GroupMeta,
+  GroupConfigInput,
   Backlink,
   Page,
   AssetPath,
@@ -281,6 +282,16 @@ export const real: Ipc = {
       commandId,
       argsJson,
     });
+  },
+
+  // ── Group config commands (fix/group-config) ────────────────────────────────
+
+  async get_group_config(groupPath: GroupPath): Promise<Result<GroupConfigInput>> {
+    return call<GroupConfigInput>("get_group_config", { groupPath });
+  },
+
+  async update_group_config(groupPath: GroupPath, config: GroupConfigInput): Promise<Result<void>> {
+    return call<void>("update_group_config", { groupPath, config });
   },
 
   on<E extends IpcEventName>(

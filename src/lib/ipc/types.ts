@@ -188,6 +188,31 @@ export interface GroupMeta {
   order?: number;
   /** Optional color hint from _group.md. */
   color?: string;
+  /** Optional icon hint from _group.md (emoji or name). */
+  icon?: string;
+}
+
+/** A single property declaration in a group schema. */
+export interface SchemaPropertyDecl {
+  type: string;
+  /** Default value (serialised to YAML string). */
+  default?: unknown;
+  /** For enum type: the allowed values. */
+  enumValues?: string[];
+}
+
+/** The editable metadata of a group (all fields optional — omitted means unchanged). */
+export interface GroupConfigInput {
+  /** Display name (written as `name` frontmatter). */
+  name?: string;
+  /** Icon emoji or name. */
+  icon?: string;
+  /** Colour token or hex string. */
+  color?: string;
+  /** Default view for entries in this group. */
+  view?: string;
+  /** Local schema declarations (this group only; inherited ones excluded). */
+  schema?: Record<string, SchemaPropertyDecl>;
 }
 
 // ── Saved searches (spec 0009) ────────────────────────────────────────────────
@@ -555,6 +580,21 @@ export interface IpcCommands {
    * schema defined. The JSON shape is `{ [propName]: { type: string, default?: unknown } }`.
    */
   effective_schema(groupPath: GroupPath): Promise<Result<string | null>>;
+
+  /**
+   * Return the local (non-inherited) group configuration for a single group.
+   * Returns a GroupConfigInput with the fields present in _group.md.
+   * Absent fields are undefined.
+   */
+  get_group_config(groupPath: GroupPath): Promise<Result<GroupConfigInput>>;
+
+  /**
+   * Write local group configuration into `_group.md` frontmatter for `groupPath`.
+   * Fields present in `config` are written; absent fields are left unchanged.
+   * Canonical frontmatter order is preserved; unknown keys round-trip.
+   * Creates `_group.md` if it does not exist.
+   */
+  update_group_config(groupPath: GroupPath, config: GroupConfigInput): Promise<Result<void>>;
 
   /**
    * Return all calendar items (entries with a primary date property) whose

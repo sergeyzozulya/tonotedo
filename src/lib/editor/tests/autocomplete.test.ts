@@ -136,6 +136,8 @@ function stubIpc(overrides?: {
     merge_person: vi.fn() as never,
     list_orphan_avatars: vi.fn() as never,
     delete_orphan_avatar: vi.fn() as never,
+    get_group_config: vi.fn() as never,
+    update_group_config: vi.fn() as never,
     on: vi.fn(() => () => {}),
   };
 }

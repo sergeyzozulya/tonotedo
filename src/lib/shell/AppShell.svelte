@@ -48,6 +48,7 @@
   import WikilinkPicker from "../editor/WikilinkPicker.svelte";
   import { modalStore } from "../editor/vim/modal-store.svelte.js";
   import PropertiesPanel from "../panel/PropertiesPanel.svelte";
+  import GroupConfigPanel from "../panel/GroupConfigPanel.svelte";
   import SearchOverlay from "../search/SearchOverlay.svelte";
   import { savedSearchesStore } from "../search/saved-searches-store.svelte.js";
   import ConflictBanner from "./ConflictBanner.svelte";
@@ -273,6 +274,21 @@
     } else {
       console.error("[shell] entry_titles failed:", result.error.message);
     }
+  }
+
+  // ── Group config panel ────────────────────────────────────────────────────────
+
+  let groupConfigPath = $state<string | null>(null);
+
+  function openGroupConfig(path: string): void {
+    groupConfigPath = path;
+    // Ensure the properties zone is visible so the panel appears immediately.
+    mainZone = "editor";
+    propertiesVisible = true;
+  }
+
+  function closeGroupConfig(): void {
+    groupConfigPath = null;
   }
 
   // ── People ────────────────────────────────────────────────────────────────────
@@ -1043,6 +1059,7 @@
             loadEntries(selectedGroupPath);
           }}
           {allGroups}
+          onGroupConfigure={openGroupConfig}
         />
       </div>
     {/if}
@@ -1222,6 +1239,7 @@
             {onPluginsOpen}
             pluginsOpen={mainZone === "plugins"}
             {allGroups}
+            onGroupConfigure={openGroupConfig}
           />
         </div>
       {/if}
@@ -1485,6 +1503,7 @@
           loadEntries(selectedGroupPath);
         }}
         {allGroups}
+        onGroupConfigure={openGroupConfig}
       />
 
       <!-- Entry list -->
@@ -1594,7 +1613,17 @@
       <!-- Properties panel (desktop only when visible; not shown for person/tags views) -->
       {#if propertiesVisible && mainZone === "editor"}
         <aside class="properties-zone" data-focus-zone="properties">
-          {#if selectedEntryId}
+          {#if groupConfigPath !== null}
+            <!-- Group config panel overrides properties when a group config is open -->
+            <GroupConfigPanel
+              groupPath={groupConfigPath}
+              onClose={closeGroupConfig}
+              onChanged={() => {
+                loadGroups();
+                closeGroupConfig();
+              }}
+            />
+          {:else if selectedEntryId}
             <PropertiesPanel
               docText={editorText}
               onEdit={onPanelEdit}

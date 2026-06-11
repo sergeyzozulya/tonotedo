@@ -62,6 +62,8 @@
     onGroupsChanged?: () => void;
     /** Flat group list from ipc.list_groups() (for the group picker). */
     allGroups?: GroupMeta[];
+    /** Called when the user clicks Configure for a group. */
+    onGroupConfigure?: (path: string) => void;
   }
 
   let {
@@ -83,6 +85,7 @@
     pluginsOpen = false,
     onGroupsChanged,
     allGroups = [],
+    onGroupConfigure,
   }: Props = $props();
 
   // ── Per-node collapsed state ──────────────────────────────────────────────────
@@ -514,7 +517,9 @@
           {open ? "▾" : "▸"}
         {/if}
       </span>
-      {#if node.color}
+      {#if node.icon}
+        <span class="sidebar-row-icon sidebar-row-icon--group" aria-hidden="true">{node.icon}</span>
+      {:else if node.color}
         <span class="sidebar-row-color-dot" style="background: {node.color};" aria-hidden="true"
         ></span>
       {/if}
@@ -536,6 +541,13 @@
     {#if menuOpen}
       <div class="group-menu-backdrop" onclick={closeGroupMenu} role="presentation"></div>
       <div class="group-menu" style="--depth: {depth};">
+        <button
+          class="group-menu-item"
+          onclick={() => {
+            closeGroupMenu();
+            onGroupConfigure?.(node.path);
+          }}>Configure…</button
+        >
         <button class="group-menu-item" onclick={() => startNewGroup(node.path)}
           >New subgroup</button
         >

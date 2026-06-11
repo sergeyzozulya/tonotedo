@@ -15,9 +15,12 @@
   //   • created / updated shown as read-only.
 
   import { parseFrontmatter, applyPanelEdit, inferType } from "./frontmatter-view.js";
-  import type { FmModel, FmEdit, ChangeSpec } from "./frontmatter-view.js";
+  import type { FmModel, FmEdit, ChangeSpec, SchemaPropDecl } from "./frontmatter-view.js";
   import { ipc } from "../ipc/index.js";
-  import type { GroupPath } from "../ipc/types.js";
+  import type { GroupPath, EntryId } from "../ipc/types.js";
+
+  // ── Built-in view names (spec 0002 §Rendering) ───────────────────────────────
+  const VIEW_OPTIONS = ["note", "task-list"] as const;
 
   interface Props {
     /** Full editor buffer text — re-derived on every doc change. */
@@ -32,13 +35,7 @@
 
   // ── Group schema (phase 6 / issue #28) ───────────────────────────────────────
 
-  /** Schema definition for a single property from _group.md. */
-  interface SchemaProp {
-    type: string;
-    default?: unknown;
-  }
-
-  let schemaProps = $state<Record<string, SchemaProp> | null>(null);
+  let schemaProps = $state<Record<string, SchemaPropDecl> | null>(null);
 
   $effect(() => {
     const path = groupPath;
@@ -49,7 +46,7 @@
     ipc.effective_schema(path).then((result) => {
       if (result.ok && result.value) {
         try {
-          schemaProps = JSON.parse(result.value) as Record<string, SchemaProp>;
+          schemaProps = JSON.parse(result.value) as Record<string, SchemaPropDecl>;
         } catch {
           schemaProps = null;
         }
@@ -59,19 +56,29 @@
     });
   });
 
+  // ── Entry titles for ref/ref[] pickers ───────────────────────────────────────
+
+  let entryTitles = $state<Record<EntryId, string>>({});
+
+  $effect(() => {
+    ipc.entry_titles().then((result) => {
+      if (result.ok) entryTitles = result.value;
+    });
+  });
+
   // ── Derived model ─────────────────────────────────────────────────────────────
 
   let focusedKey = $state<string | null>(null);
   let focusedRaw = $state(false);
 
-  // Re-derive model whenever docText changes, but NOT while an input is focused.
+  // Re-derive model whenever docText or schema changes, but NOT while focused.
   let model = $derived.by((): FmModel => {
     if (focusedKey !== null || focusedRaw) {
       // Guard: don't re-parse while the user is typing in a panel input.
       // The model will refresh on the next blur.
-      return model ?? parseFrontmatter(docText);
+      return model ?? parseFrontmatter(docText, schemaProps);
     }
-    return parseFrontmatter(docText);
+    return parseFrontmatter(docText, schemaProps);
   });
 
   // ── Raw view toggle ───────────────────────────────────────────────────────────
@@ -162,6 +169,75 @@
         removeToken(key, (row!.value as string[]).length - 1);
       }
     }
+  }
+
+  // ── Ref/ref[] autocomplete ────────────────────────────────────────────────────
+  // ref:   single entry slug stored as scalar string.
+  // ref[]: chip list of entry slugs stored as array.
+  //
+  // Both use `entryTitles` for autocomplete suggestions.
+
+  let refInputValues = $state<Record<string, string>>({});
+  let refSuggestions = $state<Record<string, Array<{ id: string; title: string }>>>({});
+
+  function getRefSuggestions(query: string): Array<{ id: string; title: string }> {
+    const q = query.toLowerCase().trim();
+    if (!q) return [];
+    return Object.entries(entryTitles)
+      .filter(([id, title]) => id.toLowerCase().includes(q) || title.toLowerCase().includes(q))
+      .map(([id, title]) => ({ id, title }))
+      .slice(0, 8);
+  }
+
+  function onRefInput(key: string, e: Event): void {
+    const val = (e.currentTarget as HTMLInputElement).value;
+    refInputValues = { ...refInputValues, [key]: val };
+    refSuggestions = { ...refSuggestions, [key]: getRefSuggestions(val) };
+  }
+
+  function selectRef(key: string, slug: string): void {
+    commitEdit({ kind: "set-scalar", key, value: slug });
+    refInputValues = { ...refInputValues, [key]: "" };
+    refSuggestions = { ...refSuggestions, [key]: [] };
+  }
+
+  function onRefBlur(key: string): void {
+    // Small delay so click on suggestion fires first.
+    setTimeout(() => {
+      refSuggestions = { ...refSuggestions, [key]: [] };
+      focusedKey = null;
+    }, 150);
+  }
+
+  // ref[] — chip list of slugs
+  function removeRefChip(key: string, index: number): void {
+    const row = model.rows.find((r) => r.key === key);
+    if (!row || !Array.isArray(row.value)) return;
+    const newValues = (row.value as string[]).filter((_, i) => i !== index);
+    commitEdit({ kind: "set-array", key, values: newValues });
+  }
+
+  function addRefChip(key: string, slug: string): void {
+    if (!slug) return;
+    const row = model.rows.find((r) => r.key === key);
+    const existing = Array.isArray(row?.value) ? (row!.value as string[]) : [];
+    if (existing.includes(slug)) return;
+    commitEdit({ kind: "set-array", key, values: [...existing, slug] });
+    refInputValues = { ...refInputValues, [key]: "" };
+    refSuggestions = { ...refSuggestions, [key]: [] };
+  }
+
+  function onRefArrayInput(key: string, e: Event): void {
+    const val = (e.currentTarget as HTMLInputElement).value;
+    refInputValues = { ...refInputValues, [key]: val };
+    refSuggestions = { ...refSuggestions, [key]: getRefSuggestions(val) };
+  }
+
+  function onRefArrayBlur(key: string): void {
+    setTimeout(() => {
+      refSuggestions = { ...refSuggestions, [key]: [] };
+      focusedKey = null;
+    }, 150);
   }
 
   // ── Add property ──────────────────────────────────────────────────────────────
@@ -337,6 +413,148 @@
             {:else if row.type === "range"}
               <!-- Range: read-only raw display with a note; calendar UI edits this. -->
               <span class="tnd-panel-raw-val" title={row.rawValue}>{row.rawValue}</span>
+            {:else if row.type === "enum"}
+              <!-- Enum: select populated from schema-declared values -->
+              <select
+                class="tnd-panel-input tnd-panel-select"
+                value={typeof row.value === "string" ? row.value : ""}
+                onfocus={() => {
+                  focusedKey = row.key;
+                }}
+                onblur={() => {
+                  focusedKey = null;
+                }}
+                onchange={(e) =>
+                  commitEdit({
+                    kind: "set-scalar",
+                    key: row.key,
+                    value: (e.currentTarget as HTMLSelectElement).value,
+                  })}
+                aria-label={row.key}
+              >
+                <option value="">—</option>
+                {#each row.enumValues ?? [] as opt (opt)}
+                  <option value={opt}>{opt}</option>
+                {/each}
+              </select>
+            {:else if row.type === "ref"}
+              <!-- Ref: entry slug with autocomplete -->
+              <div class="tnd-panel-ref-wrap">
+                <input
+                  type="text"
+                  class="tnd-panel-input"
+                  value={refInputValues[row.key] ??
+                    (typeof row.value === "string" ? row.value : "")}
+                  placeholder="search entries…"
+                  onfocus={() => {
+                    focusedKey = row.key;
+                    refInputValues = {
+                      ...refInputValues,
+                      [row.key]: typeof row.value === "string" ? row.value : "",
+                    };
+                  }}
+                  onblur={() => onRefBlur(row.key)}
+                  oninput={(e) => onRefInput(row.key, e)}
+                  aria-label={row.key}
+                  aria-autocomplete="list"
+                  aria-haspopup="listbox"
+                />
+                {#if (refSuggestions[row.key] ?? []).length > 0}
+                  <ul class="tnd-panel-ref-suggestions" role="listbox">
+                    {#each refSuggestions[row.key] as s (s.id)}
+                      <li role="option" aria-selected={false}>
+                        <button
+                          class="tnd-panel-ref-suggestion-btn"
+                          onmousedown={(e) => {
+                            e.preventDefault();
+                            selectRef(row.key, s.id);
+                          }}
+                        >
+                          <span class="tnd-panel-ref-title">{s.title}</span>
+                          <span class="tnd-panel-ref-id">{s.id}</span>
+                        </button>
+                      </li>
+                    {/each}
+                  </ul>
+                {/if}
+              </div>
+            {:else if row.type === "ref[]"}
+              <!-- Ref[]: chip list of entry slugs with autocomplete -->
+              <div
+                class="tnd-panel-chips tnd-panel-ref-array"
+                role="group"
+                aria-label={`${row.key} refs`}
+              >
+                {#each Array.isArray(row.value) ? (row.value as string[]) : [] as slug, i (slug + i)}
+                  <span class="tnd-panel-chip">
+                    <span class="tnd-panel-chip-label" title={entryTitles[slug] ?? slug}>
+                      {entryTitles[slug] ?? slug}
+                    </span>
+                    <button
+                      class="tnd-panel-chip-remove"
+                      onclick={() => removeRefChip(row.key, i)}
+                      aria-label={`Remove ${slug}`}
+                      title={`Remove ${slug}`}>×</button
+                    >
+                  </span>
+                {/each}
+                <div class="tnd-panel-ref-wrap">
+                  <input
+                    class="tnd-panel-chip-input"
+                    type="text"
+                    placeholder="add ref…"
+                    value={refInputValues[row.key] ?? ""}
+                    onfocus={() => {
+                      focusedKey = row.key;
+                    }}
+                    onblur={() => onRefArrayBlur(row.key)}
+                    oninput={(e) => onRefArrayInput(row.key, e)}
+                    aria-label={`Add ref to ${row.key}`}
+                  />
+                  {#if (refSuggestions[row.key] ?? []).length > 0}
+                    <ul class="tnd-panel-ref-suggestions" role="listbox">
+                      {#each refSuggestions[row.key] as s (s.id)}
+                        <li role="option" aria-selected={false}>
+                          <button
+                            class="tnd-panel-ref-suggestion-btn"
+                            onmousedown={(e) => {
+                              e.preventDefault();
+                              addRefChip(row.key, s.id);
+                            }}
+                          >
+                            <span class="tnd-panel-ref-title">{s.title}</span>
+                            <span class="tnd-panel-ref-id">{s.id}</span>
+                          </button>
+                        </li>
+                      {/each}
+                    </ul>
+                  {/if}
+                </div>
+              </div>
+            {:else if row.key === "view" && row.type === "string"}
+              <!-- Well-known `view` property: select of built-in views (spec 0002 §Rendering) -->
+              <select
+                class="tnd-panel-input tnd-panel-select"
+                value={typeof row.value === "string" ? row.value : ""}
+                onfocus={() => {
+                  focusedKey = row.key;
+                }}
+                onblur={() => {
+                  focusedKey = null;
+                }}
+                onchange={(e) =>
+                  commitEdit({
+                    kind: "set-scalar",
+                    key: "view",
+                    value: (e.currentTarget as HTMLSelectElement).value,
+                  })}
+                aria-label="view"
+              >
+                <option value="">—</option>
+                {#each VIEW_OPTIONS as v (v)}
+                  <option value={v}>{v}</option>
+                {/each}
+              </select>
             {:else if row.type === "tags" || (row.type === "complex" && row.key === "tags")}
               <!-- Chip/token editor for tags and mentions arrays -->
               <div class="tnd-panel-chips" role="group" aria-label={`${row.key} chips`}>
@@ -822,5 +1040,88 @@
     border: 1px dashed var(--tnd-line);
     border-radius: 3px;
     cursor: pointer;
+  }
+
+  /* Enum/view select widget */
+  .tnd-panel-select {
+    width: 100%;
+    min-width: 0;
+    font-size: 0.8rem;
+    font-family: inherit;
+    padding: 0.2rem 0.3rem;
+    background: var(--tnd-panel2);
+    color: var(--tnd-text);
+    border: 1px solid var(--tnd-line);
+    border-radius: 3px;
+    outline: none;
+    cursor: pointer;
+    box-sizing: border-box;
+  }
+
+  .tnd-panel-select:focus {
+    border-color: var(--tnd-accent);
+  }
+
+  /* Ref / ref[] autocomplete */
+  .tnd-panel-ref-wrap {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .tnd-panel-ref-array {
+    flex-wrap: wrap;
+    flex: 1;
+  }
+
+  .tnd-panel-ref-suggestions {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    z-index: 100;
+    background: var(--tnd-panel);
+    border: 1px solid var(--tnd-line);
+    border-top: none;
+    border-radius: 0 0 4px 4px;
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    max-height: 10rem;
+    overflow-y: auto;
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.12);
+  }
+
+  .tnd-panel-ref-suggestion-btn {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    padding: 0.3rem 0.5rem;
+    background: none;
+    border: none;
+    cursor: pointer;
+    text-align: left;
+    font-family: inherit;
+  }
+
+  .tnd-panel-ref-suggestion-btn:hover {
+    background: var(--tnd-accent-soft);
+  }
+
+  .tnd-panel-ref-title {
+    font-size: 0.75rem;
+    color: var(--tnd-text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .tnd-panel-ref-id {
+    font-size: 0.65rem;
+    color: var(--tnd-text-faint);
+    font-family: ui-monospace, monospace;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 </style>
