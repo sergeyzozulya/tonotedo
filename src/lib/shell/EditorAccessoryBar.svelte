@@ -10,6 +10,7 @@
   // inline-code, insert tag (#), insert mention (@), insert wikilink ([[).
 
   import { registry } from "../commands/index.js";
+  import { getActiveEditorView } from "../editor/active-view.js";
 
   interface Props {
     /** Whether the editor is currently focused (controls visibility). */
@@ -49,15 +50,21 @@
         return;
       }
     }
-    // Fallback for commands without a real handler yet: dispatch a custom event
-    // that the editor host can intercept for text insertion.
+    // Raw-insert buttons (bullet, checkbox, #, @, [[) insert at the cursor in
+    // the focused editor via the active-view registry.
     if (btn.insert !== undefined) {
-      document.activeElement?.dispatchEvent(
-        new CustomEvent("tnd:accessory-insert", {
-          detail: { text: btn.insert },
-          bubbles: true,
-        }),
-      );
+      const view = getActiveEditorView();
+      if (view) {
+        const { from, to } = view.state.selection.main;
+        view.focus();
+        view.dispatch(
+          view.state.update({
+            changes: { from, to, insert: btn.insert },
+            selection: { anchor: from + btn.insert.length },
+            scrollIntoView: true,
+          }),
+        );
+      }
     }
   }
 </script>

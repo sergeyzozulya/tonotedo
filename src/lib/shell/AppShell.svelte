@@ -26,6 +26,25 @@
   import Sidebar from "./Sidebar.svelte";
   import EntryList from "./EntryList.svelte";
   import { Editor } from "../editor/index.js";
+  import OutlinePanel from "../editor/OutlinePanel.svelte";
+  import {
+    runEditorCommand,
+    toggleBold,
+    toggleItalic,
+    toggleCode,
+    heading1,
+    heading2,
+    heading3,
+    moveBlockUp,
+    moveBlockDown,
+    indentBlock,
+    outdentBlock,
+    cycleBlockType,
+  } from "../editor/index.js";
+  import { openSearchPanel } from "@codemirror/search";
+  import { getActiveEditorView } from "../editor/active-view.js";
+  import { resolveWikilink, type WikilinkCandidate } from "../editor/index.js";
+  import WikilinkPicker from "../editor/WikilinkPicker.svelte";
   import PropertiesPanel from "../panel/PropertiesPanel.svelte";
   import SearchOverlay from "../search/SearchOverlay.svelte";
   import { savedSearchesStore } from "../search/saved-searches-store.svelte.js";
@@ -183,16 +202,34 @@
 
   let editorFocused = $state(false);
 
+  // ── Outline / TOC panel (spec 0006) — per-entry UI state, not persisted ──────
+  let outlineVisible = $state(false);
+
   // ── Group tree ────────────────────────────────────────────────────────────────
 
   let groupTree = $state<GroupNode[]>([]);
+  let groupPaths = $state<string[]>([]);
 
   async function loadGroups(): Promise<void> {
     const result = await ipc.list_groups();
     if (result.ok) {
       groupTree = buildGroupTree(result.value);
+      groupPaths = result.value.map((g) => g.path);
     } else {
       console.error("[shell] list_groups failed:", result.error.message);
+    }
+  }
+
+  // Entry id → title, used to resolve wikilink chips and to detect ambiguous
+  // bare links (spec 0006). Loaded once and refreshed on index_changed.
+  let entryTitles = $state<Map<string, string>>(new Map());
+
+  async function loadEntryTitles(): Promise<void> {
+    const result = await ipc.entry_titles();
+    if (result.ok) {
+      entryTitles = new Map(Object.entries(result.value));
+    } else {
+      console.error("[shell] entry_titles failed:", result.error.message);
     }
   }
 
@@ -342,18 +379,28 @@
     selectEntry(id);
   }
 
+  /** Write the current buffer for `id` now, clearing any pending debounce. */
+  async function writeNow(id: string, text: string): Promise<void> {
+    clearTimeout(writeTimer);
+    writeTimer = undefined;
+    const writeResult = await ipc.write_entry(id, text, conflictTracker.lastWriteToken ?? "");
+    if (writeResult.ok) {
+      conflictTracker = onWriteComplete(conflictTracker, writeResult.value.selfToken);
+    }
+  }
+
   function onDocChanged(text: string): void {
     editorText = text;
     conflictTracker = onEditorChange(conflictTracker);
     if (!selectedEntryId) return;
     clearTimeout(writeTimer);
     const id = selectedEntryId;
-    writeTimer = setTimeout(async () => {
-      const writeResult = await ipc.write_entry(id, text, conflictTracker.lastWriteToken ?? "");
-      if (writeResult.ok) {
-        conflictTracker = onWriteComplete(conflictTracker, writeResult.value.selfToken);
-      }
-    }, 500);
+    writeTimer = setTimeout(() => void writeNow(id, text), 500);
+  }
+
+  /** Force-flush the debounced save (entry.save command — cmd+s, spec 0006/0007). */
+  function flushSave(): void {
+    if (selectedEntryId) void writeNow(selectedEntryId, editorText);
   }
 
   function onPanelEdit(change: ChangeSpec): void {
@@ -377,6 +424,7 @@
       loadEntries(selectedGroupPath);
       loadGroups();
       loadPeople();
+      void loadEntryTitles();
 
       // Check each changed path for a conflict with the open buffer.
       for (const path of event.paths) {
@@ -537,8 +585,60 @@
     }
   }
 
-  function onNavigate(target: string): void {
-    console.log("[shell] navigate →", target);
+  // ── Wikilink navigation + ambiguity prompt (spec 0006 / 0003) ────────────────
+
+  /** Open the destination for a (resolved, path-qualified) wikilink target. */
+  function navigateTarget(target: string): void {
+    if (entryTitles.has(target)) {
+      void selectEntry(target);
+    } else {
+      // Group target → open the group (selecting it filters the entry list).
+      onGroupSelect(target);
+    }
+  }
+
+  /** Pending ambiguity prompt: candidates + the token span + anchor rect. */
+  let wikilinkPrompt = $state<{
+    candidates: WikilinkCandidate[];
+    range: { from: number; to: number };
+    rect: { left: number; top: number; bottom: number };
+  } | null>(null);
+
+  function onNavigate(
+    target: string,
+    range?: { from: number; to: number },
+    rect?: { left: number; top: number; bottom: number },
+  ): void {
+    const resolution = resolveWikilink({ target, entryTitles, groupPaths });
+    if (resolution.status === "unique") {
+      navigateTarget(resolution.target);
+    } else if (resolution.status === "ambiguous" && range && rect) {
+      // A hand-written bare ambiguous link → prompt on first resolution.
+      wikilinkPrompt = { candidates: resolution.candidates, range, rect };
+    }
+    // status "none": unresolved target — nothing to navigate to.
+  }
+
+  /** User chose a candidate: rewrite the bare link path-qualified, then open it. */
+  function onWikilinkPick(candidate: WikilinkCandidate): void {
+    const prompt = wikilinkPrompt;
+    wikilinkPrompt = null;
+    if (prompt) {
+      // Replace the token span with the qualified form, preserving any display
+      // text after a pipe.
+      const view = getActiveEditorView();
+      if (view) {
+        const literal = view.state.doc.sliceString(prompt.range.from, prompt.range.to);
+        const inner = literal.slice(2, -2);
+        const pipe = inner.indexOf("|");
+        const display = pipe === -1 ? "" : inner.slice(pipe);
+        const replacement = `[[${candidate.target}${display}]]`;
+        view.dispatch({
+          changes: { from: prompt.range.from, to: prompt.range.to, insert: replacement },
+        });
+      }
+    }
+    navigateTarget(candidate.target);
   }
 
   function onCreatePerson(slug: string): void {
@@ -668,6 +768,64 @@
     }
   });
 
+  // ── Editor / block / save / outline commands ──────────────────────────────────
+  // The seeded editor commands are noops (intent-only). Re-register them here to
+  // dispatch into the focused editor via the active-view registry, force-flush
+  // the save debounce, or toggle the outline (specs 0006, 0007).
+
+  $effect(() => {
+    const wireEditorCmd = (id: string, run: Parameters<typeof runEditorCommand>[0]) => {
+      const seeded = registry.get(id);
+      if (seeded) {
+        registry.register({
+          ...seeded,
+          handler: () => {
+            runEditorCommand(run);
+          },
+        });
+      }
+    };
+
+    wireEditorCmd("editor.bold", toggleBold);
+    wireEditorCmd("editor.italic", toggleItalic);
+    wireEditorCmd("editor.code", toggleCode);
+    wireEditorCmd("editor.heading-1", heading1);
+    wireEditorCmd("editor.heading-2", heading2);
+    wireEditorCmd("editor.heading-3", heading3);
+    wireEditorCmd("editor.move-block-up", moveBlockUp);
+    wireEditorCmd("editor.move-block-down", moveBlockDown);
+    wireEditorCmd("editor.indent", indentBlock);
+    wireEditorCmd("editor.outdent", outdentBlock);
+    wireEditorCmd("editor.convert-block", cycleBlockType);
+
+    const find = registry.get("editor.find");
+    if (find) {
+      registry.register({
+        ...find,
+        handler: () => {
+          const view = getActiveEditorView();
+          if (view) {
+            view.focus();
+            openSearchPanel(view);
+          }
+        },
+      });
+    }
+
+    const save = registry.get("entry.save");
+    if (save) registry.register({ ...save, handler: () => flushSave() });
+
+    const outline = registry.get("view.outline");
+    if (outline) {
+      registry.register({
+        ...outline,
+        handler: () => {
+          outlineVisible = !outlineVisible;
+        },
+      });
+    }
+  });
+
   // ── Calendar zone ─────────────────────────────────────────────────────────────
 
   let calendarOpen = $state(false);
@@ -699,6 +857,7 @@
     loadEntries(null);
     void savedSearchesStore.load();
     loadPeople();
+    void loadEntryTitles();
   });
 </script>
 
@@ -828,11 +987,13 @@
               {onTokenClick}
               {onNavigate}
               {onCreatePerson}
+              {entryTitles}
               entryPath={selectedEntryId}
               {blockCallbacks}
               externalChange={panelChange}
               externalDocReplace={fullDocReplace}
               groupPath={selectedEntryGroup}
+              onFocusChange={(f) => (editorFocused = f)}
             />
           {:else}
             <div class="editor-empty">Select an entry to begin editing</div>
@@ -1230,18 +1391,27 @@
               >
             </div>
           {/if}
-          <Editor
-            doc={editorText}
-            {onDocChanged}
-            {onTokenClick}
-            {onNavigate}
-            {onCreatePerson}
-            entryPath={selectedEntryId}
-            {blockCallbacks}
-            externalChange={panelChange}
-            externalDocReplace={fullDocReplace}
-            groupPath={selectedEntryGroup}
-          />
+          <div class="editor-with-outline">
+            <div class="editor-flex">
+              <Editor
+                doc={editorText}
+                {onDocChanged}
+                {onTokenClick}
+                {onNavigate}
+                {onCreatePerson}
+                {entryTitles}
+                entryPath={selectedEntryId}
+                {blockCallbacks}
+                externalChange={panelChange}
+                externalDocReplace={fullDocReplace}
+                groupPath={selectedEntryGroup}
+                onFocusChange={(f) => (editorFocused = f)}
+              />
+            </div>
+            {#if outlineVisible}
+              <OutlinePanel docText={editorText} />
+            {/if}
+          </div>
         {:else}
           <div class="editor-empty">Select an entry to begin editing</div>
         {/if}
@@ -1292,6 +1462,16 @@
       initialSlug={createDialogInitialSlug}
       onClose={() => (showCreateDialog = false)}
       onCreated={onPersonCreated}
+    />
+  {/if}
+
+  <!-- Ambiguous-wikilink picker (spec 0006 §Wikilinks) -->
+  {#if wikilinkPrompt}
+    <WikilinkPicker
+      candidates={wikilinkPrompt.candidates}
+      rect={wikilinkPrompt.rect}
+      onPick={onWikilinkPick}
+      onClose={() => (wikilinkPrompt = null)}
     />
   {/if}
 
@@ -1554,6 +1734,20 @@
     justify-content: center;
     color: var(--tnd-text-faint);
     font-size: 14px;
+  }
+
+  /* Editor + opt-in outline panel (spec 0006) */
+  .editor-with-outline {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+  }
+  .editor-flex {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
   }
 
   /* Properties zone */

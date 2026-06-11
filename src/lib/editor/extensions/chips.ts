@@ -57,8 +57,17 @@ import type { Ipc } from "../../ipc/types.js";
 export interface ChipCallbacks {
   /** Fired when a tag or mention chip is clicked. Non-navigational. */
   onTokenClick?: (kind: "tag" | "mention", value: string) => void;
-  /** Fired when a wikilink chip is clicked. */
-  onNavigate?: (target: string) => void;
+  /**
+   * Fired when a wikilink chip is clicked. `range` is the document span of the
+   * `[[…]]` token, supplied so the caller can rewrite an ambiguous bare link to
+   * its path-qualified form in place (spec 0006 §Wikilinks). `rect` is the chip's
+   * on-screen bounding box for anchoring an ambiguity picker.
+   */
+  onNavigate?: (
+    target: string,
+    range?: { from: number; to: number },
+    rect?: { left: number; top: number; bottom: number },
+  ) => void;
 }
 
 export interface ChipConfig extends ChipCallbacks {
@@ -380,7 +389,9 @@ class WikilinkChipWidget extends WidgetType {
     readonly displayText: string | undefined,
     readonly resolved: boolean,
     readonly resolvedTitle: string | undefined,
-    readonly onClick: ((target: string) => void) | undefined,
+    readonly onClick: NonNullable<ChipCallbacks["onNavigate"]> | undefined,
+    readonly tokenFrom: number,
+    readonly tokenTo: number,
   ) {
     super();
   }
@@ -390,7 +401,9 @@ class WikilinkChipWidget extends WidgetType {
       this.target === other.target &&
       this.resolved === other.resolved &&
       this.resolvedTitle === other.resolvedTitle &&
-      this.displayText === other.displayText
+      this.displayText === other.displayText &&
+      this.tokenFrom === other.tokenFrom &&
+      this.tokenTo === other.tokenTo
     );
   }
 
@@ -415,9 +428,11 @@ class WikilinkChipWidget extends WidgetType {
     if (this.onClick) {
       const target = this.target;
       const cb = this.onClick;
+      const range = { from: this.tokenFrom, to: this.tokenTo };
       el.addEventListener("mousedown", (e) => {
         e.preventDefault();
-        cb(target);
+        const r = el.getBoundingClientRect();
+        cb(target, range, { left: r.left, top: r.top, bottom: r.bottom });
       });
       el.style.cursor = "pointer";
     }
@@ -522,6 +537,8 @@ export function computeChipDecorations(
             resolved,
             resolvedTitle,
             callbacks.onNavigate,
+            node.from,
+            node.to,
           );
           pending.push({
             from: node.from,

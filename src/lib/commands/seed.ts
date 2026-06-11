@@ -167,6 +167,51 @@ const COMMANDS: Command[] = [
     handler: noop, // stub
   },
   {
+    id: "editor.move-block-up",
+    name: "Move Block Up",
+    description: "Move the current line/block up (spec 0006)",
+    category: "Editor",
+    defaultBindings: ["alt+up"],
+    when: "zone:editor",
+    handler: noop, // wired in AppShell to dispatch into the focused editor
+  },
+  {
+    id: "editor.move-block-down",
+    name: "Move Block Down",
+    description: "Move the current line/block down (spec 0006)",
+    category: "Editor",
+    defaultBindings: ["alt+down"],
+    when: "zone:editor",
+    handler: noop,
+  },
+  {
+    id: "editor.indent",
+    name: "Indent List Item",
+    description: "Indent the current list item",
+    category: "Editor",
+    defaultBindings: ["cmd+]"],
+    when: "zone:editor",
+    handler: noop,
+  },
+  {
+    id: "editor.outdent",
+    name: "Outdent List Item",
+    description: "Outdent the current list item",
+    category: "Editor",
+    defaultBindings: ["cmd+["],
+    when: "zone:editor",
+    handler: noop,
+  },
+  {
+    id: "editor.convert-block",
+    name: "Convert Block",
+    description: "Cycle the current block: paragraph → heading → list",
+    category: "Editor",
+    defaultBindings: ["cmd+shift+m"],
+    when: "zone:editor",
+    handler: noop,
+  },
+  {
     id: "editor.undo",
     name: "Undo",
     description: "Undo last edit",
@@ -195,6 +240,15 @@ const COMMANDS: Command[] = [
     defaultBindings: ["cmd+shift+/"],
     when: "",
     handler: noop, // wired by Cheatsheet.svelte
+  },
+  {
+    id: "view.outline",
+    name: "Toggle Outline",
+    description: "Show or hide the heading outline for the current entry",
+    category: "View",
+    defaultBindings: ["cmd+shift+o"],
+    when: "",
+    handler: noop, // wired in AppShell (per-entry UI boolean, spec 0006)
   },
   // Theme commands — handlers are stubs here; seedThemeCommands() re-registers
   // them through themeStore so command + UI stay in sync (issue #23 theme sync fix).
