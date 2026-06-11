@@ -2,7 +2,7 @@
 id: docs/spec/0006-markdown-editor
 title: Markdown editor
 kind: feature
-status: accepted
+status: implemented
 related: [docs/spec/0001-product-vision, docs/spec/0002-entries, docs/spec/0004-tags, docs/spec/0005-mentions, docs/spec/0007-keyboard-model, docs/spec/0011-settings, docs/tech/adr-0001-storage-format]
 ---
 

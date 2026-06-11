@@ -2,7 +2,7 @@
 id: docs/spec/0005-mentions
 title: Mentions
 kind: feature
-status: accepted
+status: implemented
 related: [docs/spec/0001-product-vision, docs/spec/0002-entries, docs/spec/0004-tags, docs/spec/0006-markdown-editor, docs/spec/0009-search]
 ---
 

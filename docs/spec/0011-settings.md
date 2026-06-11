@@ -2,7 +2,7 @@
 id: docs/spec/0011-settings
 title: Settings and theming
 kind: feature
-status: accepted
+status: implemented
 related: [docs/spec/0001-product-vision, docs/spec/0004-tags, docs/spec/0005-mentions, docs/spec/0006-markdown-editor, docs/spec/0007-keyboard-model, docs/spec/0008-calendar, docs/tech/adr-0001-storage-format]
 ---
 

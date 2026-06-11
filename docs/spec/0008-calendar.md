@@ -2,7 +2,7 @@
 id: docs/spec/0008-calendar
 title: Calendar
 kind: feature
-status: accepted
+status: implemented
 related: [docs/spec/0001-product-vision, docs/spec/0002-entries, docs/spec/0003-groups, docs/spec/0007-keyboard-model, docs/spec/0011-settings, docs/spec/0012-notifications]
 ---
 

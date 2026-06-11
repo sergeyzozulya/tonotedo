@@ -2,7 +2,7 @@
 id: docs/spec/0007-keyboard-model
 title: Keyboard model
 kind: feature
-status: accepted
+status: implemented
 related: [docs/spec/0001-product-vision, docs/spec/0006-markdown-editor, docs/spec/0009-search, docs/spec/0011-settings, docs/spec/0013-mobile]
 ---
 
