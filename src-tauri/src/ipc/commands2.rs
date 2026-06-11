@@ -284,6 +284,14 @@ pub fn asset_url(asset_path: String, state: State<'_, AppState>) -> CmdResult<St
 }
 
 pub fn asset_url_inner(root: &Path, asset_path: &str) -> CmdResult<String> {
+    // Security: asset_path comes from library content (avatar/attachment
+    // links); reject traversal so this cannot become an out-of-library
+    // existence oracle or hand an external path to the asset protocol.
+    if !crate::core::frontmatter::is_traversal_safe_rel_path(asset_path) {
+        return Err(IpcError::invalid_argument(format!(
+            "Unsafe asset path: {asset_path:?}"
+        )));
+    }
     let abs = root.join(asset_path);
     if !abs.exists() {
         return Err(IpcError::not_found(format!(
@@ -300,6 +308,10 @@ pub fn asset_url_inner(root: &Path, asset_path: &str) -> CmdResult<String> {
 pub fn asset_exists(asset_path: String, state: State<'_, AppState>) -> CmdResult<bool> {
     let guard = require_open!(state);
     let lib = guard.as_ref().ok_or_else(IpcError::not_open)?;
+    // Security: never probe outside the library (existence oracle).
+    if !crate::core::frontmatter::is_traversal_safe_rel_path(&asset_path) {
+        return Ok(false);
+    }
     Ok(lib.root.join(&asset_path).exists())
 }
 
@@ -312,6 +324,13 @@ pub fn remove_asset(asset_path: String, state: State<'_, AppState>) -> CmdResult
 }
 
 pub fn remove_asset_inner(root: &Path, asset_path: &str) -> CmdResult<()> {
+    // Security: this deletes a file at root.join(asset_path) — a traversal
+    // here is arbitrary file deletion. Reject anything that could ascend.
+    if !crate::core::frontmatter::is_traversal_safe_rel_path(asset_path) {
+        return Err(IpcError::invalid_argument(format!(
+            "Unsafe asset path: {asset_path:?}"
+        )));
+    }
     let abs = root.join(asset_path);
     if !abs.exists() {
         return Err(IpcError::not_found(format!(
@@ -2476,6 +2495,28 @@ pub mod tests {
         let abs = fix.root.join(&asset_path);
         assert!(abs.exists());
         assert_eq!(std::fs::read(&abs).unwrap(), bytes);
+    }
+
+    #[test]
+    fn asset_commands_reject_traversal() {
+        let fix = Fixture::new();
+        for bad in ["../../tmp/x", "/etc/passwd", "a/../../x", "work/./x"] {
+            assert_eq!(
+                remove_asset_inner(&fix.root, bad).unwrap_err().code,
+                "invalid_argument",
+                "remove_asset must reject {bad:?}"
+            );
+            assert_eq!(
+                asset_url_inner(&fix.root, bad).unwrap_err().code,
+                "invalid_argument",
+                "asset_url must reject {bad:?}"
+            );
+        }
+        // Legitimate library-relative asset paths (incl. reserved dirs) still work.
+        std::fs::create_dir_all(fix.root.join("_people")).unwrap();
+        std::fs::write(fix.root.join("_people/sergey.png"), b"img").unwrap();
+        assert!(asset_url_inner(&fix.root, "_people/sergey.png").is_ok());
+        remove_asset_inner(&fix.root, "_people/sergey.png").unwrap();
     }
 
     #[test]
