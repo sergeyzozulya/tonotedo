@@ -690,6 +690,41 @@ function extractWikilinks(text: string): string[] {
   return targets;
 }
 
+/**
+ * Detect malformed frontmatter for the mock (spec 0002 §"Malformed
+ * frontmatter"). Mirrors the Rust parser's non-blocking warning: an opening
+ * `---` fence with no closing fence is the common hand-edit error. Returns
+ * undefined for well-formed (or frontmatter-less) entries.
+ */
+function detectParseWarning(text: string): string | undefined {
+  if (!text.startsWith("---\n") && !text.startsWith("---\r\n")) return undefined;
+  const rest = text.slice(text.indexOf("\n") + 1);
+  const hasClose = /^---\s*$/m.test(rest);
+  return hasClose ? undefined : "Malformed frontmatter: missing closing '---' fence.";
+}
+
+/**
+ * Rewrite wikilink targets `[[old]]`/`[[group/old]]` to point at the new slug,
+ * preserving display text. Bare and path-qualified forms are handled; the group
+ * prefix is preserved on qualified targets.
+ */
+function rewriteWikilinkTargets(
+  text: string,
+  group: string,
+  oldSlug: string,
+  newSlug: string,
+): string {
+  const bare = oldSlug;
+  const qualified = group ? `${group}/${oldSlug}` : oldSlug;
+  const newQualified = group ? `${group}/${newSlug}` : newSlug;
+  return text.replace(/\[\[([^\]|]+)(\|[^\]]*)?]]/g, (full, target: string, display = "") => {
+    const t = target.trim();
+    if (t === bare) return `[[${newSlug}${display}]]`;
+    if (t === qualified) return `[[${newQualified}${display}]]`;
+    return full;
+  });
+}
+
 function buildBacklinkIndex(): Map<EntryId, Backlink[]> {
   const index = new Map<EntryId, Backlink[]>();
   for (const e of ENTRIES) {
@@ -920,7 +955,13 @@ export const mock: Ipc = {
     }
     return {
       ok: true,
-      value: { id: e.id, path: e.path, text: e.text, selfToken: `mock-tok-${id}` },
+      value: {
+        id: e.id,
+        path: e.path,
+        text: e.text,
+        selfToken: `mock-tok-${id}`,
+        parseWarning: detectParseWarning(e.text),
+      },
     };
   },
 
@@ -1508,6 +1549,56 @@ export const mock: Ipc = {
     }
     store.delete(entryId);
     store.set(newId, { ...e, id: newId, group: dstGroup, path: newPath });
+    invalidateCaches();
+    emit("index_changed", { paths: [path, newPath], kinds: ["renamed", "renamed"] });
+    return { ok: true, value: undefined };
+  },
+
+  async rename_entry(path: string, newSlug: string): Promise<Result<void>> {
+    if (!newSlug || newSlug.startsWith("_") || newSlug.startsWith(".")) {
+      return {
+        ok: false,
+        error: { code: "invalid_argument", message: `Reserved or empty slug: ${newSlug}` },
+      };
+    }
+    if (newSlug.includes("/") || newSlug.includes("\\")) {
+      return {
+        ok: false,
+        error: { code: "invalid_argument", message: `Slug must be a single component: ${newSlug}` },
+      };
+    }
+    const entryId = path.replace(/\.md$/, "");
+    const e = store.get(entryId);
+    if (!e) {
+      return { ok: false, error: { code: "not_found", message: `Entry not found: ${path}` } };
+    }
+
+    const group = e.group;
+    const oldSlug = entryId.split("/").at(-1) ?? entryId;
+    if (newSlug === oldSlug) return { ok: true, value: undefined };
+
+    // Collision-suffix the new slug within the group (spec 0002).
+    const idFor = (slug: string) => (group ? `${group}/${slug}` : slug);
+    let finalSlug = newSlug;
+    if (store.has(idFor(finalSlug))) {
+      let n = 2;
+      while (store.has(idFor(`${newSlug}-${n}`))) n += 1;
+      finalSlug = `${newSlug}-${n}`;
+    }
+    const newId = idFor(finalSlug);
+    const newPath = `${newId}.md`;
+
+    store.delete(entryId);
+    store.set(newId, { ...e, id: newId, path: newPath });
+
+    // Rewrite in-app references (wikilinks) across all entries (spec 0002).
+    for (const [id, other] of store.entries()) {
+      const rewritten = rewriteWikilinkTargets(other.text, group, oldSlug, finalSlug);
+      if (rewritten !== other.text) {
+        store.set(id, { ...other, text: rewritten });
+      }
+    }
+
     invalidateCaches();
     emit("index_changed", { paths: [path, newPath], kinds: ["renamed", "renamed"] });
     return { ok: true, value: undefined };

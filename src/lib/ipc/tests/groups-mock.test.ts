@@ -122,6 +122,82 @@ describe("mock move_entry", () => {
   });
 });
 
+// ── rename_entry (spec 0002 §Identity) ─────────────────────────────────────────
+
+describe("mock rename_entry", () => {
+  it("renames an entry's slug and rewrites wikilink references", async () => {
+    const srcId = "inbox/rename-src-r1";
+    await mock.write_entry(srcId, "# Rename Src\n", "tok");
+    const refId = "inbox/rename-ref-r1";
+    await mock.write_entry(refId, "see [[inbox/rename-src-r1]] here\n", "tok");
+
+    const res = await mock.rename_entry("inbox/rename-src-r1.md", "renamed-r1");
+    expect(res.ok).toBe(true);
+
+    // Old id gone, new id present.
+    const oldRead = await mock.read_entry(srcId);
+    expect(oldRead.ok).toBe(false);
+    const newRead = await mock.read_entry("inbox/renamed-r1");
+    expect(newRead.ok).toBe(true);
+
+    // Referencing entry's wikilink updated.
+    const refRead = await mock.read_entry(refId);
+    expect(refRead.ok).toBe(true);
+    if (!refRead.ok) return;
+    expect(refRead.value.text).toContain("[[inbox/renamed-r1]]");
+    expect(refRead.value.text).not.toContain("rename-src-r1");
+  });
+
+  it("appends -2 on slug collision within the group", async () => {
+    await mock.write_entry("inbox/coll-a-r2", "# A\n", "tok");
+    await mock.write_entry("inbox/coll-target-r2", "# Existing\n", "tok");
+
+    const res = await mock.rename_entry("inbox/coll-a-r2.md", "coll-target-r2");
+    expect(res.ok).toBe(true);
+
+    const suffixed = await mock.read_entry("inbox/coll-target-r2-2");
+    expect(suffixed.ok).toBe(true);
+    // Original target untouched.
+    const original = await mock.read_entry("inbox/coll-target-r2");
+    expect(original.ok).toBe(true);
+  });
+
+  it("rejects a reserved slug", async () => {
+    await mock.write_entry("inbox/reserved-src-r3", "# X\n", "tok");
+    const res = await mock.rename_entry("inbox/reserved-src-r3.md", "_meta");
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.error.code).toBe("invalid_argument");
+  });
+
+  it("returns not_found for a missing entry", async () => {
+    const res = await mock.rename_entry("inbox/ghost-rename-r4.md", "whatever");
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.error.code).toBe("not_found");
+  });
+});
+
+// ── parse warning (spec 0002 §Malformed frontmatter) ───────────────────────────
+
+describe("mock read_entry parseWarning", () => {
+  it("flags an unclosed frontmatter fence", async () => {
+    await mock.write_entry("inbox/malformed-pw1", "---\nbad: [unclosed\nstill body\n", "tok");
+    const r = await mock.read_entry("inbox/malformed-pw1");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.parseWarning).toBeTruthy();
+  });
+
+  it("leaves well-formed entries without a warning", async () => {
+    await mock.write_entry("inbox/wellformed-pw2", "---\nid: x\n---\n# Title\n", "tok");
+    const r = await mock.read_entry("inbox/wellformed-pw2");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.parseWarning).toBeUndefined();
+  });
+});
+
 // ── trash_entry / trash_restore / trash_purge ─────────────────────────────────
 
 describe("mock trash_entry", () => {

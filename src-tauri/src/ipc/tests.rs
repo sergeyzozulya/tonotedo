@@ -67,7 +67,7 @@ impl Fixture {
             library_root.clone(),
             event_tx,
         );
-        let (reconciler_handle, _change_rx) = reconciler.spawn(None::<WatcherHandle>);
+        let (reconciler_handle, _change_rx, _notify_rx) = reconciler.spawn(None::<WatcherHandle>);
 
         let open = OpenLibrary {
             root: library_root,
@@ -139,6 +139,8 @@ impl Fixture {
         Ok(super::EntryContentDto {
             id: id.to_string(),
             path: format!("{id}.md"),
+            parse_warning: crate::core::frontmatter::Entry::from_bytes(text.as_bytes())
+                .parse_warning,
             text,
             self_token: token.as_u64().to_string(),
         })

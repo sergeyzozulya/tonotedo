@@ -417,6 +417,56 @@ pub fn paths_with_mention(conn: &Connection, slug: &str) -> Result<Vec<String>, 
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
 
+// ── paths_referencing_slug ─────────────────────────────────────────────────────
+
+/// All entry paths that reference entry `slug` (located in `group_path`) via a
+/// wikilink or a `ref`/`ref[]` frontmatter property, case-insensitively.
+///
+/// Used by the journal module's slug-rename batch (spec 0002 §"Identity" /
+/// §"Properties" — refs "rewritten on rename"). Both the bare form (`slug`) and
+/// the path-qualified form (`group_path/slug`) are matched, mirroring the
+/// wikilink resolution rules in `resolve_one`.
+///
+/// `group_path` is the entry's group (empty string for the library root).
+pub fn paths_referencing_slug(
+    conn: &Connection,
+    group_path: &str,
+    slug: &str,
+) -> Result<Vec<String>, IndexError> {
+    let qualified = if group_path.is_empty() {
+        slug.to_string()
+    } else {
+        format!("{group_path}/{slug}")
+    };
+
+    // Wikilink targets are stored verbatim (possibly with surrounding spaces);
+    // `trim(lower(target_raw))` normalises the comparison.  ref/ref[] values are
+    // stored as JSON arrays of strings in `properties.value_json`; we match the
+    // bare or qualified slug as a JSON string element.  The LIKE patterns are
+    // anchored to the JSON quote delimiters so `slug` does not match a substring
+    // of a longer slug.
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT e.path FROM entries e WHERE
+            EXISTS (
+                SELECT 1 FROM links l
+                WHERE l.src_entry_id = e.id
+                  AND (trim(lower(l.target_raw)) = lower(?1)
+                       OR trim(lower(l.target_raw)) = lower(?2))
+            )
+            OR EXISTS (
+                SELECT 1 FROM properties p
+                WHERE p.entry_id = e.id
+                  AND (p.declared_type IN ('ref','ref[]')
+                       OR p.inferred_type IN ('ref','ref[]'))
+                  AND (lower(p.value_json) LIKE '%\"' || lower(?1) || '\"%' ESCAPE '\\'
+                       OR lower(p.value_json) LIKE '%\"' || lower(?2) || '\"%' ESCAPE '\\')
+            )
+         ORDER BY e.path",
+    )?;
+    let rows = stmt.query_map(params![slug, qualified], |r| r.get(0))?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
 // ── entry_id_for_path ────────────────────────────────────────────────────────
 
 pub fn entry_id_for_path(conn: &Connection, path: &str) -> Result<Option<i64>, IndexError> {

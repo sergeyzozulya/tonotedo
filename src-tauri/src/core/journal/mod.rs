@@ -106,6 +106,9 @@ pub enum OpKind {
     MergeTag,
     RenamePerson,
     MergePerson,
+    /// Rename an entry's slug: rewrite wikilinks `[[old]]` / `[[group/old]]` and
+    /// `ref`/`ref[]` frontmatter pointing at the old slug (spec 0002 §Identity).
+    RenameSlug,
 }
 
 /// On-disk journal intent record.
@@ -116,6 +119,11 @@ struct JournalRecord {
     new: String,
     files: Vec<String>,
     done: Vec<String>,
+    /// Group path of the renamed entry — only meaningful for `RenameSlug`, used
+    /// to rewrite path-qualified wikilinks (`[[group/slug]]`). Defaults to empty
+    /// so older journal records (tag/person renames) deserialize unchanged.
+    #[serde(default)]
+    group: String,
 }
 
 // ── Summary returned to the caller ───────────────────────────────────────────
@@ -144,7 +152,41 @@ pub fn rename_tag(
     old: &str,
     new: &str,
 ) -> Result<BatchSummary, JournalError> {
-    run_batch(library_root, index, registry, OpKind::RenameTag, old, new)
+    run_batch(
+        library_root,
+        index,
+        registry,
+        OpKind::RenameTag,
+        old,
+        new,
+        "",
+    )
+}
+
+/// Rewrite every in-app reference to entry `old` slug (in `group`) so it points
+/// at `new` slug instead.  Covers wikilinks (`[[old]]` and path-qualified
+/// `[[group/old]]`) and `ref`/`ref[]` frontmatter properties (spec 0002).
+///
+/// The renamed entry's own `.md` file move and its `id` are handled by the
+/// caller; this batch only touches *other* entries that reference it.  Metadata
+/// is unaffected.  Path-qualified targets keep their `group/` prefix.
+pub fn rename_slug(
+    library_root: &Path,
+    index: &Index,
+    registry: &Arc<TokenRegistry>,
+    group: &str,
+    old_slug: &str,
+    new_slug: &str,
+) -> Result<BatchSummary, JournalError> {
+    run_batch(
+        library_root,
+        index,
+        registry,
+        OpKind::RenameSlug,
+        old_slug,
+        new_slug,
+        group,
+    )
 }
 
 /// Merge tag `src` into `dst`: rewrite every occurrence of `src` as `dst`.
@@ -157,7 +199,15 @@ pub fn merge_tag(
     src: &str,
     dst: &str,
 ) -> Result<BatchSummary, JournalError> {
-    run_batch(library_root, index, registry, OpKind::MergeTag, src, dst)
+    run_batch(
+        library_root,
+        index,
+        registry,
+        OpKind::MergeTag,
+        src,
+        dst,
+        "",
+    )
 }
 
 /// Rename every occurrence of person slug `old` to `new` across all entry files.
@@ -178,6 +228,7 @@ pub fn rename_person(
         OpKind::RenamePerson,
         old,
         new,
+        "",
     )
 }
 
@@ -191,7 +242,15 @@ pub fn merge_person(
     src: &str,
     dst: &str,
 ) -> Result<BatchSummary, JournalError> {
-    run_batch(library_root, index, registry, OpKind::MergePerson, src, dst)
+    run_batch(
+        library_root,
+        index,
+        registry,
+        OpKind::MergePerson,
+        src,
+        dst,
+        "",
+    )
 }
 
 /// Resume any pending journal operations found in `.tonotedo/journal/`.
@@ -236,36 +295,31 @@ pub fn resume_pending(
             .collect();
 
         let mut done = record.done.clone();
+        let build_updated = |done: &[String]| JournalRecord {
+            op: record.op.clone(),
+            old: record.old.clone(),
+            new: record.new.clone(),
+            files: record.files.clone(),
+            done: done.to_vec(),
+            group: record.group.clone(),
+        };
         for rel_path in &remaining {
             let abs_path = library_root.join(rel_path);
             if !abs_path.exists() {
                 // File disappeared — skip; still mark done so resume terminates.
                 done.push(rel_path.clone());
-                let updated = JournalRecord {
-                    op: record.op.clone(),
-                    old: record.old.clone(),
-                    new: record.new.clone(),
-                    files: record.files.clone(),
-                    done: done.clone(),
-                };
-                write_journal_file(&path, &updated)?;
+                write_journal_file(&path, &build_updated(&done))?;
                 continue;
             }
 
             let bytes = std::fs::read(&abs_path)?;
             let entry = Entry::from_bytes(&bytes);
-            let rewritten = rewrite_entry(&entry, &record.op, &record.old, &record.new);
+            let rewritten =
+                rewrite_entry(&entry, &record.op, &record.old, &record.new, &record.group);
             write_entry(&abs_path, &rewritten, &[], registry)?;
 
             done.push(rel_path.clone());
-            let updated = JournalRecord {
-                op: record.op.clone(),
-                old: record.old.clone(),
-                new: record.new.clone(),
-                files: record.files.clone(),
-                done: done.clone(),
-            };
-            write_journal_file(&path, &updated)?;
+            write_journal_file(&path, &build_updated(&done))?;
         }
 
         // All files processed — delete the journal file.
@@ -284,10 +338,11 @@ fn run_batch(
     op: OpKind,
     old: &str,
     new: &str,
+    group: &str,
 ) -> Result<BatchSummary, JournalError> {
     // Discover affected paths via the index (union of both surfaces).
     // The index never indexes .tonotedo/, so no trash/journal exclusion needed.
-    let paths = discover_paths(index, &op, old)?;
+    let paths = discover_paths(index, &op, old, group)?;
 
     // Assert the index contract: no .tonotedo/ paths should appear.
     for p in &paths {
@@ -303,10 +358,19 @@ fn run_batch(
     }
 
     // Write the journal intent file before touching any entry.
-    let journal_path = create_journal_file(library_root, &op, old, new, &paths)?;
+    let journal_path = create_journal_file(library_root, &op, old, new, group, &paths)?;
 
     let mut done: Vec<String> = Vec::with_capacity(paths.len());
     let mut files_changed: usize = 0;
+
+    let build_record = |done: &[String]| JournalRecord {
+        op: op.clone(),
+        old: old.to_string(),
+        new: new.to_string(),
+        files: paths.clone(),
+        done: done.to_vec(),
+        group: group.to_string(),
+    };
 
     for rel_path in &paths {
         let abs_path = library_root.join(rel_path);
@@ -314,20 +378,13 @@ fn run_batch(
         // Missing file: skip and mark done (no crash, just a stale index entry).
         if !abs_path.exists() {
             done.push(rel_path.clone());
-            let record = JournalRecord {
-                op: op.clone(),
-                old: old.to_string(),
-                new: new.to_string(),
-                files: paths.clone(),
-                done: done.clone(),
-            };
-            write_journal_file(&journal_path, &record)?;
+            write_journal_file(&journal_path, &build_record(&done))?;
             continue;
         }
 
         let bytes = std::fs::read(&abs_path)?;
         let entry = Entry::from_bytes(&bytes);
-        let rewritten = rewrite_entry(&entry, &op, old, new);
+        let rewritten = rewrite_entry(&entry, &op, old, new, group);
 
         // Check whether the rewrite actually changed anything (idempotency).
         let new_bytes = rewritten.to_bytes(&[]);
@@ -338,14 +395,7 @@ fn run_batch(
 
         // Mark done and persist journal after each file — crash-recoverable invariant.
         done.push(rel_path.clone());
-        let record = JournalRecord {
-            op: op.clone(),
-            old: old.to_string(),
-            new: new.to_string(),
-            files: paths.clone(),
-            done: done.clone(),
-        };
-        write_journal_file(&journal_path, &record)?;
+        write_journal_file(&journal_path, &build_record(&done))?;
     }
 
     // All files processed — delete the journal file.
@@ -356,10 +406,16 @@ fn run_batch(
 
 // ── Path discovery ────────────────────────────────────────────────────────────
 
-fn discover_paths(index: &Index, op: &OpKind, old: &str) -> Result<Vec<String>, JournalError> {
+fn discover_paths(
+    index: &Index,
+    op: &OpKind,
+    old: &str,
+    group: &str,
+) -> Result<Vec<String>, JournalError> {
     let paths = match op {
         OpKind::RenameTag | OpKind::MergeTag => index.paths_with_tag(old)?,
         OpKind::RenamePerson | OpKind::MergePerson => index.paths_with_mention(old)?,
+        OpKind::RenameSlug => index.paths_referencing_slug(group, old)?,
     };
     Ok(paths)
 }
@@ -371,7 +427,7 @@ fn discover_paths(index: &Index, op: &OpKind, old: &str) -> Result<Vec<String>, 
 ///
 /// The body is rewritten only where the scanner would have produced a real
 /// token — word-boundary and code-fence rules apply.
-fn rewrite_entry(entry: &Entry, op: &OpKind, old: &str, new: &str) -> Entry {
+fn rewrite_entry(entry: &Entry, op: &OpKind, old: &str, new: &str, group: &str) -> Entry {
     let mut out = entry.clone();
 
     match op {
@@ -382,6 +438,10 @@ fn rewrite_entry(entry: &Entry, op: &OpKind, old: &str, new: &str) -> Entry {
         OpKind::RenamePerson | OpKind::MergePerson => {
             rewrite_frontmatter_array(&mut out, "mentions", old, new);
             out.body = rewrite_body_mentions(&out.body, old, new);
+        }
+        OpKind::RenameSlug => {
+            rewrite_ref_properties(&mut out, group, old, new);
+            out.body = rewrite_body_wikilinks(&out.body, group, old, new);
         }
     }
 
@@ -401,6 +461,228 @@ fn rewrite_frontmatter_array(entry: &mut Entry, key: &str, old: &str, new: &str)
             }
         }
     }
+}
+
+// ── Ref-property rewrite (slug rename) ─────────────────────────────────────────
+
+/// The bare and path-qualified forms a reference to `slug` (in `group`) may take.
+/// Bare is `slug`; qualified is `group/slug` (omitted when `group` is empty).
+fn ref_forms(group: &str, slug: &str) -> (String, Option<String>) {
+    let bare = slug.to_string();
+    let qualified = if group.is_empty() {
+        None
+    } else {
+        Some(format!("{group}/{slug}"))
+    };
+    (bare, qualified)
+}
+
+/// Rewrite every `ref`/`ref[]` frontmatter value pointing at `old` (in `group`)
+/// to `new`, preserving the form: a bare `old` becomes `new`, a path-qualified
+/// `group/old` becomes `group/new`.  Match is case-insensitive; other refs are
+/// untouched.
+///
+/// String-array values are matched whether the parser typed them as `Refs`
+/// (schema-declared `ref[]`) or `Tags` (the default inference for a schema-less
+/// string array — the journal parses files without a schema, so a `ref[]`
+/// property round-trips through disk as a `Tags` value).  Only exact element
+/// matches (`old` or `group/old`) are replaced, so a genuine tag is touched only
+/// if it is literally the renamed slug — acceptable given that discovery already
+/// restricted the file set to entries the index typed as holding this ref.
+/// `tags`/`mentions` are excluded: those surfaces are owned by tag/person rename.
+fn rewrite_ref_properties(entry: &mut Entry, group: &str, old: &str, new: &str) {
+    let (old_bare, old_qual) = ref_forms(group, old);
+    let old_bare_lower = old_bare.to_lowercase();
+    let old_qual_lower = old_qual.as_ref().map(|s| s.to_lowercase());
+    let new_qual = if group.is_empty() {
+        new.to_string()
+    } else {
+        format!("{group}/{new}")
+    };
+
+    let rewrite_element = |r: &mut String| {
+        let r_lower = r.to_lowercase();
+        if r_lower == old_bare_lower {
+            *r = new.to_string();
+        } else if old_qual_lower.as_deref() == Some(r_lower.as_str()) {
+            *r = new_qual.clone();
+        }
+    };
+
+    for (key, value) in entry.properties.iter_mut() {
+        // Built-in scalar properties are never refs.
+        if is_builtin_key(key) {
+            continue;
+        }
+        match value {
+            Value::Refs(items) => items.iter_mut().for_each(rewrite_element),
+            // Schema-less string arrays parse as Tags; skip the genuine
+            // tag/mention surfaces (owned by tag/person rename).
+            Value::Tags(items) if key != "tags" && key != "mentions" => {
+                items.iter_mut().for_each(rewrite_element)
+            }
+            // A single-element `ref[]`/`ref` round-trips through disk as a scalar
+            // string (the serializer collapses one-item arrays).  Rewrite an exact
+            // slug match; discovery has already restricted the file set to entries
+            // the index typed as referencing this slug.
+            Value::String(s) => rewrite_element(s),
+            _ => {}
+        }
+    }
+}
+
+/// Built-in property keys (spec 0002 §"Built-in properties") that are never
+/// entry references and must not be rewritten by a slug rename.
+fn is_builtin_key(key: &str) -> bool {
+    matches!(
+        key,
+        "id" | "created"
+            | "updated"
+            | "tags"
+            | "mentions"
+            | "archived"
+            | "view"
+            | "due"
+            | "done"
+            | "repeat"
+            | "overrides"
+            | "remind"
+    )
+}
+
+// ── Body rewrite — wikilinks (slug rename) ─────────────────────────────────────
+
+/// Rewrite `[[old]]` / `[[group/old]]` wikilink targets to point at `new`,
+/// obeying scanner rules (fenced + inline code suppression).  Display text after
+/// `|` is preserved; bare targets become `new`, path-qualified `group/old`
+/// targets become `group/new`.  Match is case-insensitive on the target.
+fn rewrite_body_wikilinks(body: &str, group: &str, old: &str, new: &str) -> String {
+    let (old_bare, old_qual) = ref_forms(group, old);
+    let old_bare_lower = old_bare.to_lowercase();
+    let old_qual_lower = old_qual.as_ref().map(|s| s.to_lowercase());
+    let new_qual = if group.is_empty() {
+        new.to_string()
+    } else {
+        format!("{group}/{new}")
+    };
+
+    let mut result = String::with_capacity(body.len());
+    let mut in_fence = false;
+    let mut fence_marker: Option<char> = None;
+
+    for line in body.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            let marker = trimmed.chars().next().unwrap();
+            if !in_fence {
+                in_fence = true;
+                fence_marker = Some(marker);
+            } else if fence_marker == Some(marker) {
+                in_fence = false;
+                fence_marker = None;
+            }
+            result.push_str(line);
+            continue;
+        }
+
+        if in_fence {
+            result.push_str(line);
+            continue;
+        }
+
+        result.push_str(&rewrite_line_wikilinks(
+            line,
+            &old_bare_lower,
+            old_qual_lower.as_deref(),
+            new,
+            &new_qual,
+        ));
+    }
+
+    result
+}
+
+/// Rewrite `[[...]]` wikilink targets on a single (non-fenced) line.
+fn rewrite_line_wikilinks(
+    line: &str,
+    old_bare_lower: &str,
+    old_qual_lower: Option<&str>,
+    new_bare: &str,
+    new_qual: &str,
+) -> String {
+    let chars: Vec<char> = line.chars().collect();
+    let n = chars.len();
+    let mut result = String::with_capacity(line.len());
+    let mut i = 0;
+
+    while i < n {
+        // Inline code span — push verbatim (targets inside are never matched).
+        if chars[i] == '`' {
+            let mut j = i + 1;
+            while j < n && chars[j] != '`' {
+                j += 1;
+            }
+            if j < n {
+                let span: String = chars[i..=j].iter().collect();
+                result.push_str(&span);
+                i = j + 1;
+            } else {
+                let rest: String = chars[i..].iter().collect();
+                result.push_str(&rest);
+                i = n;
+            }
+            continue;
+        }
+
+        // Wikilink: `[[ ... ]]`.
+        if i + 1 < n && chars[i] == '[' && chars[i + 1] == '[' {
+            let start = i + 2;
+            let mut j = start;
+            while j + 1 < n && !(chars[j] == ']' && chars[j + 1] == ']') {
+                j += 1;
+            }
+            if j + 1 < n {
+                let inner: String = chars[start..j].iter().collect();
+                // Split optional display text after `|`.
+                let (target_part, display_part) = match inner.split_once('|') {
+                    Some((t, d)) => (t, Some(d)),
+                    None => (inner.as_str(), None),
+                };
+                let target_trimmed = target_part.trim();
+                let target_lower = target_trimmed.to_lowercase();
+
+                let new_target = if target_lower == old_bare_lower {
+                    Some(new_bare.to_string())
+                } else if old_qual_lower == Some(target_lower.as_str()) {
+                    Some(new_qual.to_string())
+                } else {
+                    None
+                };
+
+                if let Some(nt) = new_target {
+                    result.push_str("[[");
+                    result.push_str(&nt);
+                    if let Some(d) = display_part {
+                        result.push('|');
+                        result.push_str(d);
+                    }
+                    result.push_str("]]");
+                } else {
+                    // No match — emit the original span verbatim.
+                    let span: String = chars[i..=j + 1].iter().collect();
+                    result.push_str(&span);
+                }
+                i = j + 2;
+                continue;
+            }
+        }
+
+        result.push(chars[i]);
+        i += 1;
+    }
+
+    result
 }
 
 // ── Body rewrite — tags ───────────────────────────────────────────────────────
@@ -641,6 +923,7 @@ fn create_journal_file(
     op: &OpKind,
     old: &str,
     new: &str,
+    group: &str,
     files: &[String],
 ) -> Result<PathBuf, JournalError> {
     let dir = journal_dir_path(library_root);
@@ -655,6 +938,7 @@ fn create_journal_file(
         new: new.to_string(),
         files: files.to_vec(),
         done: Vec::new(),
+        group: group.to_string(),
     };
 
     write_journal_file(&path, &record)?;
@@ -1011,6 +1295,7 @@ mod tests {
             new: "newtag".to_string(),
             files: vec!["file1.md".to_string(), "file2.md".to_string()],
             done: vec!["file1.md".to_string()],
+            group: String::new(),
         };
         let journal_path = journal_dir.join("01JTEST000000000000000000.json");
         std::fs::write(&journal_path, serde_json::to_string(&record).unwrap()).unwrap();
@@ -1058,6 +1343,7 @@ mod tests {
             new: "newtag".to_string(),
             files: vec!["already.md".to_string()],
             done: vec![],
+            group: String::new(),
         };
         let journal_path = journal_dir.join("01JIDEM000000000000000000.json");
         std::fs::write(&journal_path, serde_json::to_string(&record).unwrap()).unwrap();
@@ -1192,5 +1478,171 @@ mod tests {
         assert!(result.contains("@sergey-k"));
         // email@sergey.com → NOT replaced (@ preceded by word char)
         assert!(result.contains("user@sergey.com"));
+    }
+
+    // ── Slug rename (spec 0002 §Identity) ─────────────────────────────────────
+
+    fn entry_with_refs(key: &str, refs: &[&str], body: &str) -> Entry {
+        let mut props = BTreeMap::new();
+        props.insert(
+            key.to_string(),
+            Value::Refs(refs.iter().map(|s| s.to_string()).collect()),
+        );
+        Entry {
+            properties: props,
+            body: body.to_string(),
+            parse_warning: None,
+        }
+    }
+
+    // 19. Bare wikilink rewritten on slug rename.
+    #[test]
+    fn rename_slug_rewrites_bare_wikilink() {
+        let lib = make_library();
+        let mut idx = Index::open_in_memory().unwrap();
+        let registry = make_registry();
+
+        let e = entry_body_only("see [[old-note]] for context");
+        index_entry(&mut idx, lib.path(), "src.md", &e);
+
+        let summary = rename_slug(lib.path(), &idx, &registry, "", "old-note", "new-note").unwrap();
+        assert_eq!(summary.files_changed, 1);
+
+        let out = read_entry(lib.path(), "src.md");
+        assert!(out.body.contains("[[new-note]]"));
+        assert!(!out.body.contains("[[old-note]]"));
+    }
+
+    // 20. Wikilink display text preserved.
+    #[test]
+    fn rename_slug_preserves_wikilink_display_text() {
+        let body = "see [[old-note|the old note]] here";
+        let result = rewrite_body_wikilinks(body, "", "old-note", "new-note");
+        assert!(result.contains("[[new-note|the old note]]"));
+    }
+
+    // 21. Path-qualified wikilink rewritten, group prefix preserved.
+    #[test]
+    fn rename_slug_rewrites_qualified_wikilink() {
+        let body = "ref [[work/atlas/old]] and a different [[other-group/old]]";
+        let result = rewrite_body_wikilinks(body, "work/atlas", "old", "new");
+        assert!(result.contains("[[work/atlas/new]]"));
+        // A qualified link to a *different* group's `old` must NOT be touched.
+        assert!(result.contains("[[other-group/old]]"));
+    }
+
+    // 22. Bare wikilink matching the entry's own group resolves and rewrites.
+    #[test]
+    fn rename_slug_bare_wikilink_matches_grouped_entry() {
+        let body = "see [[old]]";
+        // The entry lives in group "work"; a bare [[old]] resolves to it.
+        let result = rewrite_body_wikilinks(body, "work", "old", "new");
+        assert!(result.contains("[[new]]"));
+    }
+
+    // 23. Wikilink not rewritten inside code.
+    #[test]
+    fn rename_slug_no_rewrite_inside_code() {
+        let body = "real [[old]] but `[[old]]` and\n```\n[[old]]\n```\n";
+        let result = rewrite_body_wikilinks(body, "", "old", "new");
+        assert!(result.contains("real [[new]]"));
+        assert!(result.contains("`[[old]]`"), "inline code preserved");
+        assert!(
+            result.contains("```\n[[old]]\n```"),
+            "fenced code preserved"
+        );
+    }
+
+    // 24. ref / ref[] frontmatter rewritten (bare + qualified).
+    #[test]
+    fn rename_slug_rewrites_ref_properties() {
+        let lib = make_library();
+        let mut idx = Index::open_in_memory().unwrap();
+        let registry = make_registry();
+
+        let e = entry_with_refs("related", &["work/old", "other"], "body");
+        index_entry(&mut idx, lib.path(), "r.md", &e);
+
+        rename_slug(lib.path(), &idx, &registry, "work", "old", "new").unwrap();
+
+        let out = read_entry(lib.path(), "r.md");
+        // Schema-less arrays round-trip through disk as `Tags`; match either.
+        let refs = string_array(&out, "related");
+        assert!(
+            refs.contains(&"work/new".to_string()),
+            "qualified ref rewritten"
+        );
+        assert!(
+            refs.contains(&"other".to_string()),
+            "unrelated ref preserved"
+        );
+    }
+
+    // 25. ref bare form rewritten when the renamed entry is at the library root.
+    #[test]
+    fn rename_slug_rewrites_bare_ref_at_root() {
+        let lib = make_library();
+        let mut idx = Index::open_in_memory().unwrap();
+        let registry = make_registry();
+
+        let e = entry_with_refs("parent", &["old"], "body");
+        index_entry(&mut idx, lib.path(), "child.md", &e);
+
+        rename_slug(lib.path(), &idx, &registry, "", "old", "new").unwrap();
+
+        let out = read_entry(lib.path(), "child.md");
+        // Single-element ref collapses to a scalar string on disk.
+        match out.properties.get("parent") {
+            Some(Value::String(s)) => assert_eq!(s, "new"),
+            Some(Value::Refs(v)) | Some(Value::Tags(v)) => {
+                assert_eq!(v, &vec!["new".to_string()])
+            }
+            other => panic!("unexpected parent value: {other:?}"),
+        }
+    }
+
+    /// Read a property as a string array regardless of whether it parsed as
+    /// `Refs` (schema-declared) or `Tags` (schema-less inference).
+    fn string_array(entry: &Entry, key: &str) -> Vec<String> {
+        match entry.properties.get(key) {
+            Some(Value::Refs(v)) | Some(Value::Tags(v)) => v.clone(),
+            _ => Vec::new(),
+        }
+    }
+
+    // 26. Unrelated slug not matched (no substring false-positive).
+    #[test]
+    fn rename_slug_no_substring_false_positive() {
+        let body = "see [[old]] and [[old-timer]]";
+        let result = rewrite_body_wikilinks(body, "", "old", "new");
+        assert!(result.contains("[[new]]"));
+        assert!(
+            result.contains("[[old-timer]]"),
+            "longer slug must not match"
+        );
+    }
+
+    // 27. No-op rename creates no journal file.
+    #[test]
+    fn rename_slug_noop_no_journal_file() {
+        let lib = make_library();
+        let mut idx = Index::open_in_memory().unwrap();
+        let registry = make_registry();
+
+        let e = entry_body_only("nothing references the target");
+        index_entry(&mut idx, lib.path(), "x.md", &e);
+
+        let summary = rename_slug(lib.path(), &idx, &registry, "", "ghost", "phantom").unwrap();
+        assert_eq!(summary.files_changed, 0);
+
+        let journal_dir = lib.path().join(".tonotedo").join("journal");
+        if journal_dir.exists() {
+            let count = std::fs::read_dir(&journal_dir)
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("json"))
+                .count();
+            assert_eq!(count, 0);
+        }
     }
 }

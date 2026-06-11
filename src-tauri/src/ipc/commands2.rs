@@ -1413,7 +1413,8 @@ pub mod tests {
                 library_root.clone(),
                 event_tx,
             );
-            let (reconciler_handle, _change_rx) = reconciler.spawn(None::<WatcherHandle>);
+            let (reconciler_handle, _change_rx, _notify_rx) =
+                reconciler.spawn(None::<WatcherHandle>);
             let open = OpenLibrary {
                 root: library_root,
                 index: query_index,

@@ -54,6 +54,12 @@ export interface EntryContent {
   text: string;
   /** The self-write token recorded by the reconciler (design-0001). */
   selfToken: string;
+  /**
+   * Non-blocking warning when the frontmatter was malformed (spec 0002
+   * §"Edge cases / Malformed frontmatter"). Absent for well-formed entries.
+   * The UI shows a dismissible badge; opening is never blocked.
+   */
+  parseWarning?: string;
 }
 
 /** Lightweight summary used in lists — no body text. */
@@ -448,6 +454,16 @@ export interface IpcCommands {
    */
   move_entry(path: string, dstGroup: GroupPath): Promise<Result<void>>;
 
+  /**
+   * Rename the entry at `path` (library-relative .md path) to `newSlug` within
+   * the same group — a slug change (spec 0002 §Identity). The entry `id` and the
+   * body's H1 title are unchanged; only the filename slug changes. On a slug
+   * collision within the group, `-2`/`-3`/… is appended. In-app references
+   * (wikilinks `[[old]]`/`[[group/old]]` and `ref`/`ref[]` frontmatter) are
+   * rewritten. Rejects reserved (`_`/`.`) and slash-bearing slugs.
+   */
+  rename_entry(path: string, newSlug: string): Promise<Result<void>>;
+
   // ── Trash commands (phase 6 / issue #28) ──────────────────────────────────
 
   /**
@@ -554,9 +570,25 @@ export interface FileConflictEvent {
   path: string;
 }
 
+/**
+ * Non-blocking reconciler notification (spec 0002 §"Edge cases").
+ * `kind` discriminates the notification; the duplicate-id fields are present
+ * only when `kind === "duplicate_id_resolved"`.
+ */
+export interface ReconcileNotificationEvent {
+  kind: "duplicate_id_resolved";
+  /** Library-relative path of the file that received a fresh id. */
+  path?: string;
+  /** The id that was already in use by another live entry. */
+  duplicateId?: string;
+  /** The fresh id assigned to the newcomer (or re-id'd existing file). */
+  newId?: string;
+}
+
 export interface IpcEvents {
   index_changed: IndexChangedEvent;
   file_conflict: FileConflictEvent;
+  reconcile_notification: ReconcileNotificationEvent;
 }
 
 export type IpcEventName = keyof IpcEvents;

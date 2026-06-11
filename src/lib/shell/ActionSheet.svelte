@@ -19,6 +19,8 @@
     onClose?: () => void;
     /** Called when user taps "Open". */
     onOpen?: (entryId: string) => void;
+    /** Called when user taps "Rename" (slug rename, spec 0002 §Identity). */
+    onRename?: (entryId: string) => void;
     /** Called when user taps "Trash". Placeholder — real IPC is #32. */
     onTrash?: (entryId: string) => void;
   }
@@ -29,11 +31,13 @@
     entryId = null,
     onClose,
     onOpen,
+    onRename,
     onTrash,
   }: Props = $props();
 
   const actions: Action[] = [
     { id: "open", label: "Open" },
+    { id: "rename", label: "Rename" },
     { id: "trash", label: "Move to Trash", destructive: true },
   ];
 
@@ -41,6 +45,8 @@
     if (!entryId) return;
     if (actionId === "open") {
       onOpen?.(entryId);
+    } else if (actionId === "rename") {
+      onRename?.(entryId);
     } else if (actionId === "trash") {
       // Placeholder — real trash IPC is issue #32.
       console.log("[ActionSheet] trash entry:", entryId);
