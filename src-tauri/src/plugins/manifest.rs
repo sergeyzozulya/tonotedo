@@ -200,6 +200,7 @@ pub fn parse_manifest(bytes: &[u8], dir_name: &str) -> Result<Manifest, String> 
     };
 
     let id = require_nonempty_string(get("id"), "id")?;
+    validate_plugin_id(&id)?;
     let name = require_nonempty_string(get("name"), "name")?;
     let version = require_nonempty_string(get("version"), "version")?;
     if !is_semver(&version) {
@@ -296,6 +297,39 @@ fn string_list(node: Option<&YamlOwned>, field: &str) -> Result<Vec<String>, Str
 
 /// A permission entry is valid if it is a bare keyword (`read-entries`,
 /// `write-entries`) or a scoped form (`network:<host>`, `filesystem:<path>`).
+/// Validate a plugin id (security: final-review F12).
+///
+/// A plugin's command ids must be namespaced under its plugin id (enforced in
+/// the runtime). If the id could alias a core command namespace, a plugin could
+/// register — and on suspend, *unregister* — a core command (e.g. `entry.create`).
+/// Require a reverse-DNS-ish form (at least one `.`, charset `[a-z0-9.-]`) and
+/// forbid ids equal to or prefixing any reserved core namespace.
+fn validate_plugin_id(id: &str) -> Result<(), String> {
+    const RESERVED_CORE: &[&str] = &[
+        "entry", "editor", "view", "focus", "app", "palette", "bench", "nav", "group", "tag",
+    ];
+    if !id.contains('.') {
+        return Err(format!(
+            "plugin id `{id}` must be namespaced (reverse-DNS form, e.g. com.example.myplugin)"
+        ));
+    }
+    if !id
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '-')
+    {
+        return Err(format!(
+            "plugin id `{id}` may only contain lowercase letters, digits, '.', and '-'"
+        ));
+    }
+    let first = id.split('.').next().unwrap_or("");
+    if RESERVED_CORE.contains(&first) {
+        return Err(format!(
+            "plugin id `{id}` may not start with the reserved core namespace `{first}`"
+        ));
+    }
+    Ok(())
+}
+
 fn validate_permission(p: &str) -> Result<(), String> {
     if p.trim().is_empty() {
         return Err("empty permission entry".to_string());
@@ -447,6 +481,27 @@ mod tests {
         assert_eq!(m.readme, "README body.\n");
     }
 
+    // F12 — plugin id must be namespaced and may not alias core command namespaces.
+    #[test]
+    fn rejects_core_namespace_and_unnamespaced_ids() {
+        let mk = |id: &str| {
+            format!(
+                "---\nid: {id}\nname: X\nversion: 0.1.0\nshape: [processor]\ncapabilities: [command]\npermissions: []\n---\nx"
+            )
+            .into_bytes()
+        };
+        // bare core namespace — would let a command id `entry.create` replace core.
+        assert!(parse_manifest(&mk("entry"), "x").is_err());
+        // reverse-DNS form whose first label is reserved.
+        assert!(parse_manifest(&mk("editor.evil"), "x").is_err());
+        // no dot at all.
+        assert!(parse_manifest(&mk("mermaid"), "x").is_err());
+        // bad charset.
+        assert!(parse_manifest(&mk("com.Example.Plugin"), "x").is_err());
+        // valid namespaced id passes.
+        assert!(parse_manifest(&mk("com.example.tool"), "x").is_ok());
+    }
+
     #[test]
     fn rejects_missing_frontmatter() {
         assert!(parse_manifest(b"no frontmatter here", "x").is_err());
@@ -460,26 +515,26 @@ mod tests {
 
     #[test]
     fn rejects_bad_version() {
-        let src = b"---\nid: a\nname: X\nversion: v1\nshape: [processor]\ncapabilities: []\n---\n";
+        let src = b"---\nid: com.test.x\nname: X\nversion: v1\nshape: [processor]\ncapabilities: []\n---\n";
         let e = parse_manifest(src, "x").unwrap_err();
         assert!(e.contains("semver"), "{e}");
     }
 
     #[test]
     fn rejects_unknown_capability() {
-        let src = b"---\nid: a\nname: X\nversion: 1.0.0\nshape: [processor]\ncapabilities: [telepathy]\n---\n";
+        let src = b"---\nid: com.test.x\nname: X\nversion: 1.0.0\nshape: [processor]\ncapabilities: [telepathy]\n---\n";
         assert!(parse_manifest(src, "x").unwrap_err().contains("capability"));
     }
 
     #[test]
     fn rejects_unknown_permission() {
-        let src = b"---\nid: a\nname: X\nversion: 1.0.0\nshape: [processor]\ncapabilities: []\npermissions: [steal-data]\n---\n";
+        let src = b"---\nid: com.test.x\nname: X\nversion: 1.0.0\nshape: [processor]\ncapabilities: []\npermissions: [steal-data]\n---\n";
         assert!(parse_manifest(src, "x").unwrap_err().contains("permission"));
     }
 
     #[test]
     fn accepts_network_host_permission() {
-        let src = b"---\nid: a\nname: X\nversion: 1.0.0\nshape: [provider]\ncapabilities: []\npermissions: ['network:api.example.com']\n---\n";
+        let src = b"---\nid: com.test.x\nname: X\nversion: 1.0.0\nshape: [provider]\ncapabilities: []\npermissions: ['network:api.example.com']\n---\n";
         let m = parse_manifest(src, "x").unwrap();
         assert_eq!(m.permissions, vec!["network:api.example.com"]);
     }
@@ -487,33 +542,33 @@ mod tests {
     #[test]
     fn rejects_bare_network_permission() {
         // M5: a bare `network` is an any-host wildcard and must be rejected loudly.
-        let src = b"---\nid: a\nname: X\nversion: 1.0.0\nshape: [provider]\ncapabilities: []\npermissions: [network]\n---\n";
+        let src = b"---\nid: com.test.x\nname: X\nversion: 1.0.0\nshape: [provider]\ncapabilities: []\npermissions: [network]\n---\n";
         let e = parse_manifest(src, "x").unwrap_err();
         assert!(e.contains("network:<host>"), "{e}");
     }
 
     #[test]
     fn entries_owner_requires_path() {
-        let src = b"---\nid: a\nname: X\nversion: 1.0.0\nshape: [provider]\ncapabilities: [entries-owner]\n---\n";
+        let src = b"---\nid: com.test.x\nname: X\nversion: 1.0.0\nshape: [provider]\ncapabilities: [entries-owner]\n---\n";
         assert!(parse_manifest(src, "x").is_err());
     }
 
     #[test]
     fn entries_owner_path_normalized() {
-        let src = b"---\nid: a\nname: X\nversion: 1.0.0\nshape: [provider]\ncapabilities: [entries-owner]\nentries-owner: /Calendar/Google/\n---\n";
+        let src = b"---\nid: com.test.x\nname: X\nversion: 1.0.0\nshape: [provider]\ncapabilities: [entries-owner]\nentries-owner: /Calendar/Google/\n---\n";
         let m = parse_manifest(src, "x").unwrap();
         assert_eq!(m.entries_owner_path.as_deref(), Some("Calendar/Google"));
     }
 
     #[test]
     fn entries_owner_rejects_traversal() {
-        let src = b"---\nid: a\nname: X\nversion: 1.0.0\nshape: [provider]\ncapabilities: [entries-owner]\nentries-owner: ../escape\n---\n";
+        let src = b"---\nid: com.test.x\nname: X\nversion: 1.0.0\nshape: [provider]\ncapabilities: [entries-owner]\nentries-owner: ../escape\n---\n";
         assert!(parse_manifest(src, "x").is_err());
     }
 
     #[test]
     fn parses_settings_with_secret_and_enum() {
-        let src = b"---\nid: a\nname: X\nversion: 1.0.0\nshape: [provider]\ncapabilities: []\nsettings:\n  - key: token\n    type: secret\n    label: API token\n  - key: mode\n    type: enum\n    label: Mode\n    options: [fast, slow]\n    default: fast\n---\n";
+        let src = b"---\nid: com.test.x\nname: X\nversion: 1.0.0\nshape: [provider]\ncapabilities: []\nsettings:\n  - key: token\n    type: secret\n    label: API token\n  - key: mode\n    type: enum\n    label: Mode\n    options: [fast, slow]\n    default: fast\n---\n";
         let m = parse_manifest(src, "x").unwrap();
         assert_eq!(m.settings.len(), 2);
         assert_eq!(m.settings[0].field_type, SettingType::Secret);
@@ -524,13 +579,13 @@ mod tests {
 
     #[test]
     fn enum_setting_requires_options() {
-        let src = b"---\nid: a\nname: X\nversion: 1.0.0\nshape: [provider]\ncapabilities: []\nsettings:\n  - key: mode\n    type: enum\n    label: Mode\n---\n";
+        let src = b"---\nid: com.test.x\nname: X\nversion: 1.0.0\nshape: [provider]\ncapabilities: []\nsettings:\n  - key: mode\n    type: enum\n    label: Mode\n---\n";
         assert!(parse_manifest(src, "x").is_err());
     }
 
     #[test]
     fn shape_accepts_single_string() {
-        let src = b"---\nid: a\nname: X\nversion: 1.0.0\nshape: processor\ncapabilities: []\n---\n";
+        let src = b"---\nid: com.test.x\nname: X\nversion: 1.0.0\nshape: processor\ncapabilities: []\n---\n";
         let m = parse_manifest(src, "x").unwrap();
         assert_eq!(m.shape, vec!["processor"]);
     }

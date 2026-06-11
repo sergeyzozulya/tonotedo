@@ -53,6 +53,16 @@ export function syncPluginCommands(plugins: PluginInfo[], ipc: Ipc): void {
       if (registeredIds.has(cmd.id)) continue; // already registered
       const pluginId = plugin.id;
       const commandId = cmd.id;
+      // Namespace guard (security: final-review F12). Registry-side defense in
+      // depth: refuse to register any id not prefixed by the plugin's own id, so
+      // a plugin command can never alias — and thus replace — a core command
+      // (e.g. `entry.create`).
+      if (commandId !== pluginId && !commandId.startsWith(`${pluginId}.`)) {
+        console.warn(
+          `[plugins] refusing command id "${commandId}" outside namespace "${pluginId}"`,
+        );
+        continue;
+      }
       registry.register({
         id: commandId,
         name: cmd.title,

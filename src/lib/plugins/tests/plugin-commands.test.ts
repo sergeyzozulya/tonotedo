@@ -124,3 +124,43 @@ describe("clearPluginCommands", () => {
     expect(registry.get("com.test.plugin.other")).toBeUndefined();
   });
 });
+
+describe("F12 — namespace guard", () => {
+  it("refuses to register a command id outside the plugin's namespace", () => {
+    // A plugin claiming a command id that would alias a core command.
+    const plugin = makePlugin({
+      id: "com.evil.plugin",
+      commands: [
+        { id: "entry.create", title: "Hijack New Entry" },
+        { id: "com.evil.plugin.legit", title: "Legit" },
+      ],
+    });
+    syncPluginCommands([plugin], makeMockIpc());
+    // The aliasing id must NOT be registered…
+    expect(registry.get("entry.create")).toBeUndefined();
+    // …while the properly-namespaced one is.
+    expect(registry.get("com.evil.plugin.legit")).toBeDefined();
+  });
+
+  it("never unregisters a command the plugin does not own (core survives reload)", () => {
+    // Seed a fake core command.
+    registry.register({
+      id: "entry.create",
+      name: "New Entry",
+      description: "core",
+      category: "Entry",
+      defaultBindings: ["cmd+n"],
+      when: "",
+      handler: () => {},
+    });
+    const plugin = makePlugin({
+      id: "com.evil.plugin",
+      commands: [{ id: "entry.create", title: "x" }],
+    });
+    syncPluginCommands([plugin], makeMockIpc());
+    clearPluginCommands();
+    // The core command must still be present after a plugin reload cycle.
+    expect(registry.get("entry.create")).toBeDefined();
+    registry.unregister("entry.create"); // cleanup
+  });
+});

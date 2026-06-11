@@ -940,3 +940,31 @@ fn person_full_name_search_partial_token() {
         "partial full_name token 'Anna' should match via people join"
     );
 }
+
+// F7 — global/scoped tag-name collision must not error (was a UNIQUE failure
+// → persistent rescan loop). Composite PK (tag, scope_path) since v4.
+#[test]
+fn global_and_scoped_same_name_coexist() {
+    let mut idx = Index::open_in_memory().unwrap();
+    let row = |t: &str| TagMetaRow {
+        tag: t.to_string(),
+        description: None,
+        color: Some("amber".into()),
+        icon: None,
+        scope_path: None,
+    };
+    // global #followup
+    idx.set_tag_meta(&[row("followup")]).unwrap();
+    // same name scoped to two different groups — neither must error.
+    idx.set_scoped_tag_meta("work/atlas", &[row("followup")])
+        .unwrap();
+    idx.set_scoped_tag_meta("work/borealis", &[row("followup")])
+        .unwrap();
+    let all = idx.tag_meta_index().unwrap();
+    let followups: Vec<_> = all.iter().filter(|r| r.tag == "followup").collect();
+    assert_eq!(
+        followups.len(),
+        3,
+        "global + two scoped 'followup' rows coexist"
+    );
+}

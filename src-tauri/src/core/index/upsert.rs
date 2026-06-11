@@ -199,7 +199,7 @@ pub fn set_tag_meta(conn: &mut Connection, rows: &[super::TagMetaRow]) -> Result
     tx.execute("DELETE FROM tag_meta WHERE scope_path IS NULL", [])?;
     for r in rows {
         tx.execute(
-            "INSERT INTO tag_meta (tag, description, color, icon, scope_path) \
+            "INSERT OR REPLACE INTO tag_meta (tag, description, color, icon, scope_path) \
              VALUES (?1, ?2, ?3, ?4, NULL)",
             params![r.tag, r.description, r.color, r.icon],
         )?;
@@ -222,7 +222,7 @@ pub fn set_scoped_tag_meta(
     )?;
     for r in rows {
         tx.execute(
-            "INSERT INTO tag_meta (tag, description, color, icon, scope_path) \
+            "INSERT OR REPLACE INTO tag_meta (tag, description, color, icon, scope_path) \
              VALUES (?1, ?2, ?3, ?4, ?5)",
             params![r.tag, r.description, r.color, r.icon, scope_path],
         )?;
