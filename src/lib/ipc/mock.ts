@@ -529,6 +529,29 @@ const TAG_META: Record<string, { description?: string; icon?: string }> = {
   books: { description: "Book notes and reading list.", icon: "📚" },
 };
 
+// Scoped tags: declared in _group.md `scoped_tags:` for specific groups.
+// These are visible only within the group and its descendants (spec 0002 / issue #28).
+const SCOPED_TAGS: Array<{
+  tag: string;
+  scopePath: string;
+  color: ChipColor;
+  description?: string;
+}> = [
+  {
+    tag: "atlas/blocked",
+    scopePath: "work/atlas",
+    color: "red",
+    description: "Blocked item in Atlas project.",
+  },
+  {
+    tag: "atlas/shipped",
+    scopePath: "work/atlas",
+    color: "green",
+    description: "Shipped in Atlas.",
+  },
+  { tag: "work/urgent", scopePath: "work", color: "red", description: "Urgent work item." },
+];
+
 function defaultColor(tag: string): ChipColor {
   return TAG_COLORS[tag] ?? "slate";
 }
@@ -540,15 +563,23 @@ function buildTagIndex(): TagMeta[] {
       counts.set(t, (counts.get(t) ?? 0) + 1);
     }
   }
-  return Array.from(counts.entries())
+  const global: TagMeta[] = Array.from(counts.entries())
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([name, count]) => {
       const m = TAG_META[name];
-      const tag: TagMeta = { name, color: defaultColor(name), count };
+      const tag: TagMeta = { name, color: defaultColor(name), count, scopePath: null };
       if (m?.description) tag.description = m.description;
       if (m?.icon) tag.icon = m.icon;
       return tag;
     });
+  const scoped: TagMeta[] = SCOPED_TAGS.map((s) => ({
+    name: s.tag,
+    color: s.color,
+    count: 0,
+    scopePath: s.scopePath,
+    description: s.description,
+  }));
+  return [...global, ...scoped];
 }
 
 // ── People index ──────────────────────────────────────────────────────────────
@@ -1221,6 +1252,34 @@ export const mock: Ipc = {
       count: counts.get(path) ?? 0,
     }));
     return { ok: true, value: groups };
+  },
+
+  // ── Group schema (phase 6 / issue #28) ───────────────────────────────────────
+
+  async effective_schema(groupPath: GroupPath): Promise<Result<string | null>> {
+    // Mock parity: work/atlas has a status+priority schema; work inherits nothing.
+    const schemas: Record<string, Record<string, { type: string; default?: unknown }>> = {
+      "work/atlas": {
+        status: { type: "string", default: "draft" },
+        priority: { type: "number" },
+      },
+      work: {
+        status: { type: "string" },
+      },
+    };
+    // Walk ancestor chain (child overrides parent).
+    const merged: Record<string, { type: string; default?: unknown }> = {};
+    const parts = groupPath.split("/");
+    for (let i = 1; i <= parts.length; i++) {
+      const ancestor = parts.slice(0, i).join("/");
+      if (schemas[ancestor]) {
+        Object.assign(merged, schemas[ancestor]);
+      }
+    }
+    if (Object.keys(merged).length === 0) {
+      return { ok: true, value: null };
+    }
+    return { ok: true, value: JSON.stringify(merged) };
   },
 
   // ── Saved searches (spec 0009) ────────────────────────────────────────────────

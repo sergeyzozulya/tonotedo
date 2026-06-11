@@ -378,6 +378,7 @@ fn set_tag_meta_and_round_trip() {
         description: Some("Things to revisit.".to_string()),
         color: Some("amber".to_string()),
         icon: Some("⏳".to_string()),
+        scope_path: None,
     }])
     .unwrap();
 
@@ -388,12 +389,14 @@ fn set_tag_meta_and_round_trip() {
             description: None,
             color: Some("red".to_string()),
             icon: None,
+            scope_path: None,
         },
         TagMetaRow {
             tag: "new-tag".to_string(),
             description: None,
             color: None,
             icon: None,
+            scope_path: None,
         },
     ])
     .unwrap();
@@ -756,9 +759,97 @@ fn ten_k_search_latency_file_backed() {
 // callers relying on full_name search will get empty results.
 // A green test that silently asserts the wrong thing would hide this defect.
 
+// ─── FTS query sanitisation tests ────────────────────────────────────────────
+
+#[test]
+fn sanitize_fts_query_plain_word() {
+    use crate::core::index::query::sanitize_fts_query;
+    // Plain word gets wrapped and prefix star appended.
+    let q = sanitize_fts_query("atlas");
+    assert_eq!(q, "\"atlas*\"");
+}
+
+#[test]
+fn sanitize_fts_query_two_words() {
+    use crate::core::index::query::sanitize_fts_query;
+    let q = sanitize_fts_query("atlas project");
+    assert_eq!(q, "\"atlas\" \"project*\"");
+}
+
+#[test]
+fn sanitize_fts_query_period_in_name() {
+    use crate::core::index::query::sanitize_fts_query;
+    // "Sergey K." must not cause an FTS5 syntax error.
+    let q = sanitize_fts_query("Sergey K.");
+    // Both tokens are wrapped: "Sergey" and "K." — last gets prefix star.
+    assert!(q.contains("\"Sergey\""), "first token must be wrapped");
+    assert!(q.contains("*\""), "last token must have prefix star");
+    // Verify the escaped query is accepted by FTS5.
+    let mut idx = Index::open_in_memory().unwrap();
+    let e = make_entry("id-p", &[], &[], "hello world");
+    upsert(&mut idx, "p.md", "p", "", &e);
+    // Should return Ok (possibly empty), not Err.
+    let result = idx.search("Sergey K.", 10);
+    assert!(
+        result.is_ok(),
+        "escaped query must not produce FTS5 syntax error"
+    );
+}
+
+#[test]
+fn sanitize_fts_query_parens_and_or() {
+    use crate::core::index::query::sanitize_fts_query;
+    // Parens and OR keyword must be treated as literal tokens, not FTS5 operators.
+    let q = sanitize_fts_query("(foo OR bar)");
+    let mut idx = Index::open_in_memory().unwrap();
+    let e = make_entry("id-q", &[], &[], "content");
+    upsert(&mut idx, "q.md", "q", "", &e);
+    let result = idx.search("(foo OR bar)", 10);
+    assert!(
+        result.is_ok(),
+        "parens and OR must not cause FTS5 syntax error; q={q}"
+    );
+}
+
+#[test]
+fn sanitize_fts_query_internal_quote() {
+    use crate::core::index::query::sanitize_fts_query;
+    // Internal double-quote must be doubled to escape it.
+    let q = sanitize_fts_query(r#"O"Reilly"#);
+    assert!(
+        q.contains("\"\""),
+        "internal quote must be doubled in FTS5 query"
+    );
+    let mut idx = Index::open_in_memory().unwrap();
+    let e = make_entry("id-r", &[], &[], "content");
+    upsert(&mut idx, "r.md", "r", "", &e);
+    let result = idx.search(r#"O"Reilly"#, 10);
+    assert!(
+        result.is_ok(),
+        "escaped internal quote must not cause FTS5 error"
+    );
+}
+
+#[test]
+fn sanitize_fts_query_quoted_phrase_preserved() {
+    use crate::core::index::query::sanitize_fts_query;
+    // "exact phrase" should be preserved as a single quoted token.
+    let q = sanitize_fts_query("\"deep work\"");
+    assert!(
+        q.contains("\"deep work"),
+        "quoted phrase must be preserved as single token"
+    );
+}
+
+// ─── People full-name search (spec 0005 AC10) ─────────────────────────────────
+
 #[test]
 fn person_full_name_search_defect_documented() {
-    // Arrange: declare a person with full_name "Sergey K." and slug "sergey".
+    // AC10: searching by a person's full_name surfaces entries that mention them.
+    // Both defects are now fixed:
+    //   1. FTS5 query escaping: "Sergey K." no longer causes a syntax error.
+    //   2. People-name join: full_name tokens expand to slug via the people table.
+
     let mut idx = Index::open_in_memory().unwrap();
 
     idx.set_people(&[PeopleRow {
@@ -786,7 +877,7 @@ fn person_full_name_search_defect_documented() {
         );
     }
 
-    // Verify @sergey mentions ARE indexed (the mention index works correctly).
+    // Verify @sergey mentions ARE indexed.
     let mentions = idx.mentions_index().unwrap();
     let mentioning_entries: Vec<_> = mentions.iter().filter(|r| r.tag == "sergey").collect();
     assert!(
@@ -794,40 +885,58 @@ fn person_full_name_search_defect_documented() {
         "precondition: @sergey must appear in the mentions index; got: {mentions:?}"
     );
 
-    // Attempt to search by the person's slug directly — this DOES work because
-    // "@sergey" is indexed in the FTS body text.
+    // Slug search still works.
     let slug_results = idx.search("sergey", 20).unwrap();
     assert!(
         !slug_results.is_empty(),
         "searching by slug 'sergey' should find body mentions; got empty results"
     );
 
-    // Now attempt to search by the full_name — this is AC10.
-    // DEFECT A: there is no name→slug expansion in the query layer.
-    // DEFECT B (additional): the period in "Sergey K." causes an FTS5 syntax
-    //          error because the raw query is passed directly to the FTS5
-    //          MATCH expression without escaping special characters.
-    //          FTS5 treats "." as a query operator/separator and rejects the
-    //          query: `SqliteFailure(Error { code: Unknown, extended_code: 1 },
-    //                  Some("fts5: syntax error near \".\""))`.
-    //
-    // The full_name search fails in two ways:
-    //   1. Even if the query succeeded, "Sergey K." ≠ "@sergey" in FTS body text.
-    //   2. The query raises an Err() instead of returning empty results.
-    //
-    // We test Defect B by asserting that the search returns an Err for this input.
+    // AC10: full_name search now works — no FTS5 error, results returned.
     let fullname_result = idx.search("Sergey K.", 20);
-
-    // Document the current (broken) behavior: full_name search returns an error.
-    // This assertion CONFIRMS BOTH defects rather than hiding them.
-    // When AC10 is properly implemented, the code should:
-    //   1. Sanitize / escape the query before passing to FTS5.
-    //   2. Expand full_name tokens to their slugs via a people-table join.
-    //   3. Return the mentioning entries (assert !results.is_empty()).
     assert!(
-        fullname_result.is_err(),
-        "DEFECT CONFIRMED: full_name 'Sergey K.' search must return an Err due to \
-         FTS5 syntax error on period character; if this passes, special-char sanitisation \
-         has been added — also add a positive assertion for AC10 full_name→slug join."
+        fullname_result.is_ok(),
+        "full_name 'Sergey K.' search must not return an Err after escaping fix; \
+         got: {fullname_result:?}"
+    );
+    let results = fullname_result.unwrap();
+    assert!(
+        !results.is_empty(),
+        "AC10: searching 'Sergey K.' must return entries that mention @sergey; \
+         got empty results (people-name join may be missing)"
+    );
+    // All returned entries must be meetings that mention @sergey.
+    for r in &results {
+        assert!(
+            r.path.starts_with("meetings/"),
+            "result must be a meetings entry; got path={}",
+            r.path
+        );
+    }
+}
+
+#[test]
+fn person_full_name_search_partial_token() {
+    // Searching with only part of a full_name token should still match.
+    let mut idx = Index::open_in_memory().unwrap();
+    idx.set_people(&[PeopleRow {
+        slug: "anna".to_string(),
+        full_name: Some("Anna K.".to_string()),
+        color: None,
+        avatar_path: None,
+    }])
+    .unwrap();
+    let e = make_entry(
+        "id-ak",
+        &[],
+        &["anna"],
+        "Sync with @anna about the roadmap.",
+    );
+    upsert(&mut idx, "journal/sync.md", "sync", "journal", &e);
+
+    let results = idx.search("Anna", 10).unwrap();
+    assert!(
+        !results.is_empty(),
+        "partial full_name token 'Anna' should match via people join"
     );
 }

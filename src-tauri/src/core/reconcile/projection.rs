@@ -25,8 +25,9 @@
 // skipped (the reconciler checks group_path == "" before calling these).
 
 use saphyr::{LoadableYamlNode, MappingOwned, YamlOwned};
+use serde_json;
 
-use crate::core::index::{Index, IndexError, PeopleRow, TagMetaRow};
+use crate::core::index::{GroupMetaRow, Index, IndexError, PeopleRow, TagMetaRow};
 
 /// Failure while applying a projection.
 #[derive(Debug)]
@@ -81,6 +82,42 @@ pub fn apply_people_projection(index: &mut Index, bytes: &[u8]) -> Result<(), Pr
     Ok(())
 }
 
+/// Parse `_group.md` bytes and upsert `group_meta` + scoped `tag_meta`.
+///
+/// Expected frontmatter shape:
+/// ```yaml
+/// name: "Atlas"
+/// icon: "🗺️"
+/// color: blue
+/// order: 1
+/// view: grid
+/// schema:
+///   status:
+///     type: string
+///     default: draft
+///   priority:
+///     type: number
+/// scoped_tags:
+///   - tag: followup
+///     description: "Atlas follow-up items"
+///     color: red
+/// ```
+///
+/// `group_path` is the vault-relative path to the group folder (e.g. "work/atlas").
+///
+/// The resilience invariant is the same as for tags/people: a malformed
+/// frontmatter is a `Parse` error and does NOT clobber the existing projection.
+pub fn apply_group_projection(
+    index: &mut Index,
+    group_path: &str,
+    bytes: &[u8],
+) -> Result<(), ProjectionError> {
+    let (group_meta, scoped_tags) = parse_group_md(bytes, group_path)?;
+    index.set_group_meta(&group_meta)?;
+    index.set_scoped_tag_meta(group_path, &scoped_tags)?;
+    Ok(())
+}
+
 // ── Internal parsers ──────────────────────────────────────────────────────────
 
 /// Extract frontmatter YAML from a `.md` file's bytes, then parse the `tags:`
@@ -129,6 +166,7 @@ fn parse_tags_md(bytes: &[u8]) -> Result<Vec<TagMetaRow>, ProjectionError> {
                 description: str_field_owned(m, "description"),
                 color: str_field_owned(m, "color"),
                 icon: str_field_owned(m, "icon"),
+                scope_path: None,
             });
         }
     }
@@ -180,6 +218,155 @@ fn parse_people_md(bytes: &[u8]) -> Result<Vec<PeopleRow>, ProjectionError> {
         }
     }
     Ok(rows)
+}
+
+/// Parse `_group.md` bytes into a `GroupMetaRow` and a list of scoped `TagMetaRow`s.
+fn parse_group_md(
+    bytes: &[u8],
+    group_path: &str,
+) -> Result<(GroupMetaRow, Vec<TagMetaRow>), ProjectionError> {
+    // An absent or empty frontmatter is a genuinely-empty projection (not an error).
+    let yaml_text = match extract_frontmatter_text(bytes) {
+        Some(t) => t,
+        None => {
+            return Ok((
+                GroupMetaRow {
+                    path: group_path.to_string(),
+                    name: None,
+                    icon: None,
+                    color: None,
+                    sort_order: None,
+                    view: None,
+                    schema_json: None,
+                },
+                Vec::new(),
+            ));
+        }
+    };
+
+    let docs = YamlOwned::load_from_str(&yaml_text).map_err(|_| ProjectionError::Parse)?;
+    let doc = match docs.into_iter().next() {
+        Some(d) => d,
+        None => {
+            return Ok((
+                GroupMetaRow {
+                    path: group_path.to_string(),
+                    name: None,
+                    icon: None,
+                    color: None,
+                    sort_order: None,
+                    view: None,
+                    schema_json: None,
+                },
+                Vec::new(),
+            ));
+        }
+    };
+    let mapping = match doc.as_mapping() {
+        Some(m) => m.clone(),
+        None => {
+            return Ok((
+                GroupMetaRow {
+                    path: group_path.to_string(),
+                    name: None,
+                    icon: None,
+                    color: None,
+                    sort_order: None,
+                    view: None,
+                    schema_json: None,
+                },
+                Vec::new(),
+            ));
+        }
+    };
+
+    let name = str_field_owned(&mapping, "name");
+    let icon = str_field_owned(&mapping, "icon");
+    let color = str_field_owned(&mapping, "color");
+    let view = str_field_owned(&mapping, "view");
+
+    // `order` → integer.
+    let sort_order: Option<i64> = mapping
+        .iter()
+        .find(|(k, _)| k.as_str() == Some("order"))
+        .and_then(|(_, v)| v.as_integer());
+
+    // `schema:` → JSON string.
+    let schema_json: Option<String> = mapping
+        .iter()
+        .find(|(k, _)| k.as_str() == Some("schema"))
+        .and_then(|(_, v)| v.as_mapping())
+        .map(|schema_map| {
+            // Build a JSON object: { propName: { type, default? } }
+            let mut obj = serde_json::Map::new();
+            for (k, v) in schema_map.iter() {
+                let prop_name = match k.as_str() {
+                    Some(s) => s.to_string(),
+                    None => continue,
+                };
+                // v should be a mapping with at least `type`.
+                if let Some(prop_map) = v.as_mapping() {
+                    let mut prop_obj = serde_json::Map::new();
+                    if let Some(t) = prop_map
+                        .iter()
+                        .find(|(pk, _)| pk.as_str() == Some("type"))
+                        .and_then(|(_, pv)| pv.as_str())
+                    {
+                        prop_obj
+                            .insert("type".to_string(), serde_json::Value::String(t.to_string()));
+                    }
+                    if let Some(d) = prop_map
+                        .iter()
+                        .find(|(pk, _)| pk.as_str() == Some("default"))
+                        .and_then(|(_, pv)| pv.as_str())
+                    {
+                        prop_obj.insert(
+                            "default".to_string(),
+                            serde_json::Value::String(d.to_string()),
+                        );
+                    }
+                    obj.insert(prop_name, serde_json::Value::Object(prop_obj));
+                }
+            }
+            serde_json::to_string(&obj).unwrap_or_default()
+        });
+
+    // `scoped_tags:` → list of TagMetaRow with scope_path set.
+    let scoped_tags_list = mapping
+        .iter()
+        .find(|(k, _)| k.as_str() == Some("scoped_tags"))
+        .and_then(|(_, v)| v.as_vec().cloned())
+        .unwrap_or_default();
+
+    let mut scoped_tags: Vec<TagMetaRow> = Vec::new();
+    for item in &scoped_tags_list {
+        if let Some(m) = item.as_mapping() {
+            let tag = str_field_owned(m, "tag");
+            let tag = match tag {
+                Some(t) if !t.is_empty() => t,
+                _ => continue,
+            };
+            scoped_tags.push(TagMetaRow {
+                tag,
+                description: str_field_owned(m, "description"),
+                color: str_field_owned(m, "color"),
+                icon: str_field_owned(m, "icon"),
+                scope_path: Some(group_path.to_string()),
+            });
+        }
+    }
+
+    let row = GroupMetaRow {
+        path: group_path.to_string(),
+        name,
+        icon,
+        color,
+        sort_order,
+        view,
+        schema_json,
+    };
+
+    Ok((row, scoped_tags))
 }
 
 /// Extract the YAML text between the first `---` fence pair in a `.md` file.
@@ -278,5 +465,72 @@ mod tests {
     #[test]
     fn extract_frontmatter_text_no_fence() {
         assert_eq!(extract_frontmatter_text(b"body only\n"), None);
+    }
+
+    // ── _group.md parser tests ────────────────────────────────────────────────
+
+    #[test]
+    fn parse_group_md_basic() {
+        let src =
+            "---\nname: Atlas\nicon: \"map\"\ncolor: blue\norder: 2\nview: list\n---\n".as_bytes();
+        let (row, tags) = parse_group_md(src, "work/atlas").unwrap();
+        assert_eq!(row.path, "work/atlas");
+        assert_eq!(row.name.as_deref(), Some("Atlas"));
+        assert_eq!(row.icon.as_deref(), Some("map"));
+        assert_eq!(row.color.as_deref(), Some("blue"));
+        assert_eq!(row.sort_order, Some(2));
+        assert_eq!(row.view.as_deref(), Some("list"));
+        assert!(row.schema_json.is_none());
+        assert!(tags.is_empty());
+    }
+
+    #[test]
+    fn parse_group_md_schema() {
+        let src = b"---\nname: Work\nschema:\n  status:\n    type: string\n    default: draft\n  priority:\n    type: number\n---\n";
+        let (row, _tags) = parse_group_md(src, "work").unwrap();
+        assert!(row.schema_json.is_some(), "schema_json must be set");
+        let schema: serde_json::Value =
+            serde_json::from_str(row.schema_json.as_ref().unwrap()).unwrap();
+        let obj = schema.as_object().unwrap();
+        assert!(
+            obj.contains_key("status"),
+            "status property must be present"
+        );
+        assert!(
+            obj.contains_key("priority"),
+            "priority property must be present"
+        );
+        let status = &obj["status"];
+        assert_eq!(status["type"].as_str(), Some("string"));
+        assert_eq!(status["default"].as_str(), Some("draft"));
+    }
+
+    #[test]
+    fn parse_group_md_scoped_tags() {
+        let src = b"---\nname: Work\nscoped_tags:\n  - tag: followup\n    description: Work followup\n    color: red\n  - tag: internal\n---\n";
+        let (_row, tags) = parse_group_md(src, "work").unwrap();
+        assert_eq!(tags.len(), 2);
+        assert_eq!(tags[0].tag, "followup");
+        assert_eq!(tags[0].description.as_deref(), Some("Work followup"));
+        assert_eq!(tags[0].color.as_deref(), Some("red"));
+        assert_eq!(tags[0].scope_path.as_deref(), Some("work"));
+        assert_eq!(tags[1].tag, "internal");
+        assert_eq!(tags[1].scope_path.as_deref(), Some("work"));
+    }
+
+    #[test]
+    fn parse_group_md_no_frontmatter() {
+        let src = b"# Group\nNo frontmatter here.\n";
+        let (row, tags) = parse_group_md(src, "journal").unwrap();
+        assert_eq!(row.path, "journal");
+        assert!(row.name.is_none());
+        assert!(tags.is_empty());
+    }
+
+    #[test]
+    fn parse_group_md_malformed_yaml() {
+        let src = b"---\nname: \"unterminated\nbad yaml:\n---\n";
+        let result = parse_group_md(src, "bad");
+        assert!(matches!(result, Err(ProjectionError::Parse)));
     }
 }

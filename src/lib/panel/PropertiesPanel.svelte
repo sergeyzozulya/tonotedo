@@ -16,15 +16,48 @@
 
   import { parseFrontmatter, applyPanelEdit, inferType } from "./frontmatter-view.js";
   import type { FmModel, FmEdit, ChangeSpec } from "./frontmatter-view.js";
+  import { ipc } from "../ipc/index.js";
+  import type { GroupPath } from "../ipc/types.js";
 
   interface Props {
     /** Full editor buffer text — re-derived on every doc change. */
     docText: string;
     /** Caller applies the returned ChangeSpec to the editor view. */
     onEdit?: (change: ChangeSpec) => void;
+    /** Group path of the currently selected entry — used to load suggested properties. */
+    groupPath?: GroupPath | null;
   }
 
-  let { docText, onEdit }: Props = $props();
+  let { docText, onEdit, groupPath = null }: Props = $props();
+
+  // ── Group schema (phase 6 / issue #28) ───────────────────────────────────────
+
+  /** Schema definition for a single property from _group.md. */
+  interface SchemaProp {
+    type: string;
+    default?: unknown;
+  }
+
+  let schemaProps = $state<Record<string, SchemaProp> | null>(null);
+
+  $effect(() => {
+    const path = groupPath;
+    if (!path) {
+      schemaProps = null;
+      return;
+    }
+    ipc.effective_schema(path).then((result) => {
+      if (result.ok && result.value) {
+        try {
+          schemaProps = JSON.parse(result.value) as Record<string, SchemaProp>;
+        } catch {
+          schemaProps = null;
+        }
+      } else {
+        schemaProps = null;
+      }
+    });
+  });
 
   // ── Derived model ─────────────────────────────────────────────────────────────
 
@@ -414,6 +447,34 @@
         >
       </div>
 
+      <!-- Suggested properties from group schema (phase 6) -->
+      {#if schemaProps}
+        {@const existingKeys = new Set(model.rows.map((r) => r.key))}
+        {@const suggested = Object.entries(schemaProps).filter(([k]) => !existingKeys.has(k))}
+        {#if suggested.length > 0}
+          <div class="tnd-panel-suggested">
+            <span class="tnd-panel-suggested-label">Suggested</span>
+            {#each suggested as [key, prop] (key)}
+              <button
+                class="tnd-panel-btn tnd-panel-btn--ghost tnd-panel-suggested-key"
+                title="Add {key} ({prop.type})"
+                onclick={() => {
+                  const defaultVal =
+                    prop.default !== undefined
+                      ? String(prop.default)
+                      : prop.type === "number"
+                        ? "0"
+                        : prop.type === "boolean"
+                          ? "false"
+                          : "";
+                  commitEdit({ kind: "add", key, value: defaultVal });
+                }}>{key}</button
+              >
+            {/each}
+          </div>
+        {/if}
+      {/if}
+
       <!-- Advanced (id) -->
       {#if model.advancedRows.length > 0}
         <div class="tnd-panel-advanced">
@@ -734,5 +795,32 @@
   .tnd-panel-advanced-toggle {
     margin: 0.25rem 0.75rem;
     font-size: 0.7rem;
+  }
+
+  .tnd-panel-suggested {
+    border-top: 1px solid var(--tnd-line);
+    margin-top: 0.25rem;
+    padding: 0.25rem 0.75rem;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.25rem;
+  }
+
+  .tnd-panel-suggested-label {
+    font-size: 0.65rem;
+    color: var(--tnd-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-right: 0.25rem;
+    flex-shrink: 0;
+  }
+
+  .tnd-panel-suggested-key {
+    font-size: 0.7rem;
+    padding: 0.1rem 0.4rem;
+    border: 1px dashed var(--tnd-line);
+    border-radius: 3px;
+    cursor: pointer;
   }
 </style>

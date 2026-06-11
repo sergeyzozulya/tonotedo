@@ -136,6 +136,12 @@ export const real: Ipc = {
     return call<GroupMeta[]>("list_groups");
   },
 
+  // ── Group schema (phase 6 / issue #28) ───────────────────────────────────────
+
+  async effective_schema(groupPath: string): Promise<Result<string | null>> {
+    return call<string | null>("effective_schema", { groupPath });
+  },
+
   // ── Saved searches (spec 0009) ───────────────────────────────────────────────
 
   async saved_searches_get(): Promise<Result<SavedSearch[]>> {

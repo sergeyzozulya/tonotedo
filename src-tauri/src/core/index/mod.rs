@@ -17,7 +17,7 @@ mod upsert;
 mod tests;
 
 pub use error::IndexError;
-pub use query::{BacklinkRow, EntryRow, PeopleRow, SearchResult, TagRow};
+pub use query::{sanitize_fts_query, BacklinkRow, EntryRow, PeopleRow, SearchResult, TagRow};
 pub use scanner::scan_body;
 
 use rusqlite::{params, Connection, OpenFlags};
@@ -190,9 +190,49 @@ impl Index {
         upsert::set_people(&mut self.conn, rows)
     }
 
-    /// Replace all rows in the `tag_meta` table.
+    /// Replace all global rows in the `tag_meta` table (scope_path IS NULL).
+    /// Scoped rows (from _group.md) are preserved.
     pub fn set_tag_meta(&mut self, rows: &[TagMetaRow]) -> Result<(), IndexError> {
         upsert::set_tag_meta(&mut self.conn, rows)
+    }
+
+    /// Replace all scoped tag rows for a given `scope_path` (from _group.md).
+    /// Global rows (scope_path IS NULL) are not touched.
+    pub fn set_scoped_tag_meta(
+        &mut self,
+        scope_path: &str,
+        rows: &[TagMetaRow],
+    ) -> Result<(), IndexError> {
+        upsert::set_scoped_tag_meta(&mut self.conn, scope_path, rows)
+    }
+
+    /// Upsert a single `group_meta` row from a parsed `_group.md` file.
+    pub fn set_group_meta(&mut self, row: &GroupMetaRow) -> Result<(), IndexError> {
+        upsert::set_group_meta(&mut self.conn, row)
+    }
+
+    /// Remove the `group_meta` row for a given path (e.g. when _group.md deleted).
+    pub fn remove_group_meta(&mut self, path: &str) -> Result<(), IndexError> {
+        self.conn
+            .execute("DELETE FROM group_meta WHERE path = ?1", params![path])?;
+        Ok(())
+    }
+
+    /// Fetch the `group_meta` row for a path, if any.
+    pub fn group_meta_for_path(&self, path: &str) -> Result<Option<GroupMetaRow>, IndexError> {
+        query::group_meta_for_path(&self.conn, path)
+    }
+
+    /// All group_meta rows (for list_groups augmentation).
+    pub fn all_group_meta(&self) -> Result<Vec<GroupMetaRow>, IndexError> {
+        query::all_group_meta(&self.conn)
+    }
+
+    /// Compute the effective schema for a group by merging ancestor chain.
+    /// Child overrides parent for any given property key.
+    /// Returns a JSON string of the merged schema map, or `None` if none found.
+    pub fn effective_schema(&self, group_path: &str) -> Result<Option<String>, IndexError> {
+        query::effective_schema(&self.conn, group_path)
     }
 
     /// Return the integer row-id for an entry path (used by tests / callers).
@@ -356,4 +396,22 @@ pub struct TagMetaRow {
     pub description: Option<String>,
     pub color: Option<String>,
     pub icon: Option<String>,
+    /// NULL for global tags (_tags.md); set to a group path for scoped tags
+    /// declared in a `_group.md` `scoped_tags:` block.
+    pub scope_path: Option<String>,
+}
+
+/// Group metadata row (mirrors `group_meta` table).
+#[derive(Debug, Clone, PartialEq)]
+pub struct GroupMetaRow {
+    /// Vault-relative group path (the primary key).
+    pub path: String,
+    pub name: Option<String>,
+    pub icon: Option<String>,
+    pub color: Option<String>,
+    /// Explicit ordering hint (0003).
+    pub sort_order: Option<i64>,
+    pub view: Option<String>,
+    /// JSON-encoded map of property name → {type, default?}.
+    pub schema_json: Option<String>,
 }

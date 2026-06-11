@@ -518,6 +518,11 @@
 
   const groupDisplayName = $derived(resolveGroupName(selectedGroupPath, groupTree));
 
+  /** Group path of the currently selected entry (for PropertiesPanel schema). */
+  const selectedEntryGroup = $derived(
+    selectedEntryId ? (entries.find((e) => e.id === selectedEntryId)?.group ?? null) : null,
+  );
+
   // ── Search overlay ────────────────────────────────────────────────────────────
 
   let searchOverlay = $state<
@@ -695,6 +700,7 @@
               {blockCallbacks}
               externalChange={panelChange}
               externalDocReplace={fullDocReplace}
+              groupPath={selectedEntryGroup}
             />
           {:else}
             <div class="editor-empty">Select an entry to begin editing</div>
@@ -797,6 +803,7 @@
       docText={editorText}
       onEdit={onPanelEdit}
       onClose={() => (mobileState = mobileScreenReduce(mobileState, { type: "close-properties" }))}
+      groupPath={selectedEntryGroup}
     />
 
     <!-- Action sheet (long-press entry row) -->
@@ -992,6 +999,7 @@
             {blockCallbacks}
             externalChange={panelChange}
             externalDocReplace={fullDocReplace}
+            groupPath={selectedEntryGroup}
           />
         {:else}
           <div class="editor-empty">Select an entry to begin editing</div>
@@ -1002,7 +1010,11 @@
       {#if propertiesVisible && mainZone === "editor"}
         <aside class="properties-zone" data-focus-zone="properties">
           {#if selectedEntryId}
-            <PropertiesPanel docText={editorText} onEdit={onPanelEdit} />
+            <PropertiesPanel
+              docText={editorText}
+              onEdit={onPanelEdit}
+              groupPath={selectedEntryGroup}
+            />
           {:else}
             <div class="properties-empty">No entry selected</div>
           {/if}
