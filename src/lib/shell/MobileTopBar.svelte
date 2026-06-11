@@ -76,9 +76,26 @@
   >
     <div class="mobile-topbar-left">
       {#if showBack}
-        <button class="mobile-topbar-btn" aria-label="Back" onclick={onBack}>
-          <span class="mobile-topbar-back-icon" aria-hidden="true">‹</span>
-          Back
+        <button
+          class="mobile-topbar-btn mobile-topbar-btn--back"
+          aria-label="Back"
+          onclick={onBack}
+        >
+          <!-- chevron left (matches design ‹ back affordance) -->
+          <svg
+            viewBox="0 0 20 20"
+            width="16"
+            height="16"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M12.5 5l-5 5 5 5" />
+          </svg>
+          <span class="mobile-topbar-back-label">Back</span>
         </button>
       {:else if showHamburger}
         <button
@@ -86,7 +103,19 @@
           aria-label="Open sidebar"
           onclick={onHamburger}
         >
-          ☰
+          <!-- three-line hamburger -->
+          <svg
+            viewBox="0 0 20 20"
+            width="18"
+            height="18"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.7"
+            stroke-linecap="round"
+            aria-hidden="true"
+          >
+            <path d="M3 5h14M3 10h14M3 15h14" />
+          </svg>
         </button>
       {/if}
     </div>
@@ -100,7 +129,21 @@
           aria-label="Search"
           onclick={onSearch}
         >
-          🔍
+          <!-- search icon -->
+          <svg
+            viewBox="0 0 20 20"
+            width="17"
+            height="17"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.7"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <circle cx="9" cy="9" r="5.5" />
+            <path d="M13.5 13.5l3.5 3.5" />
+          </svg>
         </button>
       {/if}
       {#if onPalette}
@@ -109,7 +152,20 @@
           aria-label="Command palette"
           onclick={onPalette}
         >
-          ⌘
+          <!-- spark / command icon -->
+          <svg
+            viewBox="0 0 20 20"
+            width="17"
+            height="17"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.7"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M10 2.5l1.6 4.9 4.9 1.6-4.9 1.6L10 15.5l-1.6-4.9-4.9-1.6 4.9-1.6z" />
+          </svg>
         </button>
       {/if}
     </div>
@@ -119,19 +175,20 @@
 <style>
   .mobile-topbar {
     position: relative;
-    height: 52px;
+    height: 46px;
     flex-shrink: 0;
     background: var(--tnd-panel);
-    border-bottom: 1px solid var(--tnd-line-strong);
-    touch-action: pan-x; /* allow vertical swipe to be captured */
+    border-bottom: 1px solid var(--tnd-line);
+    touch-action: pan-x;
     user-select: none;
+    font-family: var(--tnd-font-ui);
   }
 
   .mobile-topbar-inner {
     display: flex;
     align-items: center;
     height: 100%;
-    padding: 0 8px;
+    padding: 0 14px;
     gap: 6px;
   }
 
@@ -144,7 +201,7 @@
   .mobile-topbar-right {
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: 2px;
     min-width: 64px;
     justify-content: flex-end;
   }
@@ -152,27 +209,31 @@
   .mobile-topbar-title {
     flex: 1;
     text-align: center;
-    font-size: 16px;
-    font-weight: 600;
+    font-size: 14px;
+    font-weight: 700;
     color: var(--tnd-text);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    letter-spacing: var(--tnd-label-spacing, 0);
+    text-transform: var(--tnd-label-transform, none);
+    font-family: var(--tnd-font-ui);
   }
 
+  /* Back/hamburger/icon buttons */
   .mobile-topbar-btn {
     background: transparent;
     border: none;
-    color: var(--tnd-accent, #3e7a52);
-    font-size: 16px;
-    font-family: inherit;
-    font-weight: 500;
-    padding: 8px 6px;
+    color: var(--tnd-accent-text);
+    font-size: 14px;
+    font-family: var(--tnd-font-ui);
+    font-weight: 600;
+    padding: 6px 4px;
     cursor: pointer;
-    border-radius: 6px;
+    border-radius: var(--tnd-radius);
     display: flex;
     align-items: center;
-    gap: 2px;
+    gap: 3px;
     min-width: 44px;
     min-height: 44px;
     justify-content: center;
@@ -183,27 +244,41 @@
   }
 
   .mobile-topbar-btn--icon {
-    font-size: 18px;
+    color: var(--tnd-text-muted);
+    min-width: 36px;
   }
 
-  .mobile-topbar-back-icon {
-    font-size: 22px;
+  .mobile-topbar-btn--icon:active {
+    color: var(--tnd-accent-text);
+  }
+
+  /* Back button: accent-colored label + chevron matching design */
+  .mobile-topbar-btn--back {
+    color: var(--tnd-accent-text);
+    gap: 2px;
+  }
+
+  .mobile-topbar-back-label {
+    font-size: 14px;
+    font-weight: 600;
     line-height: 1;
   }
 
   .mobile-topbar-pull-hint {
     position: absolute;
-    top: 52px;
+    top: 46px;
     left: 50%;
     transform: translateX(-50%);
-    font-size: 11px;
+    font-size: 10.5px;
     color: var(--tnd-text-faint);
     background: var(--tnd-panel2);
     border: 1px solid var(--tnd-line);
-    border-radius: 4px;
-    padding: 2px 8px;
+    border-radius: var(--tnd-radius);
+    padding: 2px 10px;
     white-space: nowrap;
     pointer-events: none;
     z-index: 1;
+    font-family: var(--tnd-font-mono);
+    letter-spacing: 0.02em;
   }
 </style>

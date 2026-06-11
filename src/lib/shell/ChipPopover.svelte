@@ -63,7 +63,20 @@
     <div class="chip-popover" role="dialog" aria-label="Chip details" aria-modal="true">
       <div class="chip-popover-header">
         <span class="chip-popover-name {colorClass}">{displayName}</span>
-        <button class="chip-popover-close" onclick={onClose} aria-label="Close">×</button>
+        <button class="chip-popover-close" onclick={onClose} aria-label="Close">
+          <svg
+            viewBox="0 0 20 20"
+            width="14"
+            height="14"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+            aria-hidden="true"
+          >
+            <path d="M5 5l10 10M15 5L5 15" />
+          </svg>
+        </button>
       </div>
 
       {#if description}
@@ -86,7 +99,7 @@
   .chip-popover-backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.35);
+    background: rgba(0, 0, 0, 0.38);
     z-index: 5000;
     display: flex;
     align-items: center;
@@ -97,36 +110,44 @@
   .chip-popover {
     background: var(--tnd-panel);
     border: 1px solid var(--tnd-line-strong);
-    border-radius: 12px;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+    border-radius: max(12px, var(--tnd-radius));
+    box-shadow: var(--tnd-shadow, 0 8px 32px rgba(0, 0, 0, 0.2));
     padding: 16px;
     min-width: 200px;
     max-width: 320px;
     width: 100%;
-    font-family: ui-sans-serif, system-ui, sans-serif;
+    font-family: var(--tnd-font-ui);
   }
 
   .chip-popover-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin-bottom: 8px;
+    margin-bottom: 10px;
   }
 
   .chip-popover-name {
     font-size: 15px;
-    font-weight: 600;
+    font-weight: 700;
     color: var(--tnd-text);
+    font-family: var(--tnd-font-ui);
   }
 
   .chip-popover-close {
     background: none;
     border: none;
-    font-size: 20px;
     color: var(--tnd-text-muted);
     cursor: pointer;
-    padding: 0 2px;
+    padding: 3px;
     line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--tnd-radius);
+  }
+
+  .chip-popover-close:active {
+    background: var(--tnd-panel2);
   }
 
   .chip-popover-desc {
@@ -134,6 +155,7 @@
     color: var(--tnd-text-muted);
     margin: 0 0 10px;
     line-height: 1.5;
+    font-family: var(--tnd-font-ui);
   }
 
   .chip-popover-desc--empty {
@@ -147,6 +169,8 @@
     border-top: 1px solid var(--tnd-line);
     padding-top: 8px;
     margin-top: 4px;
+    font-family: var(--tnd-font-mono);
+    letter-spacing: 0.02em;
   }
 
   /* Color accent variants for tag chips */
