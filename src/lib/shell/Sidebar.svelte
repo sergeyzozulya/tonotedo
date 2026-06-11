@@ -515,8 +515,7 @@
     gap: 7px;
     height: calc(24px + var(--tnd-row-y, 7px));
     /* depth-based indent: side-pad base + 16px per level */
-    padding: 0 var(--tnd-side-pad, 13px) 0
-      calc(var(--tnd-side-pad, 13px) + var(--depth, 0) * 16px);
+    padding: 0 var(--tnd-side-pad, 13px) 0 calc(var(--tnd-side-pad, 13px) + var(--depth, 0) * 16px);
     cursor: pointer;
     position: relative;
     color: var(--tnd-text-muted);

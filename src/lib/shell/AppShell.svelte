@@ -517,9 +517,7 @@
   // Titlebar chrome (design TNDTitleBar). `boxed`/uppercase flags key off Mono.
   const boxed = $derived(themeStore.theme === "mono");
   const rootCrumb = $derived(
-    selectedGroupPath
-      ? selectedGroupPath.split("/")[0].replace(/^\w/, (c) => c.toUpperCase())
-      : "",
+    selectedGroupPath ? selectedGroupPath.split("/")[0].replace(/^\w/, (c) => c.toUpperCase()) : "",
   );
 
   async function createEntry(): Promise<void> {
@@ -875,8 +873,14 @@
           <span class="titlebar-badge">T</span>
           <span class="titlebar-app-name">My Library</span>
           <svg class="titlebar-ico" viewBox="0 0 24 24" width="13" height="13"
-            ><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2"
-              stroke-linecap="round" stroke-linejoin="round" /></svg
+            ><path
+              d="M6 9l6 6 6-6"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            /></svg
           >
         {/if}
       </div>
@@ -887,8 +891,14 @@
         <span class="titlebar-crumb-muted">{selectedGroupPath ? rootCrumb : "All entries"}</span>
         {#if selectedGroupPath}
           <svg class="titlebar-ico" viewBox="0 0 24 24" width="11" height="11"
-            ><path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2"
-              stroke-linecap="round" stroke-linejoin="round" /></svg
+            ><path
+              d="M9 6l6 6-6 6"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            /></svg
           >
           <span class="titlebar-crumb">{groupDisplayName}</span>
         {/if}
@@ -965,7 +975,14 @@
           >
         {:else}
           <svg viewBox="0 0 24 24" width="16" height="16"
-            ><circle cx="12" cy="12" r="4.5" fill="none" stroke="currentColor" stroke-width="1.8" /><path
+            ><circle
+              cx="12"
+              cy="12"
+              r="4.5"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+            /><path
               d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M19.1 4.9l-1.4 1.4M6.3 17.7l-1.4 1.4"
               stroke="currentColor"
               stroke-width="1.8"
@@ -984,7 +1001,14 @@
         title="Settings (⌘,)"
       >
         <svg viewBox="0 0 24 24" width="16" height="16"
-          ><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.8" /><path
+          ><circle
+            cx="12"
+            cy="12"
+            r="3"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+          /><path
             d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.2 5.2l2.1 2.1M16.7 16.7l2.1 2.1M18.8 5.2l-2.1 2.1M7.3 16.7l-2.1 2.1"
             stroke="currentColor"
             stroke-width="1.6"
