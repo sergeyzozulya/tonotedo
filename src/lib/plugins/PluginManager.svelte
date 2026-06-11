@@ -6,6 +6,7 @@
   // toggle switch on right; grants row with permission chips (network/write=amber,
   // rest=muted). Token-mapped per theme.
 
+  import { SvelteMap } from "svelte/reactivity";
   import { ipc } from "../ipc/index.js";
   import type { PluginInfo, PluginSettingField } from "../ipc/types.js";
   import { permissionLabel, permissionDetail } from "./permission-labels.js";
@@ -26,6 +27,7 @@
     if (res.ok) {
       plugins = res.value;
       syncPluginCommands(plugins, ipc);
+      await loadAllPluginSettings(plugins);
     } else {
       loadError = res.error.message;
     }
@@ -38,6 +40,7 @@
     if (res.ok) {
       plugins = res.value;
       syncPluginCommands(plugins, ipc);
+      await loadAllPluginSettings(plugins);
     } else {
       loadError = res.error.message;
     }
@@ -110,13 +113,41 @@
 
   const settingsValues = $state<Record<string, Record<string, string>>>({});
 
+  /** Load persisted settings for all plugins after the plugin list is fetched. */
+  async function loadAllPluginSettings(pluginList: PluginInfo[]): Promise<void> {
+    for (const p of pluginList) {
+      if (p.settings.length === 0) continue;
+      const res = await ipc.plugin_settings_get(p.id);
+      if (res.ok && Object.keys(res.value).length > 0) {
+        settingsValues[p.id] = { ...res.value };
+      }
+    }
+  }
+
   function settingValue(pluginId: string, field: PluginSettingField): string {
     return settingsValues[pluginId]?.[field.key] ?? field.default ?? "";
   }
 
+  /** Debounce timers per plugin to avoid saving on every keystroke. */
+  const _saveTimers = new SvelteMap<string, ReturnType<typeof setTimeout>>();
+
   function onSettingInput(pluginId: string, field: PluginSettingField, value: string): void {
     if (!settingsValues[pluginId]) settingsValues[pluginId] = {};
     settingsValues[pluginId][field.key] = value;
+
+    // Persist with a 500ms debounce so rapid typing doesn't hammer IPC.
+    const existing = _saveTimers.get(pluginId);
+    if (existing !== undefined) clearTimeout(existing);
+    _saveTimers.set(
+      pluginId,
+      setTimeout(() => {
+        _saveTimers.delete(pluginId);
+        const snapshot = { ...(settingsValues[pluginId] ?? {}) };
+        ipc.plugin_settings_set(pluginId, snapshot).catch((err: unknown) => {
+          console.warn(`[plugins] failed to save settings for ${pluginId}:`, err);
+        });
+      }, 500),
+    );
   }
 
   // ── Reveal password fields ────────────────────────────────────────────────────

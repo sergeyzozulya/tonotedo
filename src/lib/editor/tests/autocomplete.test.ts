@@ -130,6 +130,12 @@ function stubIpc(overrides?: {
     plugins_set_grant: vi.fn() as never,
     plugins_invoke_command: vi.fn() as never,
     effective_schema: vi.fn() as never,
+    settings_get_user: vi.fn() as never,
+    settings_set_user: vi.fn() as never,
+    settings_get_library: vi.fn() as never,
+    settings_set_library: vi.fn() as never,
+    plugin_settings_get: vi.fn() as never,
+    plugin_settings_set: vi.fn() as never,
     on: vi.fn(() => () => {}),
   };
 }
