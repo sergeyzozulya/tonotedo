@@ -254,6 +254,19 @@ impl Index {
         query::paths_with_mention(&self.conn, slug)
     }
 
+    /// All entry paths that reference entry `slug` (located in `group_path`) via a
+    /// wikilink or a `ref`/`ref[]` frontmatter property, case-insensitively.
+    ///
+    /// Used by the journal module for pre-flight discovery before a slug-rename
+    /// batch rewrite (spec 0002 — refs/wikilinks "rewritten on rename").
+    pub fn paths_referencing_slug(
+        &self,
+        group_path: &str,
+        slug: &str,
+    ) -> Result<Vec<String>, IndexError> {
+        query::paths_referencing_slug(&self.conn, group_path, slug)
+    }
+
     /// Return the frontmatter `id` string for an entry path (indexed lookup).
     ///
     /// `Ok(None)` → no entry row for that path; `Ok(Some(None))` → row exists but

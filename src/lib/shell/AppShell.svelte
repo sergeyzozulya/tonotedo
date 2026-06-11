@@ -288,16 +288,53 @@
    */
   let fullDocReplace = $state<{ fullDoc: string } | null>(null);
 
+  /**
+   * Malformed-frontmatter warning for the open entry (spec 0002). Non-blocking;
+   * shown as a dismissible badge in the editor header. Null when well-formed.
+   */
+  let parseWarning = $state<string | null>(null);
+
   async function selectEntry(id: string): Promise<void> {
     const result = await ipc.read_entry(id);
     if (result.ok) {
       selectedEntryId = id;
       editorText = result.value.text;
+      parseWarning = result.value.parseWarning ?? null;
       conflictTracker = onLoaded(conflictTracker, id, result.value.text);
       conflictDiskText = null; // clear any pending conflict from a previous entry
       if (narrow) mobilePush("editor");
     } else {
       console.error("[shell] read_entry failed:", result.error.message);
+    }
+  }
+
+  // ── Entry rename (spec 0002 §Identity — slug operation) ──────────────────────
+  // Renaming changes the .md filename slug; the entry id and the H1 title are
+  // unchanged. In-app references are rewritten by the core. We prompt for the new
+  // slug, call rename_entry, then re-select the entry at its new id.
+
+  async function renameEntry(id: string): Promise<void> {
+    const oldSlug = id.split("/").at(-1) ?? id;
+    const group = id.includes("/") ? id.split("/").slice(0, -1).join("/") : "";
+    const input = window.prompt("Rename entry (new slug):", oldSlug);
+    if (input === null) return;
+    const newSlug = input.trim();
+    if (!newSlug || newSlug === oldSlug) return;
+
+    const path = `${id}.md`;
+    const result = await ipc.rename_entry(path, newSlug);
+    if (!result.ok) {
+      console.error("[shell] rename_entry failed:", result.error.message);
+      return;
+    }
+    await loadEntries(selectedGroupPath);
+    loadGroups();
+    // Use the actual final slug returned by the backend (may have been
+    // collision-suffixed) to re-select the renamed entry reliably.
+    const finalSlug = result.value;
+    const newId = group ? `${group}/${finalSlug}` : finalSlug;
+    if (selectedEntryId === id) {
+      await selectEntry(newId);
     }
   }
 
@@ -373,6 +410,27 @@
     });
     return unsub;
   });
+
+  // ── Reconciler notifications → non-blocking notice (spec 0002 edge cases) ─────
+  // Duplicate-id repair: the reconciler assigned a fresh id to a file whose id
+  // collided with another live entry. Surface it non-blockingly; the user
+  // dismisses it. Reuses the same event channel as index_changed.
+
+  let dupNotice = $state<string | null>(null);
+
+  $effect(() => {
+    const unsub = ipc.on("reconcile_notification", (event) => {
+      if (event.kind === "duplicate_id_resolved") {
+        const where = event.path ? ` (${event.path})` : "";
+        dupNotice = `A duplicate entry id was detected and a fresh id was assigned${where}.`;
+      }
+    });
+    return unsub;
+  });
+
+  function dismissDupNotice(): void {
+    dupNotice = null;
+  }
 
   // ── Conflict banner actions ────────────────────────────────────────────────────
 
@@ -522,8 +580,19 @@
 
   async function createEntry(): Promise<void> {
     const base = selectedGroupPath || "inbox";
-    const id = `${base}/untitled-${entries.length + 1}`;
-    const text = `---\ntitle: Untitled\n---\n\n# Untitled\n`;
+    // Collision-suffixed slug: untitled, untitled-2, untitled-3, … checking the
+    // entries already present in the target group (spec 0002 §Filename collisions).
+    const existingSlugs = new Set(
+      entries.filter((e) => (e.group || "") === base).map((e) => e.id.split("/").at(-1)),
+    );
+    let slug = "untitled";
+    if (existingSlugs.has(slug)) {
+      let n = 2;
+      while (existingSlugs.has(`untitled-${n}`)) n += 1;
+      slug = `untitled-${n}`;
+    }
+    const id = `${base}/${slug}`;
+    const text = `# Untitled\n`;
     const r = await ipc.write_entry(id, text, "shell-self-tok");
     if (r.ok) {
       await loadEntries(selectedGroupPath);
@@ -566,6 +635,21 @@
     const seeded = registry.get("entry.search");
     if (seeded) {
       registry.register({ ...seeded, handler: () => openSearch() });
+    }
+  });
+
+  // ── entry.rename via the command registry ──────────────────────────────────────
+  // Re-register the seeded stub with the real handler that renames the open entry.
+
+  $effect(() => {
+    const seeded = registry.get("entry.rename");
+    if (seeded) {
+      registry.register({
+        ...seeded,
+        handler: () => {
+          if (selectedEntryId) renameEntry(selectedEntryId);
+        },
+      });
     }
   });
 
@@ -619,6 +703,15 @@
 </script>
 
 <div class="app-shell" class:app-shell--narrow={narrow} class:sidebar-open={sidebarOpen}>
+  {#if dupNotice}
+    <div class="dup-notice" role="status" aria-live="polite">
+      <span class="dup-notice__icon" aria-hidden="true">ℹ</span>
+      <span class="dup-notice__text">{dupNotice}</span>
+      <button class="dup-notice__dismiss" onclick={dismissDupNotice} aria-label="Dismiss notice"
+        >✕</button
+      >
+    </div>
+  {/if}
   {#if narrow}
     <!-- ── Mobile layout ────────────────────────────────────────────────────── -->
 
@@ -717,6 +810,17 @@
                 onUseDisk={conflictUseDisk}
                 onDismiss={conflictDismiss}
               />
+            {/if}
+            {#if parseWarning}
+              <div class="parse-warning" role="status">
+                <span class="parse-warning__icon" aria-hidden="true">⚠</span>
+                <span class="parse-warning__text">{parseWarning}</span>
+                <button
+                  class="parse-warning__dismiss"
+                  onclick={() => (parseWarning = null)}
+                  aria-label="Dismiss frontmatter warning">✕</button
+                >
+              </div>
             {/if}
             <Editor
               doc={editorText}
@@ -842,6 +946,10 @@
       onClose={closeActionSheet}
       onOpen={(id) => {
         selectEntry(id);
+        closeActionSheet();
+      }}
+      onRename={(id) => {
+        void renameEntry(id);
         closeActionSheet();
       }}
       onTrash={(id) => {
@@ -1111,6 +1219,17 @@
               onDismiss={conflictDismiss}
             />
           {/if}
+          {#if parseWarning}
+            <div class="parse-warning" role="status">
+              <span class="parse-warning__icon" aria-hidden="true">⚠</span>
+              <span class="parse-warning__text">{parseWarning}</span>
+              <button
+                class="parse-warning__dismiss"
+                onclick={() => (parseWarning = null)}
+                aria-label="Dismiss frontmatter warning">✕</button
+              >
+            </div>
+          {/if}
           <Editor
             doc={editorText}
             {onDocChanged}
@@ -1183,6 +1302,50 @@
 </div>
 
 <style>
+  /* ── Non-blocking notices (spec 0002 edge cases) ─────────────────────────────── */
+
+  .parse-warning,
+  .dup-notice {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 14px;
+    font-size: 12px;
+    flex-shrink: 0;
+    background: var(--tnd-conflict-bg, var(--tnd-panel2));
+    border-bottom: 1px solid var(--tnd-conflict-border, var(--tnd-line-strong));
+    color: var(--tnd-conflict-text, var(--tnd-text));
+  }
+
+  .parse-warning__icon,
+  .dup-notice__icon {
+    flex-shrink: 0;
+  }
+
+  .parse-warning__text,
+  .dup-notice__text {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .parse-warning__dismiss,
+  .dup-notice__dismiss {
+    flex-shrink: 0;
+    background: transparent;
+    border: none;
+    color: inherit;
+    cursor: pointer;
+    font-size: 12px;
+    opacity: 0.7;
+    padding: 2px 6px;
+    border-radius: var(--tnd-radius, 4px);
+  }
+
+  .parse-warning__dismiss:hover,
+  .dup-notice__dismiss:hover {
+    opacity: 1;
+  }
+
   /* ── Shell chrome ──────────────────────────────────────────────────────────── */
 
   .app-shell {

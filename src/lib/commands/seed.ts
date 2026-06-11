@@ -81,6 +81,15 @@ const COMMANDS: Command[] = [
     when: "",
     handler: noop, // stub — search panel not yet built
   },
+  {
+    id: "entry.rename",
+    name: "Rename Entry",
+    description: "Rename the open entry's slug (the H1 title is unchanged)",
+    category: "Entry",
+    defaultBindings: [],
+    when: "",
+    handler: noop, // re-registered by AppShell to call rename_entry
+  },
 
   // ── Editor ─────────────────────────────────────────────────────────────────
 

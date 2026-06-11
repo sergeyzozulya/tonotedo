@@ -48,7 +48,7 @@ use crate::core::{
     frontmatter::Entry,
     fswrite::{write_entry as fswrite_write_entry, TokenRegistry, WriteToken},
     index::Index,
-    reconcile::{ChangeEvent, ChangeKind, Reconciler, SyncReconciler},
+    reconcile::{ChangeEvent, ChangeKind, ReconcileNotification, Reconciler, SyncReconciler},
 };
 
 // ── AppState ──────────────────────────────────────────────────────────────────
@@ -166,15 +166,25 @@ pub fn library_open(path: String, state: State<'_, AppState>, app: AppHandle) ->
         Reconciler::new_with_watcher(index, Arc::clone(&tokens), library_root.clone(), event_tx)
             .map_err(|e| IpcError::io(format!("Cannot start watcher: {e}")))?;
 
-    let (reconciler_handle, change_rx) = reconciler.spawn(Some(watcher_handle));
+    let (reconciler_handle, change_rx, notify_rx) = reconciler.spawn(Some(watcher_handle));
 
     // The event forwarding thread converts ChangeEvents to Tauri events.
+    let app_for_events = app.clone();
     std::thread::Builder::new()
         .name("ipc-event-forwarder".into())
         .spawn(move || {
-            forward_events(change_rx, app);
+            forward_events(change_rx, app_for_events);
         })
         .map_err(|e| IpcError::io(format!("Cannot spawn event forwarder: {e}")))?;
+
+    // The notification forwarding thread converts reconciler notifications
+    // (e.g. duplicate-id resolution, spec 0002) to Tauri events.
+    std::thread::Builder::new()
+        .name("ipc-notify-forwarder".into())
+        .spawn(move || {
+            forward_notifications(notify_rx, app);
+        })
+        .map_err(|e| IpcError::io(format!("Cannot spawn notify forwarder: {e}")))?;
 
     // Re-open the index for read queries on the main handle.
     let query_index = Index::open(db_path_str)
@@ -291,6 +301,49 @@ fn emit_batch(app: &AppHandle, batch: &[ChangeEvent]) {
     let _ = app.emit("index_changed", payload);
 }
 
+// ── Notification forwarding ─────────────────────────────────────────────────────
+
+/// `reconcile_notification` event payload (spec 0002 §"Edge cases").
+///
+/// `kind` discriminates the notification; `dup` carries the duplicate-id detail
+/// when `kind == "duplicate_id_resolved"`.  Maps to `ReconcileNotificationEvent`
+/// in types.ts.
+#[derive(Serialize, Clone)]
+struct ReconcileNotificationPayload {
+    kind: &'static str,
+    path: Option<String>,
+    #[serde(rename = "duplicateId", skip_serializing_if = "Option::is_none")]
+    duplicate_id: Option<String>,
+    #[serde(rename = "newId", skip_serializing_if = "Option::is_none")]
+    new_id: Option<String>,
+}
+
+/// Drain `ReconcileNotification`s from the reconciler and emit Tauri events.
+///
+/// Runs until the sender side is dropped (library closed or app shutdown).
+fn forward_notifications(rx: crossbeam_channel::Receiver<ReconcileNotification>, app: AppHandle) {
+    while let Ok(notif) = rx.recv() {
+        let payload = match notif {
+            ReconcileNotification::DuplicateIdResolved {
+                path,
+                duplicate_id,
+                new_id,
+            } => ReconcileNotificationPayload {
+                kind: "duplicate_id_resolved",
+                path: Some(path.to_string_lossy().into_owned()),
+                duplicate_id: Some(duplicate_id),
+                new_id: Some(new_id),
+            },
+            // Projection-update notifications are internal bookkeeping; the UI
+            // already refreshes from index_changed, so we do not surface them.
+            ReconcileNotification::TagMetaUpdated | ReconcileNotification::PeopleUpdated => {
+                continue
+            }
+        };
+        let _ = app.emit("reconcile_notification", payload);
+    }
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Acquire the open library or return a typed error.
@@ -323,6 +376,11 @@ pub struct EntryContentDto {
     pub text: String,
     #[serde(rename = "selfToken")]
     pub self_token: String,
+    /// Non-blocking warning when the frontmatter was malformed (spec 0002
+    /// §"Edge cases / Malformed frontmatter").  `None` for well-formed entries;
+    /// the UI surfaces it as a dismissible badge and never blocks opening.
+    #[serde(rename = "parseWarning", skip_serializing_if = "Option::is_none")]
+    pub parse_warning: Option<String>,
 }
 
 /// `read_entry(id)` — read the full text of a single entry.
@@ -353,12 +411,18 @@ pub fn read_entry(id: String, state: State<'_, AppState>) -> CmdResult<EntryCont
     let bytes_for_token = text.as_bytes();
     let token: WriteToken = lib.tokens.issue_token(path_ref, bytes_for_token);
 
+    // Parse to surface a malformed-frontmatter warning (spec 0002).  Parsing
+    // never fails — a malformed file yields an empty-property entry plus a
+    // warning — so opening is never blocked.
+    let parse_warning = Entry::from_bytes(text.as_bytes()).parse_warning;
+
     let rel_path = format!("{id}.md");
     Ok(EntryContentDto {
         id,
         path: rel_path,
         text,
         self_token: token.as_u64().to_string(),
+        parse_warning,
     })
 }
 

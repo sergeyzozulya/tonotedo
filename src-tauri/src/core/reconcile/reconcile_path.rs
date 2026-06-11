@@ -87,6 +87,7 @@ pub fn reconcile_batch(
     library_root: &Path,
     events: &[(PathBuf, RawKind)],
     needs_full_rescan: &AtomicBool,
+    notifications: &mut Vec<ReconcileNotification>,
 ) -> Vec<ChangeEvent> {
     let mut out: Vec<ChangeEvent> = Vec::new();
 
@@ -176,7 +177,14 @@ pub fn reconcile_batch(
             );
             out.extend(evs);
         } else {
-            let evs = do_upsert(index, tokens, library_root, abs_path, needs_full_rescan);
+            let evs = do_upsert(
+                index,
+                tokens,
+                library_root,
+                abs_path,
+                needs_full_rescan,
+                notifications,
+            );
             out.extend(evs);
         }
     }
@@ -302,6 +310,7 @@ fn do_upsert(
     library_root: &Path,
     abs_path: &Path,
     needs_full_rescan: &AtomicBool,
+    notifications: &mut Vec<ReconcileNotification>,
 ) -> Vec<ChangeEvent> {
     let rel = match rel_path(library_root, abs_path) {
         Some(r) => r,
@@ -543,12 +552,17 @@ fn do_upsert(
         self_originated: self_originated || final_bytes_for_self,
     }];
 
-    if let Some(ReconcileNotification::DuplicateIdResolved { path, .. }) = dup_notification {
-        events.push(ChangeEvent {
-            path,
-            kind: ChangeKind::Modified,
-            self_originated: true,
-        });
+    if let Some(notif) = dup_notification {
+        if let ReconcileNotification::DuplicateIdResolved { path, .. } = &notif {
+            events.push(ChangeEvent {
+                path: path.clone(),
+                kind: ChangeKind::Modified,
+                self_originated: true,
+            });
+        }
+        // Surface the resolution to the UI (spec 0002 §"Duplicate ids":
+        // "the user is notified").
+        notifications.push(notif);
     }
 
     events

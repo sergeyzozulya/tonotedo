@@ -208,6 +208,7 @@ pub fn run() {
             ipc::groups::rename_group,
             ipc::groups::move_group,
             ipc::groups::move_entry,
+            ipc::groups::rename_entry,
             ipc::groups::ipc_trash_entry,
             ipc::groups::ipc_trash_group,
             ipc::groups::trash_list,

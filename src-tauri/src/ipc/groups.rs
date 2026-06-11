@@ -363,6 +363,138 @@ pub fn move_entry_inner(root: &Path, rel_path: &str, dst_group: &str) -> CmdResu
     Ok(())
 }
 
+// ── rename_entry ────────────────────────────────────────────────────────────
+
+/// `rename_entry(path, new_slug)` — rename the `.md` file at `path` to
+/// `new_slug` within the same group (a slug change; spec 0002 §Identity).
+///
+/// The entry `id` is unchanged (it lives in the file body, not the name) and the
+/// reconciler's rename-detection treats it as a rename, not delete+create.  On a
+/// slug collision within the group the suffix `-2`, `-3`, … is appended.  After
+/// the file move, in-app references — wikilinks `[[old]]` / `[[group/old]]` and
+/// `ref`/`ref[]` frontmatter — are rewritten via the journaled batch machinery.
+///
+/// Reserved names (`_`/`.` prefixes) are rejected.  `new_slug` must be a single
+/// path component.
+#[tauri::command]
+pub fn rename_entry(
+    path: String,
+    new_slug: String,
+    state: State<'_, AppState>,
+) -> CmdResult<String> {
+    let guard = require_open!(state);
+    let lib = guard.as_ref().ok_or_else(IpcError::not_open)?;
+
+    let outcome = rename_entry_inner(&lib.root, &path, &new_slug)?;
+
+    // Rewrite in-app references (wikilinks + ref properties) pointing at the old
+    // slug.  The index still reflects the pre-move state here, which is exactly
+    // what discovery needs to find the referrers.
+    crate::core::journal::rename_slug(
+        &lib.root,
+        &lib.index,
+        &lib.tokens,
+        &outcome.group_path,
+        &outcome.old_slug,
+        &outcome.new_slug,
+    )
+    .map_err(|e| IpcError::io(format!("rename_entry reference rewrite failed: {e}")))?;
+
+    let final_slug = outcome.new_slug.clone();
+    drop(guard);
+    signal_rescan(&state);
+    // Return the actual (possibly collision-suffixed) slug so the caller can
+    // re-select the renamed entry reliably.
+    Ok(final_slug)
+}
+
+/// Result of the filesystem half of a rename: the group the entry lives in, the
+/// old slug, and the final new slug (after any collision suffixing).
+#[derive(Debug)]
+pub struct RenameEntryOutcome {
+    pub group_path: String,
+    pub old_slug: String,
+    pub new_slug: String,
+}
+
+pub fn rename_entry_inner(
+    root: &Path,
+    rel_path: &str,
+    new_slug: &str,
+) -> CmdResult<RenameEntryOutcome> {
+    validate_rel_path(rel_path)?;
+    // `new_slug` is a single component, validated like a group name (no slashes,
+    // not reserved, non-empty).
+    validate_group_name(new_slug)?;
+
+    let src_abs = root.join(rel_path);
+    if !src_abs.exists() {
+        return Err(IpcError::not_found(format!("Entry not found: {rel_path}")));
+    }
+    if !src_abs.is_file() {
+        return Err(IpcError {
+            code: "invalid_argument",
+            message: format!("Not a file: {rel_path}"),
+            detail: None,
+        });
+    }
+
+    let old_slug = src_abs
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| IpcError::io("path has no file stem".to_string()))?
+        .to_string();
+
+    // Group path: everything before the final component (empty = library root).
+    let group_path = match rel_path.rfind('/') {
+        Some(slash) => rel_path[..slash].to_string(),
+        None => String::new(),
+    };
+
+    let parent_abs = src_abs
+        .parent()
+        .ok_or_else(|| IpcError::io("path has no parent".to_string()))?
+        .to_path_buf();
+
+    // No-op when the slug is unchanged.
+    if new_slug == old_slug {
+        return Ok(RenameEntryOutcome {
+            group_path,
+            old_slug: old_slug.clone(),
+            new_slug: old_slug,
+        });
+    }
+
+    // Collision-suffix the new slug: `new_slug`, then `new_slug-2`, `-3`, …
+    let final_slug = unique_slug_in_dir(&parent_abs, new_slug);
+    let new_abs = parent_abs.join(format!("{final_slug}.md"));
+
+    std::fs::rename(&src_abs, &new_abs)
+        .map_err(|e| IpcError::io(format!("Cannot rename entry: {e}")))?;
+
+    Ok(RenameEntryOutcome {
+        group_path,
+        old_slug,
+        new_slug: final_slug,
+    })
+}
+
+/// Return a `.md` slug unique within `dir`: `base`, else `base-2`, `base-3`, …
+/// (spec 0002 §"Filename collisions").
+fn unique_slug_in_dir(dir: &Path, base: &str) -> String {
+    if !dir.join(format!("{base}.md")).exists() {
+        return base.to_string();
+    }
+    let mut n = 2u32;
+    loop {
+        let candidate = format!("{base}-{n}");
+        if !dir.join(format!("{candidate}.md")).exists() {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
 // ── Trash IPC wrappers ────────────────────────────────────────────────────────
 
 /// `TrashManifestDto` — serialisable form of `TrashManifest` for the IPC boundary.
@@ -718,6 +850,93 @@ mod tests {
         assert_eq!(err.code, "not_found");
     }
 
+    // ── rename_entry ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn rename_entry_basic_slug_change() {
+        let fix = Fixture::new();
+        fix.mkdir("work");
+        fix.write("work/old-note.md", b"---\nid: abc\n---\n# Old Note");
+        let out = rename_entry_inner(&fix.root, "work/old-note.md", "new-note").unwrap();
+        assert!(!fix.exists("work/old-note.md"));
+        assert!(fix.exists("work/new-note.md"));
+        assert_eq!(out.group_path, "work");
+        assert_eq!(out.old_slug, "old-note");
+        assert_eq!(out.new_slug, "new-note");
+        // id preserved (lives in the body).
+        let content = std::fs::read_to_string(fix.root.join("work/new-note.md")).unwrap();
+        assert!(content.contains("id: abc"));
+    }
+
+    #[test]
+    fn rename_entry_collision_appends_suffix() {
+        let fix = Fixture::new();
+        fix.mkdir("work");
+        fix.write("work/a.md", b"# A");
+        fix.write("work/target.md", b"# Existing");
+        let out = rename_entry_inner(&fix.root, "work/a.md", "target").unwrap();
+        // Collision → target-2.
+        assert!(fix.exists("work/target-2.md"));
+        assert!(fix.exists("work/target.md"), "existing must be untouched");
+        assert_eq!(out.new_slug, "target-2");
+    }
+
+    #[test]
+    fn rename_entry_collision_increments() {
+        let fix = Fixture::new();
+        fix.mkdir("work");
+        fix.write("work/a.md", b"# A");
+        fix.write("work/target.md", b"# 1");
+        fix.write("work/target-2.md", b"# 2");
+        let out = rename_entry_inner(&fix.root, "work/a.md", "target").unwrap();
+        assert_eq!(out.new_slug, "target-3");
+        assert!(fix.exists("work/target-3.md"));
+    }
+
+    #[test]
+    fn rename_entry_at_root_has_empty_group() {
+        let fix = Fixture::new();
+        fix.write("note.md", b"# N");
+        let out = rename_entry_inner(&fix.root, "note.md", "renamed").unwrap();
+        assert_eq!(out.group_path, "");
+        assert!(fix.exists("renamed.md"));
+    }
+
+    #[test]
+    fn rename_entry_rejects_reserved_slug() {
+        let fix = Fixture::new();
+        fix.write("note.md", b"# N");
+        let err = rename_entry_inner(&fix.root, "note.md", "_secret").unwrap_err();
+        assert_eq!(err.code, "invalid_argument");
+        let err = rename_entry_inner(&fix.root, "note.md", ".hidden").unwrap_err();
+        assert_eq!(err.code, "invalid_argument");
+    }
+
+    #[test]
+    fn rename_entry_rejects_slug_with_slash() {
+        let fix = Fixture::new();
+        fix.write("note.md", b"# N");
+        let err = rename_entry_inner(&fix.root, "note.md", "a/b").unwrap_err();
+        assert_eq!(err.code, "invalid_argument");
+    }
+
+    #[test]
+    fn rename_entry_not_found() {
+        let fix = Fixture::new();
+        let err = rename_entry_inner(&fix.root, "ghost.md", "new").unwrap_err();
+        assert_eq!(err.code, "not_found");
+    }
+
+    #[test]
+    fn rename_entry_noop_same_slug() {
+        let fix = Fixture::new();
+        fix.write("note.md", b"# N");
+        let out = rename_entry_inner(&fix.root, "note.md", "note").unwrap();
+        assert_eq!(out.old_slug, "note");
+        assert_eq!(out.new_slug, "note");
+        assert!(fix.exists("note.md"));
+    }
+
     // ── Trash IPC round-trip ──────────────────────────────────────────────────
 
     // Helper: build an AppState without a real watcher (for trash IPC tests).
@@ -745,7 +964,7 @@ mod tests {
             library_root.clone(),
             event_tx,
         );
-        let (handle, _change_rx) = reconciler.spawn(None::<WatcherHandle>);
+        let (handle, _change_rx, _notify_rx) = reconciler.spawn(None::<WatcherHandle>);
         AppState(Mutex::new(Some(OpenLibrary {
             root: library_root,
             index: query_index,
@@ -885,5 +1104,18 @@ mod security_tests {
         assert!(move_group_inner(root, "work", "/tmp").is_err());
         assert!(rename_group_inner(root, "/abs", "x").is_err());
         assert!(rename_group_inner(root, "../up", "x").is_err());
+    }
+
+    #[test]
+    fn rename_entry_rejects_unsafe_paths() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("note.md"), "x").unwrap();
+        // Absolute / traversal source paths rejected before any fs op.
+        assert!(rename_entry_inner(root, "/etc/hosts", "x").is_err());
+        assert!(rename_entry_inner(root, "../escape.md", "x").is_err());
+        // Reserved / slash-bearing new slug rejected.
+        assert!(rename_entry_inner(root, "note.md", "_meta").is_err());
+        assert!(rename_entry_inner(root, "note.md", "a/b").is_err());
     }
 }

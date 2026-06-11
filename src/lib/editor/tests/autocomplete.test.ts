@@ -120,6 +120,7 @@ function stubIpc(overrides?: {
     rename_group: vi.fn() as never,
     move_group: vi.fn() as never,
     move_entry: vi.fn() as never,
+    rename_entry: vi.fn() as never,
     trash_entry: vi.fn() as never,
     trash_group: vi.fn() as never,
     trash_list: vi.fn() as never,

@@ -176,12 +176,17 @@ impl Reconciler {
     pub fn spawn(
         self,
         watcher: Option<WatcherHandle>,
-    ) -> (ReconcilerHandle, Receiver<ChangeEvent>) {
+    ) -> (
+        ReconcilerHandle,
+        Receiver<ChangeEvent>,
+        Receiver<ReconcileNotification>,
+    ) {
         let needs_full_rescan = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&needs_full_rescan);
 
         let raw_rx = self.raw_rx;
         let (event_tx, event_rx) = crossbeam_channel::unbounded::<ChangeEvent>();
+        let (notify_tx, notify_rx) = crossbeam_channel::unbounded::<ReconcileNotification>();
         let tokens = Arc::clone(&self.tokens);
         let library_root = self.library_root.clone();
 
@@ -194,6 +199,7 @@ impl Reconciler {
             tokens,
             library_root,
             event_tx,
+            notify_tx,
         };
 
         std::thread::Builder::new()
@@ -207,7 +213,7 @@ impl Reconciler {
             needs_full_rescan,
             _watcher: watcher,
         };
-        (handle, event_rx)
+        (handle, event_rx, notify_rx)
     }
 
     /// Get a clone of the raw-event sender (for wiring tests / IPC layer).
@@ -224,6 +230,7 @@ struct WorkerState {
     tokens: Arc<TokenRegistry>,
     library_root: PathBuf,
     event_tx: Sender<ChangeEvent>,
+    notify_tx: Sender<ReconcileNotification>,
 }
 
 /// Debounce window: coalesce events within this duration before processing.
@@ -301,12 +308,14 @@ fn process_batch(
     needs_full_rescan: &AtomicBool,
     batch: &[(PathBuf, RawKind)],
 ) {
+    let mut notifications: Vec<ReconcileNotification> = Vec::new();
     let events = reconcile_path::reconcile_batch(
         &mut state.index,
         &state.tokens,
         &state.library_root,
         batch,
         needs_full_rescan,
+        &mut notifications,
     );
 
     if !events.is_empty() {
@@ -315,6 +324,10 @@ fn process_batch(
 
     for ev in events {
         let _ = state.event_tx.send(ev);
+    }
+
+    for notif in notifications {
+        let _ = state.notify_tx.send(notif);
     }
 }
 
@@ -382,12 +395,14 @@ impl SyncReconciler {
         } else {
             self.library_root.join(path)
         };
+        let mut notifications = Vec::new();
         let events = reconcile_path::reconcile_batch(
             &mut self.index,
             &self.tokens,
             &self.library_root,
             &[(abs, RawKind::CreateOrModify)],
             &self.needs_full_rescan,
+            &mut notifications,
         );
         if !events.is_empty() {
             let _ = self.index.resolve_links();
@@ -402,12 +417,14 @@ impl SyncReconciler {
         } else {
             self.library_root.join(path)
         };
+        let mut notifications = Vec::new();
         let events = reconcile_path::reconcile_batch(
             &mut self.index,
             &self.tokens,
             &self.library_root,
             &[(abs, RawKind::Remove)],
             &self.needs_full_rescan,
+            &mut notifications,
         );
         if !events.is_empty() {
             let _ = self.index.resolve_links();
@@ -420,11 +437,13 @@ impl SyncReconciler {
     /// Walks the tree, reconciles new/changed files, removes deleted entries.
     /// Returns all `ChangeEvent`s produced.
     pub fn full_rescan(&mut self) -> Vec<ChangeEvent> {
+        let mut notifications = Vec::new();
         let events = rescan::full_rescan(
             &mut self.index,
             &self.tokens,
             &self.library_root,
             &self.needs_full_rescan,
+            &mut notifications,
         );
         let _ = self.index.resolve_links();
         events

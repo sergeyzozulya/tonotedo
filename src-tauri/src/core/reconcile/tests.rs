@@ -159,6 +159,7 @@ fn rename_with_same_id_preserves_backlinks() {
         dir.path(),
         &batch,
         &AtomicBool::new(false),
+        &mut Vec::new(),
     );
     rec.index_mut().resolve_links().unwrap();
 
@@ -491,7 +492,7 @@ fn watcher_smoke_test() {
         Reconciler::new_with_watcher(index, tokens, dir.path().to_path_buf(), event_tx)
             .expect("watcher setup");
 
-    let (_handle, recv) = reconciler.spawn(Some(watcher_handle));
+    let (_handle, recv, _notify_rx) = reconciler.spawn(Some(watcher_handle));
 
     // Write a file and wait for the reconciler to process it.
     write_file(
@@ -865,7 +866,7 @@ fn worker_survives_panic_and_processes_next_batch() {
     let (event_tx, _unused) = crossbeam_channel::unbounded();
     let rec = Reconciler::new_without_watcher(index, tokens, dir.path().to_path_buf(), event_tx);
     let raw_tx = rec.raw_sender();
-    let (_handle, recv) = rec.spawn(None);
+    let (_handle, recv, _notify_rx) = rec.spawn(None);
 
     use crate::core::reconcile::RawKind;
 

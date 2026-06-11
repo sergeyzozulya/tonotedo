@@ -34,7 +34,11 @@ use std::sync::Arc;
 
 use crate::core::{fswrite::TokenRegistry, index::Index};
 
-use super::{event::ChangeEvent, reconcile_path::reconcile_batch, RawKind};
+use super::{
+    event::{ChangeEvent, ReconcileNotification},
+    reconcile_path::reconcile_batch,
+    RawKind,
+};
 
 /// Full tree rescan.
 ///
@@ -48,6 +52,7 @@ pub fn full_rescan(
     tokens: &Arc<TokenRegistry>,
     library_root: &Path,
     needs_full_rescan: &AtomicBool,
+    notifications: &mut Vec<ReconcileNotification>,
 ) -> Vec<ChangeEvent> {
     // ── Step 1: walk the tree ────────────────────────────────────────────────
     let md_paths = walk_md_files(library_root);
@@ -69,7 +74,14 @@ pub fn full_rescan(
         .map(|p| (p, RawKind::CreateOrModify))
         .collect();
 
-    let mut events = reconcile_batch(index, tokens, library_root, &batch, needs_full_rescan);
+    let mut events = reconcile_batch(
+        index,
+        tokens,
+        library_root,
+        &batch,
+        needs_full_rescan,
+        notifications,
+    );
 
     // ── Step 3: detect deletions (confirm absence per-path) ──────────────────
     // A ledger row is removed ONLY if its absolute path is genuinely gone.  An
@@ -107,8 +119,14 @@ pub fn full_rescan(
     }
 
     if !removes.is_empty() {
-        let remove_events =
-            reconcile_batch(index, tokens, library_root, &removes, needs_full_rescan);
+        let remove_events = reconcile_batch(
+            index,
+            tokens,
+            library_root,
+            &removes,
+            needs_full_rescan,
+            notifications,
+        );
         events.extend(remove_events);
     }
 
