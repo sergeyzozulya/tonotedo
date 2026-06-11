@@ -208,6 +208,8 @@ pub fn run() {
             ipc::commands2::plugin_settings_set,
             // Phase 6 — schemas (issue #28)
             ipc::commands2::effective_schema,
+            ipc::commands2::get_group_config,
+            ipc::commands2::update_group_config,
             // Phase 6 — group management + trash IPC (issue #28)
             ipc::groups::create_group,
             ipc::groups::rename_group,

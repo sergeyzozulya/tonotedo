@@ -1156,6 +1156,451 @@ fn write_group_md_with_scoped_tags(
         .map_err(|e| IpcError::io(format!("Cannot write {:?}: {e}", path)))
 }
 
+// ── Group config: get / update ────────────────────────────────────────────────
+
+/// DTO that matches `GroupConfigInput` in types.ts.
+///
+/// All fields are optional; absent fields mean "not set in _group.md".
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct GroupConfigDto {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub view: Option<String>,
+    /// Local schema declarations; `Some(empty map)` means schema is explicitly set to {}.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schema: Option<std::collections::HashMap<String, SchemaPropertyDeclDto>>,
+}
+
+/// A single property declaration matching `SchemaPropertyDecl` in types.ts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SchemaPropertyDeclDto {
+    #[serde(rename = "type")]
+    pub prop_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default: Option<serde_json::Value>,
+    #[serde(rename = "enumValues", skip_serializing_if = "Option::is_none")]
+    pub enum_values: Option<Vec<String>>,
+}
+
+/// `get_group_config(group_path)` — read local (non-inherited) group configuration
+/// from `<group_path>/_group.md`.  Missing file → empty config (not an error).
+#[tauri::command]
+pub fn get_group_config(
+    group_path: String,
+    state: State<'_, AppState>,
+) -> CmdResult<GroupConfigDto> {
+    let guard = require_open!(state);
+    let lib = guard.as_ref().ok_or_else(IpcError::not_open)?;
+    get_group_config_inner(&lib.root, &group_path)
+}
+
+pub fn get_group_config_inner(root: &Path, group_path: &str) -> CmdResult<GroupConfigDto> {
+    use crate::core::frontmatter::is_safe_rel_path;
+    if !group_path.is_empty() && !is_safe_rel_path(group_path) {
+        return Err(IpcError::invalid_argument(format!(
+            "Unsafe group path: '{group_path}'"
+        )));
+    }
+
+    let group_md = root.join(group_path).join("_group.md");
+    if !group_md.exists() {
+        return Ok(GroupConfigDto::default());
+    }
+
+    let raw = std::fs::read_to_string(&group_md)
+        .map_err(|e| IpcError::io(format!("Cannot read _group.md: {e}")))?;
+
+    parse_group_config_from_str(&raw)
+}
+
+/// Parse group config fields from `_group.md` text using saphyr.
+fn parse_group_config_from_str(raw: &str) -> CmdResult<GroupConfigDto> {
+    // Extract frontmatter text between the first `---` fence pair.
+    let fm_text = match extract_group_md_frontmatter(raw) {
+        Some(t) => t,
+        None => return Ok(GroupConfigDto::default()),
+    };
+
+    let docs = YamlOwned::load_from_str(&fm_text)
+        .map_err(|_| IpcError::parse("Cannot parse _group.md frontmatter".to_string()))?;
+    let doc = match docs.into_iter().next() {
+        Some(d) => d,
+        None => return Ok(GroupConfigDto::default()),
+    };
+    let mapping = match doc.as_mapping() {
+        Some(m) => m.clone(),
+        None => return Ok(GroupConfigDto::default()),
+    };
+
+    let name = yaml_str_owned(&mapping, "name");
+    let icon = yaml_str_owned(&mapping, "icon");
+    let color = yaml_str_owned(&mapping, "color");
+    let view = yaml_str_owned(&mapping, "view");
+
+    // Parse `schema:` mapping.
+    let schema = mapping
+        .iter()
+        .find(|(k, _)| k.as_str() == Some("schema"))
+        .and_then(|(_, v)| v.as_mapping().cloned())
+        .map(|schema_map| {
+            let mut props = std::collections::HashMap::new();
+            for (k, v) in schema_map.iter() {
+                let prop_name = match k.as_str() {
+                    Some(s) => s.to_string(),
+                    None => continue,
+                };
+                if let Some(prop_map) = v.as_mapping() {
+                    let prop_type = prop_map
+                        .iter()
+                        .find(|(pk, _)| pk.as_str() == Some("type"))
+                        .and_then(|(_, pv)| pv.as_str().map(|s| s.to_string()))
+                        .unwrap_or_else(|| "string".to_string());
+
+                    let default = prop_map
+                        .iter()
+                        .find(|(pk, _)| pk.as_str() == Some("default"))
+                        .and_then(|(_, pv)| {
+                            if let Some(s) = pv.as_str() {
+                                Some(serde_json::Value::String(s.to_string()))
+                            } else if let Some(i) = pv.as_integer() {
+                                serde_json::Number::from_f64(i as f64)
+                                    .map(serde_json::Value::Number)
+                            } else if let Some(f) = pv.as_floating_point() {
+                                serde_json::Number::from_f64(f).map(serde_json::Value::Number)
+                            } else {
+                                pv.as_bool().map(serde_json::Value::Bool)
+                            }
+                        });
+
+                    let enum_values = prop_map
+                        .iter()
+                        .find(|(pk, _)| pk.as_str() == Some("enum_values"))
+                        .and_then(|(_, pv)| pv.as_vec().cloned())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                .collect::<Vec<_>>()
+                        })
+                        .filter(|v| !v.is_empty());
+
+                    props.insert(
+                        prop_name,
+                        SchemaPropertyDeclDto {
+                            prop_type,
+                            default,
+                            enum_values,
+                        },
+                    );
+                }
+            }
+            props
+        });
+
+    Ok(GroupConfigDto {
+        name,
+        icon,
+        color,
+        view,
+        schema,
+    })
+}
+
+/// Extract the YAML frontmatter text from a `_group.md` string (between `---` fences).
+/// Returns `None` when no frontmatter is present.
+///
+/// Uses the same approach as `find_fm_end` to correctly handle CRLF opening fences.
+fn extract_group_md_frontmatter(raw: &str) -> Option<String> {
+    // Reuse find_fm_end which already handles CRLF correctly.
+    let fm_end = find_fm_end(raw)?;
+    // fm_start: offset of first character after the opening fence line.
+    let fm_start = raw.find('\n').map(|n| n + 1).unwrap_or(0);
+    if fm_start <= fm_end {
+        Some(raw[fm_start..fm_end].to_string())
+    } else {
+        Some(String::new())
+    }
+}
+
+/// `update_group_config(group_path, config)` — write local group configuration into
+/// `<group_path>/_group.md`.  Fields present in `config` are written; absent fields
+/// are left unchanged.  Creates `_group.md` if it does not exist.
+#[tauri::command]
+pub fn update_group_config(
+    group_path: String,
+    config: GroupConfigDto,
+    state: State<'_, AppState>,
+) -> CmdResult<()> {
+    let guard = require_open!(state);
+    let lib = guard.as_ref().ok_or_else(IpcError::not_open)?;
+    update_group_config_inner(&lib.root, &group_path, &config)?;
+    // Signal the reconciler so the index picks up schema/meta changes.
+    drop(guard);
+    crate::ipc::groups::signal_rescan_state(&state);
+    Ok(())
+}
+
+pub fn update_group_config_inner(
+    root: &Path,
+    group_path: &str,
+    config: &GroupConfigDto,
+) -> CmdResult<()> {
+    use crate::core::frontmatter::is_safe_rel_path;
+    if !group_path.is_empty() && !is_safe_rel_path(group_path) {
+        return Err(IpcError::invalid_argument(format!(
+            "Unsafe group path: '{group_path}'"
+        )));
+    }
+
+    let group_dir = root.join(group_path);
+    // The group folder must exist (create_group is responsible for creating it).
+    // Exception: library root (group_path == "") always exists.
+    if !group_dir.exists() {
+        return Err(IpcError::not_found(format!(
+            "Group not found: {group_path}"
+        )));
+    }
+
+    let group_md = group_dir.join("_group.md");
+
+    // Read existing file (or start from empty when _group.md is absent).
+    let existing_raw = if group_md.exists() {
+        std::fs::read_to_string(&group_md)
+            .map_err(|e| IpcError::io(format!("Cannot read _group.md: {e}")))?
+    } else {
+        String::new()
+    };
+
+    let new_content = merge_group_config(&existing_raw, config);
+
+    atomic_write(&group_md, new_content.as_bytes())
+        .map_err(|e| IpcError::io(format!("Cannot write _group.md: {e}")))?;
+    Ok(())
+}
+
+/// Build new `_group.md` content by merging `config` into `existing_raw`.
+///
+/// Strategy (line-based, same as `write_group_md_with_scoped_tags`):
+/// 1. Scan the existing frontmatter lines.
+/// 2. Discard any existing `name:`, `icon:`, `color:`, `view:`, `schema:` keys
+///    (including multi-line schema block).
+/// 3. Discard any existing `scoped_tags:` block.
+/// 4. Collect remaining "other" lines (unknown keys, `order:`, etc.).
+/// 5. Reconstruct: write config fields present in `config`, then other lines,
+///    then scoped_tags block, then closing fence + body.
+fn merge_group_config(existing_raw: &str, config: &GroupConfigDto) -> String {
+    // Parse the existing file into sections.
+    let (other_lines, scoped_tags, body) = split_group_md_for_config(existing_raw);
+
+    // Also read existing config fields that are NOT present in the incoming patch.
+    let existing_cfg = parse_group_config_from_str(existing_raw).unwrap_or_default();
+
+    // Merge: new value wins if Some, else keep existing.
+    let name = config.name.as_ref().or(existing_cfg.name.as_ref());
+    let icon = config.icon.as_ref().or(existing_cfg.icon.as_ref());
+    let color = config.color.as_ref().or(existing_cfg.color.as_ref());
+    let view = config.view.as_ref().or(existing_cfg.view.as_ref());
+    let schema = config.schema.as_ref().or(existing_cfg.schema.as_ref());
+
+    let mut fm = String::new();
+
+    // Write config fields in canonical order: name, icon, color, view, then schema.
+    if let Some(v) = name {
+        fm.push_str(&format!("name: {}\n", yaml_quote(v)));
+    }
+    if let Some(v) = icon {
+        fm.push_str(&format!("icon: {}\n", yaml_quote(v)));
+    }
+    if let Some(v) = color {
+        fm.push_str(&format!("color: {}\n", yaml_quote(v)));
+    }
+    if let Some(v) = view {
+        fm.push_str(&format!("view: {}\n", yaml_quote(v)));
+    }
+    if let Some(s) = schema {
+        fm.push_str(&serialize_schema_yaml(s));
+    }
+
+    // Append preserved "other" lines (unknown keys, order, etc.).
+    fm.push_str(&other_lines);
+
+    // Append scoped_tags block.
+    if !scoped_tags.is_empty() {
+        fm.push_str("scoped_tags:\n");
+        for t in &scoped_tags {
+            fm.push_str(&format!("  - tag: {}\n", yaml_quote(&t.tag)));
+            if let Some(d) = &t.description {
+                fm.push_str(&format!("    description: {}\n", yaml_quote(d)));
+            }
+            if let Some(c) = &t.color {
+                fm.push_str(&format!("    color: {}\n", yaml_quote(c)));
+            }
+            if let Some(i) = &t.icon {
+                fm.push_str(&format!("    icon: {}\n", yaml_quote(i)));
+            }
+        }
+    }
+
+    format!("---\n{fm}---\n{body}")
+}
+
+/// Serialize schema as YAML block (indented under `schema:`).
+fn serialize_schema_yaml(
+    schema: &std::collections::HashMap<String, SchemaPropertyDeclDto>,
+) -> String {
+    if schema.is_empty() {
+        return "schema: {}\n".to_string();
+    }
+    let mut out = "schema:\n".to_string();
+    // Sort prop names for deterministic output.
+    let mut names: Vec<&String> = schema.keys().collect();
+    names.sort();
+    for name in names {
+        let decl = &schema[name];
+        out.push_str(&format!("  {}:\n", yaml_quote(name)));
+        out.push_str(&format!("    type: {}\n", yaml_quote(&decl.prop_type)));
+        if let Some(d) = &decl.default {
+            let d_yaml = match d {
+                // String values must be quoted to prevent YAML from re-interpreting
+                // them as booleans, integers, or null on round-trip.
+                serde_json::Value::String(s) => {
+                    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+                }
+                serde_json::Value::Number(n) => n.to_string(),
+                serde_json::Value::Bool(b) => b.to_string(),
+                other => yaml_quote(&other.to_string()),
+            };
+            out.push_str(&format!("    default: {d_yaml}\n"));
+        }
+        if let Some(ev) = &decl.enum_values {
+            if !ev.is_empty() {
+                out.push_str("    enum_values:\n");
+                for val in ev {
+                    out.push_str(&format!("      - {}\n", yaml_quote(val)));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Parse `_group.md` raw text, splitting into:
+/// - `other_lines`: frontmatter lines that are NOT config keys and NOT scoped_tags
+/// - `scoped_tags`: parsed scoped_tags block
+/// - `body`: text after the closing `---\n`
+///
+/// "Config keys" are: `name`, `icon`, `color`, `view`, `schema`.
+fn split_group_md_for_config(raw: &str) -> (String, Vec<ScopedTagDecl>, String) {
+    if !raw.starts_with("---\n") && !raw.starts_with("---\r\n") {
+        // No frontmatter: nothing to preserve, no body.
+        return (String::new(), Vec::new(), String::new());
+    }
+
+    let bytes = raw.as_bytes();
+    let entry = crate::core::frontmatter::Entry::from_bytes(bytes);
+    let body = entry.body.clone();
+
+    let fm_start = raw.find('\n').map(|n| n + 1).unwrap_or(0);
+    let fm_end = find_fm_end(raw);
+    let fm_lines: &str = if let Some(end) = fm_end {
+        &raw[fm_start..end]
+    } else {
+        ""
+    };
+
+    let mut other = String::new();
+    let mut scoped_tags: Vec<ScopedTagDecl> = Vec::new();
+    let mut in_scoped_tags = false;
+    let mut in_config_block = false; // multi-line config key (schema)
+    let mut current_scoped: Option<ScopedTagDecl> = None;
+
+    // Config keys whose entire block (including indented continuations) must be dropped.
+    // Single-line keys: name, icon, color, view.  Multi-line: schema.
+    const SCALAR_CONFIG_KEYS: &[&str] = &["name:", "icon:", "color:", "view:"];
+    const BLOCK_CONFIG_KEYS: &[&str] = &["schema:"];
+
+    for line in fm_lines.lines() {
+        // -- scoped_tags handling --
+        if line == "scoped_tags:" || line == "scoped_tags: []" {
+            in_scoped_tags = true;
+            in_config_block = false;
+            if let Some(t) = current_scoped.take() {
+                scoped_tags.push(t);
+            }
+            continue;
+        }
+        if in_scoped_tags {
+            if line.starts_with("  ") || line.starts_with('\t') {
+                let trimmed = line.trim();
+                if let Some(rest) = trimmed.strip_prefix("- tag:") {
+                    if let Some(t) = current_scoped.take() {
+                        scoped_tags.push(t);
+                    }
+                    current_scoped = Some(ScopedTagDecl {
+                        tag: yaml_unquote(rest.trim()),
+                        description: None,
+                        color: None,
+                        icon: None,
+                    });
+                } else if let Some(c) = current_scoped.as_mut() {
+                    if let Some(rest) = trimmed.strip_prefix("description:") {
+                        c.description = Some(yaml_unquote(rest.trim()));
+                    } else if let Some(rest) = trimmed.strip_prefix("color:") {
+                        c.color = Some(yaml_unquote(rest.trim()));
+                    } else if let Some(rest) = trimmed.strip_prefix("icon:") {
+                        c.icon = Some(yaml_unquote(rest.trim()));
+                    }
+                }
+                continue;
+            }
+            // Non-indented line ends scoped_tags block.
+            in_scoped_tags = false;
+            if let Some(t) = current_scoped.take() {
+                scoped_tags.push(t);
+            }
+        }
+
+        // -- multi-line config block (schema) skip --
+        if in_config_block {
+            if line.starts_with("  ") || line.starts_with('\t') {
+                continue; // part of block config key
+            }
+            in_config_block = false;
+        }
+
+        // -- single-line config key skip --
+        let is_scalar_config = SCALAR_CONFIG_KEYS
+            .iter()
+            .any(|prefix| line.starts_with(prefix));
+        if is_scalar_config {
+            continue;
+        }
+
+        // -- block config key start skip --
+        let is_block_config = BLOCK_CONFIG_KEYS
+            .iter()
+            .any(|prefix| line.starts_with(prefix));
+        if is_block_config {
+            in_config_block = true;
+            continue;
+        }
+
+        // Preserved line.
+        other.push_str(line);
+        other.push('\n');
+    }
+
+    if let Some(t) = current_scoped.take() {
+        scoped_tags.push(t);
+    }
+
+    (other, scoped_tags, body)
+}
+
 // ── Avatar tidy ───────────────────────────────────────────────────────────────
 
 /// DTO returned by `list_orphan_avatars`.
@@ -2808,5 +3253,357 @@ pub mod tests {
         let path =
             attach_file_inner(&fix.root, "notes/entry.md", "photo.jpg", b"data", &folder).unwrap();
         assert_eq!(path, "notes/_media/photo.jpg");
+    }
+
+    // ── get_group_config / update_group_config ────────────────────────────────
+
+    #[test]
+    fn get_group_config_missing_file_returns_empty() {
+        let fix = Fixture::new();
+        std::fs::create_dir_all(fix.root.join("work/atlas")).unwrap();
+        let cfg = get_group_config_inner(&fix.root, "work/atlas").unwrap();
+        assert!(cfg.name.is_none());
+        assert!(cfg.icon.is_none());
+        assert!(cfg.color.is_none());
+        assert!(cfg.view.is_none());
+        assert!(cfg.schema.is_none());
+    }
+
+    #[test]
+    fn update_group_config_creates_group_md() {
+        let fix = Fixture::new();
+        std::fs::create_dir_all(fix.root.join("work/atlas")).unwrap();
+        let config = GroupConfigDto {
+            name: Some("Atlas".to_string()),
+            icon: Some("🗺️".to_string()),
+            color: Some("#4a90d9".to_string()),
+            view: Some("note".to_string()),
+            schema: None,
+        };
+        update_group_config_inner(&fix.root, "work/atlas", &config).unwrap();
+        let path = fix.root.join("work/atlas/_group.md");
+        assert!(path.exists(), "_group.md must be created");
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("name: Atlas"), "name must appear");
+        assert!(content.contains("color: \"#4a90d9\""), "color must appear");
+        assert!(content.contains("view: note"), "view must appear");
+    }
+
+    #[test]
+    fn update_then_get_round_trips_config() {
+        let fix = Fixture::new();
+        std::fs::create_dir_all(fix.root.join("books")).unwrap();
+        let config = GroupConfigDto {
+            name: Some("Books".to_string()),
+            icon: Some("📚".to_string()),
+            color: Some("#6ab06a".to_string()),
+            view: None,
+            schema: Some({
+                let mut m = std::collections::HashMap::new();
+                m.insert(
+                    "author".to_string(),
+                    SchemaPropertyDeclDto {
+                        prop_type: "string".to_string(),
+                        default: None,
+                        enum_values: None,
+                    },
+                );
+                m.insert(
+                    "rating".to_string(),
+                    SchemaPropertyDeclDto {
+                        prop_type: "number".to_string(),
+                        default: None,
+                        enum_values: None,
+                    },
+                );
+                m
+            }),
+        };
+        update_group_config_inner(&fix.root, "books", &config).unwrap();
+        let read_back = get_group_config_inner(&fix.root, "books").unwrap();
+        assert_eq!(read_back.name.as_deref(), Some("Books"));
+        assert_eq!(read_back.icon.as_deref(), Some("📚"));
+        assert_eq!(read_back.color.as_deref(), Some("#6ab06a"));
+        assert!(read_back.view.is_none());
+        let schema = read_back.schema.expect("schema must be present");
+        assert!(schema.contains_key("author"), "author must be in schema");
+        assert_eq!(schema["author"].prop_type, "string");
+        assert!(schema.contains_key("rating"), "rating must be in schema");
+        assert_eq!(schema["rating"].prop_type, "number");
+    }
+
+    #[test]
+    fn partial_update_preserves_absent_fields() {
+        let fix = Fixture::new();
+        std::fs::create_dir_all(fix.root.join("journal")).unwrap();
+        // Write initial config.
+        let initial = GroupConfigDto {
+            name: Some("Journal".to_string()),
+            icon: Some("📓".to_string()),
+            color: Some("#ff0000".to_string()),
+            view: Some("note".to_string()),
+            schema: None,
+        };
+        update_group_config_inner(&fix.root, "journal", &initial).unwrap();
+        // Partial update: only change name.
+        let partial = GroupConfigDto {
+            name: Some("My Journal".to_string()),
+            icon: None,
+            color: None,
+            view: None,
+            schema: None,
+        };
+        update_group_config_inner(&fix.root, "journal", &partial).unwrap();
+        let cfg = get_group_config_inner(&fix.root, "journal").unwrap();
+        assert_eq!(cfg.name.as_deref(), Some("My Journal"), "name updated");
+        assert_eq!(cfg.icon.as_deref(), Some("📓"), "icon preserved");
+        assert_eq!(cfg.color.as_deref(), Some("#ff0000"), "color preserved");
+        assert_eq!(cfg.view.as_deref(), Some("note"), "view preserved");
+    }
+
+    #[test]
+    fn schema_replace_replaces_stored_schema() {
+        let fix = Fixture::new();
+        std::fs::create_dir_all(fix.root.join("work")).unwrap();
+        // Write initial schema.
+        let initial = GroupConfigDto {
+            name: None,
+            icon: None,
+            color: None,
+            view: None,
+            schema: Some({
+                let mut m = std::collections::HashMap::new();
+                m.insert(
+                    "status".to_string(),
+                    SchemaPropertyDeclDto {
+                        prop_type: "string".to_string(),
+                        default: None,
+                        enum_values: None,
+                    },
+                );
+                m
+            }),
+        };
+        update_group_config_inner(&fix.root, "work", &initial).unwrap();
+        // Replace with a different schema.
+        let replacement = GroupConfigDto {
+            name: None,
+            icon: None,
+            color: None,
+            view: None,
+            schema: Some({
+                let mut m = std::collections::HashMap::new();
+                m.insert(
+                    "priority".to_string(),
+                    SchemaPropertyDeclDto {
+                        prop_type: "number".to_string(),
+                        default: Some(serde_json::Value::String("1".to_string())),
+                        enum_values: None,
+                    },
+                );
+                m
+            }),
+        };
+        update_group_config_inner(&fix.root, "work", &replacement).unwrap();
+        let cfg = get_group_config_inner(&fix.root, "work").unwrap();
+        let schema = cfg.schema.expect("schema must be present");
+        assert!(
+            !schema.contains_key("status"),
+            "old schema key must be gone"
+        );
+        assert!(
+            schema.contains_key("priority"),
+            "new schema key must be present"
+        );
+        assert_eq!(
+            schema["priority"].default.as_ref().and_then(|v| v.as_str()),
+            Some("1")
+        );
+    }
+
+    #[test]
+    fn schema_clear_stores_empty_schema() {
+        let fix = Fixture::new();
+        std::fs::create_dir_all(fix.root.join("work")).unwrap();
+        // Write initial schema.
+        let initial = GroupConfigDto {
+            name: None,
+            icon: None,
+            color: None,
+            view: None,
+            schema: Some({
+                let mut m = std::collections::HashMap::new();
+                m.insert(
+                    "status".to_string(),
+                    SchemaPropertyDeclDto {
+                        prop_type: "string".to_string(),
+                        default: None,
+                        enum_values: None,
+                    },
+                );
+                m
+            }),
+        };
+        update_group_config_inner(&fix.root, "work", &initial).unwrap();
+        // Clear by sending empty schema.
+        let clear = GroupConfigDto {
+            name: None,
+            icon: None,
+            color: None,
+            view: None,
+            schema: Some(std::collections::HashMap::new()),
+        };
+        update_group_config_inner(&fix.root, "work", &clear).unwrap();
+        let cfg = get_group_config_inner(&fix.root, "work").unwrap();
+        let schema = cfg
+            .schema
+            .expect("schema field must be present (even if empty)");
+        assert!(schema.is_empty(), "schema must be empty after clear");
+    }
+
+    #[test]
+    fn schema_enum_values_round_trip() {
+        let fix = Fixture::new();
+        std::fs::create_dir_all(fix.root.join("proj")).unwrap();
+        let config = GroupConfigDto {
+            name: None,
+            icon: None,
+            color: None,
+            view: None,
+            schema: Some({
+                let mut m = std::collections::HashMap::new();
+                m.insert(
+                    "status".to_string(),
+                    SchemaPropertyDeclDto {
+                        prop_type: "enum".to_string(),
+                        default: Some(serde_json::Value::String("draft".to_string())),
+                        enum_values: Some(vec![
+                            "draft".to_string(),
+                            "active".to_string(),
+                            "done".to_string(),
+                        ]),
+                    },
+                );
+                m
+            }),
+        };
+        update_group_config_inner(&fix.root, "proj", &config).unwrap();
+        let cfg = get_group_config_inner(&fix.root, "proj").unwrap();
+        let schema = cfg.schema.expect("schema must be present");
+        let status = &schema["status"];
+        assert_eq!(status.prop_type, "enum");
+        assert_eq!(
+            status.default.as_ref().and_then(|v| v.as_str()),
+            Some("draft")
+        );
+        let ev = status
+            .enum_values
+            .as_ref()
+            .expect("enumValues must be present");
+        assert_eq!(ev, &["draft", "active", "done"]);
+    }
+
+    #[test]
+    fn update_preserves_scoped_tags_and_body() {
+        let fix = Fixture::new();
+        std::fs::create_dir_all(fix.root.join("work/atlas")).unwrap();
+        // Write a _group.md with scoped_tags and body.
+        let initial = "---\nname: Old Name\nscoped_tags:\n  - tag: atlas/blocked\n    color: red\n---\n# Group notes\n\nBody here.\n";
+        std::fs::write(fix.root.join("work/atlas/_group.md"), initial).unwrap();
+        // Update only the name.
+        let config = GroupConfigDto {
+            name: Some("Atlas".to_string()),
+            icon: None,
+            color: None,
+            view: None,
+            schema: None,
+        };
+        update_group_config_inner(&fix.root, "work/atlas", &config).unwrap();
+        let content = std::fs::read_to_string(fix.root.join("work/atlas/_group.md")).unwrap();
+        assert!(content.contains("name: Atlas"), "name must be updated");
+        assert!(
+            content.contains("atlas/blocked"),
+            "scoped tag must be preserved"
+        );
+        assert!(
+            content.contains("color: red"),
+            "scoped tag color must be preserved"
+        );
+        assert!(content.contains("# Group notes"), "body must be preserved");
+        assert!(
+            content.contains("Body here."),
+            "body text must be preserved"
+        );
+    }
+
+    #[test]
+    fn update_preserves_unknown_frontmatter_keys() {
+        let fix = Fixture::new();
+        std::fs::create_dir_all(fix.root.join("work")).unwrap();
+        // Write a _group.md with an unknown key.
+        let initial = "---\norder: 2\nplugin_custom_key: foo\n---\n";
+        std::fs::write(fix.root.join("work/_group.md"), initial).unwrap();
+        // Update only icon.
+        let config = GroupConfigDto {
+            name: None,
+            icon: Some("🏢".to_string()),
+            color: None,
+            view: None,
+            schema: None,
+        };
+        update_group_config_inner(&fix.root, "work", &config).unwrap();
+        let content = std::fs::read_to_string(fix.root.join("work/_group.md")).unwrap();
+        assert!(content.contains("order: 2"), "order key must be preserved");
+        assert!(
+            content.contains("plugin_custom_key: foo"),
+            "unknown key must be preserved"
+        );
+        assert!(content.contains("icon:"), "icon must be written");
+    }
+
+    #[test]
+    fn update_group_config_crlf_round_trip() {
+        let fix = Fixture::new();
+        std::fs::create_dir_all(fix.root.join("work/atlas")).unwrap();
+        // Write with CRLF opening fence.
+        let initial =
+            "---\r\nname: Atlas\nscoped_tags:\n  - tag: atlas/blocked\n    color: red\n---\nbody\n";
+        std::fs::write(fix.root.join("work/atlas/_group.md"), initial).unwrap();
+        let config = GroupConfigDto {
+            name: Some("Atlas Updated".to_string()),
+            icon: None,
+            color: None,
+            view: None,
+            schema: None,
+        };
+        update_group_config_inner(&fix.root, "work/atlas", &config).unwrap();
+        let content = std::fs::read_to_string(fix.root.join("work/atlas/_group.md")).unwrap();
+        assert!(
+            content.contains("name: Atlas Updated") || content.contains("name: \"Atlas Updated\""),
+            "name must be updated"
+        );
+        assert!(
+            content.contains("atlas/blocked"),
+            "scoped tag must survive CRLF round-trip"
+        );
+    }
+
+    #[test]
+    fn update_group_config_rejects_traversal_path() {
+        let fix = Fixture::new();
+        let config = GroupConfigDto::default();
+        let err = update_group_config_inner(&fix.root, "../escape", &config).unwrap_err();
+        assert_eq!(err.code, "invalid_argument");
+    }
+
+    #[test]
+    fn update_group_config_rejects_nonexistent_group() {
+        let fix = Fixture::new();
+        let config = GroupConfigDto {
+            name: Some("X".to_string()),
+            ..Default::default()
+        };
+        let err = update_group_config_inner(&fix.root, "nonexistent", &config).unwrap_err();
+        assert_eq!(err.code, "not_found");
     }
 }

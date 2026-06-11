@@ -110,6 +110,11 @@ fn signal_rescan(state: &AppState) {
     }
 }
 
+/// Public version of `signal_rescan` for use by sibling modules (e.g. commands2).
+pub fn signal_rescan_state(state: &AppState) {
+    signal_rescan(state);
+}
+
 /// True when `descendant` is equal to `ancestor` or starts with `ancestor/`.
 fn is_under(ancestor: &str, descendant: &str) -> bool {
     descendant == ancestor || descendant.starts_with(&format!("{ancestor}/"))
