@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { applyArchiveToText, nextDuplicateId } from "../entry-ops.js";
+import { applyArchiveToText, nextDuplicateId, prepareDuplicateText } from "../entry-ops.js";
 
 // ── applyArchiveToText ──────────────────────────────────────────────────────
 
@@ -74,5 +74,51 @@ describe("nextDuplicateId", () => {
   it("works with nested paths", () => {
     const id = nextDuplicateId("projects/work/meeting-notes", new Set());
     expect(id).toBe("projects/work/meeting-notes-2");
+  });
+});
+
+// ── prepareDuplicateText ────────────────────────────────────────────────────
+
+describe("prepareDuplicateText", () => {
+  it("strips id/created/updated from frontmatter and inserts a fresh id", () => {
+    const text =
+      "---\nid: old\ncreated: 2026-01-01T00:00:00Z\nupdated: 2026-01-02T00:00:00Z\ntags: [a]\n---\n\nBody.\n";
+    const result = prepareDuplicateText(text, "inbox/note-2");
+    expect(result).toBe("---\nid: note-2-copy\ntags: [a]\n---\n\nBody.\n");
+  });
+
+  it("leaves body lines that look like frontmatter untouched", () => {
+    const text = "---\ntags: [a]\n---\n\nid: prod-db-key\ncreated: yesterday\n";
+    const result = prepareDuplicateText(text, "note-2");
+    expect(result).toContain("id: prod-db-key");
+    expect(result).toContain("created: yesterday");
+    expect(result.startsWith("---\nid: note-2-copy\ntags: [a]\n---\n")).toBe(true);
+  });
+
+  it("strips a body-less id only from the frontmatter when frontmatter has no id", () => {
+    const text = "---\ntags: [a]\n---\n\nid: keep-me\n";
+    const result = prepareDuplicateText(text, "note-2");
+    expect(result).toContain("id: keep-me");
+  });
+
+  it("prepends a minimal frontmatter block when none exists", () => {
+    const result = prepareDuplicateText("# Just a heading\n", "note-2");
+    expect(result).toBe("---\nid: note-2-copy\n---\n# Just a heading\n");
+  });
+});
+
+// ── applyArchiveToText body-scoping regression ──────────────────────────────
+
+describe("applyArchiveToText frontmatter scoping", () => {
+  it("does not remove an archived-looking line from the body on unarchive", () => {
+    const text = "---\nid: t\narchived: true\n---\n\narchived: notes about archiving\n";
+    const result = applyArchiveToText(text, false);
+    expect(result).toBe("---\nid: t\n---\n\narchived: notes about archiving\n");
+  });
+
+  it("is a no-op on text without a frontmatter block", () => {
+    const text = "archived: body line\n";
+    expect(applyArchiveToText(text, true)).toBe(text);
+    expect(applyArchiveToText(text, false)).toBe(text);
   });
 });

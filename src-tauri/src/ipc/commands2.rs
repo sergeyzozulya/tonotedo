@@ -527,10 +527,21 @@ fn yaml_quote(s: &str) -> String {
                 | '`'
                 | '\n'
                 | '\r'
+                | '\t'
         )
     });
     if needs_quote || s.starts_with(' ') || s.ends_with(' ') {
-        format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+        // Control characters are escaped (not emitted raw) so the quoted scalar
+        // stays on one line — a raw newline inside the quotes would make the
+        // written file unparseable on the next read.
+        format!(
+            "\"{}\"",
+            s.replace('\\', "\\\\")
+                .replace('"', "\\\"")
+                .replace('\n', "\\n")
+                .replace('\r', "\\r")
+                .replace('\t', "\\t")
+        )
     } else {
         s.to_string()
     }
@@ -2908,6 +2919,18 @@ pub mod tests {
         let result = calendar_window_inner(lib, "2026-06-10", "2026-06-20", None).unwrap();
         let item = result.items.iter().find(|i| i.entry_id == "work/sched");
         assert!(item.is_some(), "entry with 'scheduled' prop must appear");
+    }
+
+    // ── yaml_quote ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn yaml_quote_escapes_control_chars() {
+        // Raw newlines inside a quoted scalar make the written file unparseable;
+        // they must be escaped, not emitted verbatim.
+        assert_eq!(yaml_quote("foo\nbar: evil"), "\"foo\\nbar: evil\"");
+        assert_eq!(yaml_quote("a\rb"), "\"a\\rb\"");
+        assert_eq!(yaml_quote("a\tb"), "\"a\\tb\"");
+        assert_eq!(yaml_quote("plain"), "plain");
     }
 
     // ── set_tag: global tags ──────────────────────────────────────────────────

@@ -26,7 +26,7 @@
     initLibrarySettingsFromIpc,
   } from "../commands/settings.js";
   import { buildGroupTree } from "./group-tree.js";
-  import { applyArchiveToText, nextDuplicateId } from "./entry-ops.js";
+  import { applyArchiveToText, nextDuplicateId, prepareDuplicateText } from "./entry-ops.js";
   import { themeStore } from "./theme-store.svelte.js";
   import Sidebar from "./Sidebar.svelte";
   import EntryList from "./EntryList.svelte";
@@ -745,15 +745,9 @@
     // Determine new slug with -2/-3/... suffix.
     const existing = new Set(entries.map((e) => e.id));
     const newId = nextDuplicateId(entryId, existing);
-    // Build new text: strip existing id/created/updated and let write set fresh ones.
-    let text = readResult.value.text;
-    // Remove id, created, updated lines from frontmatter.
-    text = text.replace(/^id:.*\n?/m, "");
-    text = text.replace(/^created:.*\n?/m, "");
-    text = text.replace(/^updated:.*\n?/m, "");
-    // Insert fresh id.
-    const newFrontmatterId = `id: ${newId.split("/").at(-1)}-copy\n`;
-    text = text.replace(/^(---\n)/, `$1${newFrontmatterId}`);
+    // Build new text: strip id/created/updated from the frontmatter block only
+    // and insert a fresh id (body lines that look like frontmatter are untouched).
+    const text = prepareDuplicateText(readResult.value.text, newId);
     const writeResult = await ipc.write_entry(newId, text, "shell-dup-tok");
     if (writeResult.ok) {
       await loadEntries(selectedGroupPath);

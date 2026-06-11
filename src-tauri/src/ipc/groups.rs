@@ -74,6 +74,21 @@ fn validate_group_name(name: &str) -> CmdResult<()> {
             detail: None,
         });
     }
+    // Names become wikilink targets and are substituted verbatim into other
+    // entries on rename — reject characters that would break the [[...|...]]
+    // token structure or smuggle control characters into filenames.
+    if name
+        .chars()
+        .any(|c| matches!(c, '[' | ']' | '|') || c.is_control())
+    {
+        return Err(IpcError {
+            code: "invalid_argument",
+            message: format!(
+                "Name '{name}' must not contain '[', ']', '|', or control characters."
+            ),
+            detail: None,
+        });
+    }
     Ok(())
 }
 
@@ -915,6 +930,19 @@ mod tests {
         assert_eq!(err.code, "invalid_argument");
         let err = rename_entry_inner(&fix.root, "note.md", ".hidden").unwrap_err();
         assert_eq!(err.code, "invalid_argument");
+    }
+
+    #[test]
+    fn rename_entry_rejects_wikilink_breaking_slug() {
+        let fix = Fixture::new();
+        fix.write("note.md", b"# N");
+        for bad in ["x]] [[evil", "a|b", "a]b", "a[b", "a\nb"] {
+            let err = rename_entry_inner(&fix.root, "note.md", bad).unwrap_err();
+            assert_eq!(
+                err.code, "invalid_argument",
+                "slug {bad:?} must be rejected"
+            );
+        }
     }
 
     #[test]
