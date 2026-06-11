@@ -849,6 +849,8 @@ const MOCK_PLUGINS: PluginInfo[] = [
     commands: [],
     views: [],
     strikes: 0,
+    readme:
+      "# Mermaid Renderer\n\nRenders `mermaid` fenced code blocks as diagrams inside the editor.\n\n## Usage\n\nCreate a fenced code block with the language identifier `mermaid`:\n\n````\n```mermaid\ngraph TD\n  A --> B\n```\n````\n\nThe block is replaced with an SVG diagram at read time.\n",
   },
   {
     id: "com.example.gcal",
@@ -864,6 +866,8 @@ const MOCK_PLUGINS: PluginInfo[] = [
     commands: [{ id: "com.example.gcal.sync", title: "Sync Google Calendar" }],
     views: [],
     strikes: 0,
+    readme:
+      "# Google Calendar\n\nSyncs Google Calendar events into the `Calendar/Google/` group as entries.\n\n## Setup\n\n1. Grant the requested permissions.\n2. Enter your API token in the plugin settings.\n3. Run **Sync Google Calendar** from the command palette.\n\n## Privacy\n\nNo data leaves your device except to `www.googleapis.com` via the granted network permission.\n",
   },
 ];
 

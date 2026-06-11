@@ -276,6 +276,8 @@ export interface PluginInfo {
   strikes: number;
   /** Activation-failure detail, when `status === "failed"`. */
   failure?: string;
+  /** The plugin's README (manifest body). Empty string when the manifest has no body. */
+  readme: string;
 }
 
 // ── Command surface (design-0004 §Command surface) ────────────────────────────

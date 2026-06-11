@@ -52,6 +52,10 @@
     onTrashOpen?: () => void;
     /** True when the Trash view is active. */
     trashOpen?: boolean;
+    /** Called when the Plugins row is clicked. */
+    onPluginsOpen?: () => void;
+    /** True when the Plugins view is active. */
+    pluginsOpen?: boolean;
     /** Called after a group is created/renamed/moved so parent can refresh. */
     onGroupsChanged?: () => void;
   }
@@ -71,6 +75,8 @@
     calendarActive = false,
     onTrashOpen,
     trashOpen = false,
+    onPluginsOpen,
+    pluginsOpen = false,
     onGroupsChanged,
   }: Props = $props();
 
@@ -322,6 +328,21 @@
     {/if}
     <span class="sidebar-row-icon">🗑️</span>
     <span class="sidebar-row-label">Trash</span>
+  </div>
+  <!-- Plugins row (#26) -->
+  <div
+    class="sidebar-row sidebar-row--nav"
+    class:sidebar-row--selected={pluginsOpen}
+    role="button"
+    tabindex="0"
+    onclick={() => onPluginsOpen?.()}
+    onkeydown={(e) => (e.key === "Enter" || e.key === " ") && onPluginsOpen?.()}
+  >
+    {#if pluginsOpen}
+      <span class="sidebar-row-accent-bar" aria-hidden="true"></span>
+    {/if}
+    <span class="sidebar-row-icon">🔌</span>
+    <span class="sidebar-row-label">Plugins</span>
   </div>
 
   <!-- People section (issue #22) -->

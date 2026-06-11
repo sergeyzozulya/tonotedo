@@ -45,6 +45,7 @@
   import CalendarView from "../calendar/CalendarView.svelte";
   import SettingsView from "../settings/SettingsView.svelte";
   import TrashView from "./TrashView.svelte";
+  import { PluginManager } from "../plugins/index.js";
   import type { EntrySummary, PersonMeta, TagMeta } from "../ipc/types.js";
   import type { GroupNode } from "./group-tree.js";
   import type { ChangeSpec } from "../panel/frontmatter-view.js";
@@ -214,8 +215,8 @@
 
   // ── Main zone mode ────────────────────────────────────────────────────────────
 
-  /** Which main-zone content to show: editor, person view, tag browser, settings, or trash. */
-  type MainZone = "editor" | "person" | "tags" | "settings" | "trash";
+  /** Which main-zone content to show: editor, person view, tag browser, settings, trash, or plugins. */
+  type MainZone = "editor" | "person" | "tags" | "settings" | "trash" | "plugins";
   let mainZone = $state<MainZone>("editor");
 
   let selectedPersonSlug = $state<string | null>(null);
@@ -458,6 +459,14 @@
     }
   }
 
+  function onPluginsOpen(): void {
+    mainZone = "plugins";
+    if (narrow) {
+      sidebarOpen = false;
+      mobilePush("plugins");
+    }
+  }
+
   async function onTrashEntry(entryId: string): Promise<void> {
     const path = entryId.endsWith(".md") ? entryId : `${entryId}.md`;
     const res = await ipc.trash_entry(path);
@@ -627,6 +636,8 @@
           calendarActive={calendarOpen}
           {onTrashOpen}
           trashOpen={mainZone === "trash"}
+          {onPluginsOpen}
+          pluginsOpen={mainZone === "plugins"}
           onGroupsChanged={() => {
             loadGroups();
             loadEntries(selectedGroupPath);
@@ -750,6 +761,13 @@
         </main>
       {/if}
 
+      <!-- plugins screen (full-screen) -->
+      {#if mobileScreen === "plugins"}
+        <main class="editor-zone">
+          <PluginManager />
+        </main>
+      {/if}
+
       <!-- sidebar screen (full-screen on mobile — accessible via hamburger push too) -->
       {#if mobileScreen === "sidebar"}
         <div style="flex:1;overflow:auto;">
@@ -766,6 +784,8 @@
             tagsOpen={mainZone === "tags"}
             onCalendarOpen={openCalendar}
             calendarActive={calendarOpen}
+            {onPluginsOpen}
+            pluginsOpen={mainZone === "plugins"}
           />
         </div>
       {/if}
@@ -900,6 +920,8 @@
         calendarActive={calendarOpen}
         {onTrashOpen}
         trashOpen={mainZone === "trash"}
+        {onPluginsOpen}
+        pluginsOpen={mainZone === "plugins"}
         onGroupsChanged={() => {
           loadGroups();
           loadEntries(selectedGroupPath);
@@ -948,6 +970,8 @@
               loadEntries(selectedGroupPath);
             }}
           />
+        {:else if mainZone === "plugins"}
+          <PluginManager />
         {:else if selectedEntryId}
           {#if conflictDiskText !== null}
             <ConflictBanner

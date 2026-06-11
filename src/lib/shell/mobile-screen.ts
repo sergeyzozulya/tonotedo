@@ -11,6 +11,7 @@
 //   person      — PersonView full-screen
 //   tags        — TagBrowser full-screen
 //   settings    — Settings full-screen (stub #24)
+//   plugins     — PluginManager full-screen (#26)
 //   properties  — PropertiesPanel bottom sheet (layered on editor)
 //
 // "properties" is a sheet, not a full-screen push, so it has separate open/close
@@ -23,7 +24,8 @@ export type MobileScreen =
   | "calendar"
   | "person"
   | "tags"
-  | "settings";
+  | "settings"
+  | "plugins";
 
 export interface MobileScreenState {
   /** Currently visible full-screen. */
@@ -111,6 +113,7 @@ export function screenTitle(screen: MobileScreen): string {
     person: "Person",
     tags: "Tags",
     settings: "Settings",
+    plugins: "Plugins",
   };
   return labels[screen] ?? screen;
 }

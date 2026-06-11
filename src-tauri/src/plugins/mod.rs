@@ -117,6 +117,8 @@ pub struct PluginInfo {
     /// Per-plugin warnings (e.g. activation failure detail).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failure: Option<String>,
+    /// The plugin's README (manifest body). Empty string when the manifest has no body.
+    pub readme: String,
 }
 
 impl PluginHost {
@@ -264,6 +266,7 @@ impl PluginHost {
                 views,
                 strikes,
                 failure: p.failure.clone(),
+                readme: p.manifest.readme.clone(),
             });
         }
         out
