@@ -19,6 +19,7 @@
     addDays,
     addMonths,
   } from "./date-math.js";
+  import { rescheduleValue } from "./reschedule.js";
   import DayView from "./DayView.svelte";
   import WeekView from "./WeekView.svelte";
   import MonthView from "./MonthView.svelte";
@@ -58,6 +59,14 @@
   });
   // "anchor" date — the current day/week/month being viewed.
   let anchorDate = $state<Date>(new Date());
+
+  /**
+   * Programmatically switch the calendar to a named view.
+   * Called by view.* commands (e.g. view.day, view.week) from the shell-ops agent.
+   */
+  export function switchView(mode: CalendarViewMode): void {
+    viewMode = mode;
+  }
 
   // ── Navigation ────────────────────────────────────────────────────────────────
 
@@ -250,10 +259,12 @@
       // Write an override: add/update the overrides map.
       newText = applyOccurrenceOverride(text, item.occurrenceKey, formatCalDate(toDate));
     } else {
-      // Direct reschedule: update the primary date property.
+      // Direct reschedule: update the primary date property, preserving time for
+      // datetime values and duration for range values (spec 0008 line ~73).
       const dateProp = primaryDateProp();
-      const newDateStr = formatCalDate(toDate);
       const dueRow = model.rows.find((r) => r.key === dateProp);
+      const rawPrev = typeof dueRow?.value === "string" ? dueRow.value : null;
+      const newDateStr = rescheduleValue(rawPrev, toDate);
       let change: ChangeSpec | null = null;
 
       if (dueRow) {

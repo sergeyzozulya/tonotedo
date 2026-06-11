@@ -25,7 +25,14 @@
   import { ipc } from "../ipc/index.js";
   import { savedSearchesStore } from "./saved-searches-store.svelte.js";
   import { parseQuery, matchesQuery } from "./query-parse.js";
-  import type { EntrySummary, TagMeta, GroupMeta, SavedSearchFilter } from "../ipc/types.js";
+  import type {
+    EntrySummary,
+    TagMeta,
+    GroupMeta,
+    PersonMeta,
+    SavedSearchFilter,
+    SortOrder,
+  } from "../ipc/types.js";
 
   // ── Props ─────────────────────────────────────────────────────────────────────
 
@@ -47,9 +54,11 @@
     queryText = "";
     activeTagFilters = [];
     activeGroupFilter = null;
+    activePeopleFilters = [];
     saveNameInput = "";
     savingMode = false;
     focusedIndex = 0;
+    sortOrder = "auto";
     void runSearch();
     void loadMeta();
   }
@@ -62,20 +71,28 @@
 
   let allTags = $state<TagMeta[]>([]);
   let allGroups = $state<GroupMeta[]>([]);
+  let allPeople = $state<PersonMeta[]>([]);
 
   async function loadMeta(): Promise<void> {
-    const [tagsRes, groupsRes] = await Promise.all([ipc.tag_index(), ipc.list_groups()]);
+    const [tagsRes, groupsRes, peopleRes] = await Promise.all([
+      ipc.tag_index(),
+      ipc.list_groups(),
+      ipc.people_index(),
+    ]);
     if (tagsRes.ok) allTags = tagsRes.value;
     if (groupsRes.ok) allGroups = groupsRes.value;
+    if (peopleRes.ok) allPeople = peopleRes.value;
   }
 
   // ── Filter chip state ─────────────────────────────────────────────────────────
 
   let activeTagFilters = $state<string[]>([]);
   let activeGroupFilter = $state<string | null>(null);
+  let activePeopleFilters = $state<string[]>([]);
 
   let tagDropdownOpen = $state(false);
   let groupDropdownOpen = $state(false);
+  let peopleDropdownOpen = $state(false);
 
   function toggleTag(tag: string): void {
     if (activeTagFilters.includes(tag)) {
@@ -102,6 +119,20 @@
     scheduleSearch();
   }
 
+  function togglePerson(slug: string): void {
+    if (activePeopleFilters.includes(slug)) {
+      activePeopleFilters = activePeopleFilters.filter((p) => p !== slug);
+    } else {
+      activePeopleFilters = [...activePeopleFilters, slug];
+    }
+    scheduleSearch();
+  }
+
+  function removePeopleFilter(slug: string): void {
+    activePeopleFilters = activePeopleFilters.filter((p) => p !== slug);
+    scheduleSearch();
+  }
+
   // ── Query input + debounce ────────────────────────────────────────────────────
 
   let queryText = $state("");
@@ -116,6 +147,20 @@
     searchTimer = setTimeout(() => void runSearch(), 80);
   }
 
+  // ── Sort control ──────────────────────────────────────────────────────────────
+
+  // "relevance" is the default for text queries; "modified_desc" for empty queries.
+  // The user can override to any of the four options.
+  let sortOrder = $state<SortOrder | "auto">("auto");
+
+  /** Resolve the effective sort order to pass to the IPC layer. */
+  function effectiveSort(): SortOrder {
+    if (sortOrder === "auto") {
+      return queryText.trim() ? "relevance" : "modified_desc";
+    }
+    return sortOrder;
+  }
+
   // ── Results ───────────────────────────────────────────────────────────────────
 
   let results = $state<EntrySummary[]>([]);
@@ -128,14 +173,15 @@
   async function runSearch(): Promise<void> {
     searching = true;
     try {
-      const filters: { tags?: string[]; group?: string } = {};
+      const filters: { tags?: string[]; group?: string; people?: string[] } = {};
       if (activeTagFilters.length > 0) filters.tags = activeTagFilters;
       if (activeGroupFilter) filters.group = activeGroupFilter;
+      if (activePeopleFilters.length > 0) filters.people = activePeopleFilters;
 
       const res = await ipc.search({
         text: queryText.trim(),
         filters: Object.keys(filters).length > 0 ? filters : undefined,
-        sort: queryText.trim() ? "relevance" : "modified_desc",
+        sort: effectiveSort(),
       });
 
       if (res.ok) {
@@ -155,11 +201,31 @@
           items = items.filter((e) => matchesQuery(e.title + " " + e.group, parsed));
         }
 
+        // Client-side: people filter (any-of within the chip).
+        if (activePeopleFilters.length > 0) {
+          items = items.filter((e) => activePeopleFilters.some((p) => e.people.includes(p)));
+        }
+
+        // Client-side: sort override for non-IPC-supported orderings.
+        const eff = effectiveSort();
+        if (eff === "title_asc") {
+          items = [...items].sort((a, b) => a.title.localeCompare(b.title));
+        } else if (eff === "modified_asc") {
+          items = [...items].sort((a, b) => a.modifiedAt.localeCompare(b.modifiedAt));
+        } else if (eff === "modified_desc" && sortOrder !== "auto") {
+          items = [...items].sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt));
+        }
+
         // Cap
         if (items.length > RESULTS_CAP) items = items.slice(0, RESULTS_CAP);
 
-        // For recents (empty query), limit to top 50
-        if (!queryText.trim() && activeTagFilters.length === 0 && !activeGroupFilter) {
+        // For recents (empty query + no chips), limit to top 50
+        if (
+          !queryText.trim() &&
+          activeTagFilters.length === 0 &&
+          !activeGroupFilter &&
+          activePeopleFilters.length === 0
+        ) {
           items = items.slice(0, RECENTS_LIMIT);
         }
 
@@ -175,9 +241,10 @@
 
   function onKeydown(e: KeyboardEvent): void {
     if (e.key === "Escape") {
-      if (tagDropdownOpen || groupDropdownOpen) {
+      if (tagDropdownOpen || groupDropdownOpen || peopleDropdownOpen) {
         tagDropdownOpen = false;
         groupDropdownOpen = false;
+        peopleDropdownOpen = false;
       } else {
         close();
       }
@@ -256,6 +323,9 @@
     if (activeGroupFilter) {
       filters.push({ kind: "group", path: activeGroupFilter });
     }
+    if (activePeopleFilters.length > 0) {
+      filters.push({ kind: "people", slugs: [...activePeopleFilters] });
+    }
 
     await savedSearchesStore.save(name, queryText, filters);
     savingMode = false;
@@ -269,10 +339,12 @@
     queryText = s.text;
     activeTagFilters = [];
     activeGroupFilter = null;
+    activePeopleFilters = [];
 
     for (const f of s.filters) {
       if (f.kind === "tag") activeTagFilters = [...f.values];
       else if (f.kind === "group") activeGroupFilter = f.path;
+      else if (f.kind === "people") activePeopleFilters = [...f.slugs];
     }
 
     void runSearch();
@@ -442,15 +514,85 @@
           </span>
         {/if}
 
-        <span class="add-filter-hint" aria-hidden="true">+ filter</span>
+        <!-- PEOPLE chip -->
+        <div class="chip-wrapper">
+          <button
+            class="filter-chip"
+            class:filter-chip--active={activePeopleFilters.length > 0}
+            onclick={() => {
+              peopleDropdownOpen = !peopleDropdownOpen;
+              tagDropdownOpen = false;
+              groupDropdownOpen = false;
+            }}
+            aria-haspopup="listbox"
+            aria-expanded={peopleDropdownOpen}
+          >
+            <span class="chip-key">PEOPLE:</span>
+            {#if activePeopleFilters.length > 0}
+              {activePeopleFilters.join(", ")}
+            {:else}
+              any
+            {/if}
+            <span class="chip-chevron">▾</span>
+          </button>
+
+          {#if peopleDropdownOpen}
+            <div class="chip-dropdown" role="listbox" aria-label="Filter by person">
+              {#each allPeople as person (person.slug)}
+                <button
+                  class="chip-option"
+                  class:chip-option--selected={activePeopleFilters.includes(person.slug)}
+                  role="option"
+                  aria-selected={activePeopleFilters.includes(person.slug)}
+                  onclick={() => togglePerson(person.slug)}
+                >
+                  <span class="chip-option-person">@{person.slug}</span>
+                  {#if person.displayName !== person.slug}
+                    <span class="chip-option-person-name">{person.displayName}</span>
+                  {/if}
+                  <span class="chip-option-count">{person.count}</span>
+                </button>
+              {/each}
+              {#if allPeople.length === 0}
+                <span class="chip-option chip-option--empty">No people</span>
+              {/if}
+            </div>
+          {/if}
+        </div>
+
+        <!-- Active people chips (dismissible) -->
+        {#each activePeopleFilters as slug (slug)}
+          <span class="active-chip">
+            <span class="active-chip-key">PEOPLE:</span>@{slug}<button
+              class="active-chip-remove"
+              aria-label="Remove person filter {slug}"
+              onclick={() => removePeopleFilter(slug)}>×</button
+            >
+          </span>
+        {/each}
       </div>
+    </div>
+
+    <!-- Sort control -->
+    <div class="search-sort-bar">
+      <span class="sort-label">sort</span>
+      {#each [["auto", queryText.trim() ? "relevance" : "modified"], ["modified_desc", "updated ↓"], ["modified_asc", "updated ↑"], ["title_asc", "title"]] as const as [val, label] (val)}
+        <button
+          class="sort-btn"
+          class:sort-btn--active={sortOrder === val}
+          onclick={() => {
+            sortOrder = val;
+            scheduleSearch();
+          }}>{label}</button
+        >
+      {/each}
     </div>
 
     <!-- Results list -->
     <div class="search-results" role="listbox" aria-label="Search results">
       {#if results.length === 0 && !searching}
         <div class="search-empty">
-          {#if queryText.trim() || activeTagFilters.length > 0 || activeGroupFilter}
+          {#if queryText.trim() || activeTagFilters.length > 0 || activeGroupFilter || activePeopleFilters.length > 0}
             No entries match your search.
           {:else}
             Start typing to search, or browse recent entries above.
@@ -497,7 +639,7 @@
           {results.length}{results.length >= RESULTS_CAP ? "+" : ""} result{results.length === 1
             ? ""
             : "s"}
-        {:else if !queryText.trim() && activeTagFilters.length === 0 && !activeGroupFilter}
+        {:else if !queryText.trim() && activeTagFilters.length === 0 && !activeGroupFilter && activePeopleFilters.length === 0}
           Recent entries
         {:else}
           No results
@@ -737,15 +879,6 @@
     color: var(--tnd-text);
   }
 
-  /* + filter placeholder */
-  .add-filter-hint {
-    font-size: 11.5px;
-    color: var(--tnd-text-faint);
-    padding: 3px 8px;
-    border: 1px dashed var(--tnd-line);
-    font-family: var(--tnd-font-ui);
-  }
-
   /* Dropdown panel */
   .chip-dropdown {
     position: absolute;
@@ -812,6 +945,67 @@
     font-size: 11px;
     color: var(--tnd-text-faint);
     font-variant-numeric: tabular-nums;
+  }
+
+  /* ── Sort bar ────────────────────────────────────────────────────────────── */
+
+  .search-sort-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 22px 8px;
+    border-bottom: 1px solid var(--tnd-line);
+    flex-shrink: 0;
+  }
+
+  .sort-label {
+    font-size: 10.5px;
+    color: var(--tnd-text-faint);
+    font-family: var(--tnd-font-ui);
+    margin-right: 2px;
+  }
+
+  .sort-btn {
+    font-size: 11px;
+    font-family: var(--tnd-font-ui);
+    color: var(--tnd-text-muted);
+    background: none;
+    border: 1px solid transparent;
+    border-radius: var(--tnd-tag-radius);
+    padding: 2px 7px;
+    cursor: pointer;
+    transition:
+      background 0.1s,
+      color 0.1s,
+      border-color 0.1s;
+  }
+
+  .sort-btn:hover {
+    border-color: var(--tnd-line-strong);
+    color: var(--tnd-text);
+  }
+
+  .sort-btn--active {
+    border-color: var(--tnd-accent);
+    color: var(--tnd-accent-text);
+    font-weight: 600;
+    background: var(--tnd-accent-soft);
+  }
+
+  /* Person-specific chip option layout */
+  .chip-option-person {
+    font-family: var(--tnd-font-mono);
+    font-size: 12px;
+    flex-shrink: 0;
+  }
+
+  .chip-option-person-name {
+    font-size: 11.5px;
+    color: var(--tnd-text-faint);
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   /* ── Results ─────────────────────────────────────────────────────────────── */
@@ -984,7 +1178,9 @@
   :global([data-tnd-theme="mono"]) .result-tag,
   :global([data-tnd-theme="mono"]) .search-count,
   :global([data-tnd-theme="mono"]) .save-btn,
-  :global([data-tnd-theme="mono"]) .chip-option {
+  :global([data-tnd-theme="mono"]) .chip-option,
+  :global([data-tnd-theme="mono"]) .sort-btn,
+  :global([data-tnd-theme="mono"]) .sort-label {
     font-family: var(--tnd-font-mono);
   }
 

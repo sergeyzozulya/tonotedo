@@ -222,7 +222,10 @@ export interface GroupConfigInput {
  * The `kind` discriminator future-proofs the schema — new chip types can be
  * added without migrating existing `_searches.md` files (spec 0009).
  */
-export type SavedSearchFilter = { kind: "tag"; values: string[] } | { kind: "group"; path: string };
+export type SavedSearchFilter =
+  | { kind: "tag"; values: string[] }
+  | { kind: "group"; path: string }
+  | { kind: "people"; slugs: string[] };
 
 /** A persisted search combining free-text and chip state (spec 0009). */
 export interface SavedSearch {
