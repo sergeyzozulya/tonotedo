@@ -161,9 +161,7 @@ describe("initLibrarySettingsFromIpc", () => {
 
   it("preserves unknown keys verbatim", async () => {
     const ipc = makeIpc({
-      settings_get_library: vi.fn(async () =>
-        ok<Record<string, unknown>>({ custom_flag: true }),
-      ),
+      settings_get_library: vi.fn(async () => ok<Record<string, unknown>>({ custom_flag: true })),
     });
     await initLibrarySettingsFromIpc(ipc);
 
