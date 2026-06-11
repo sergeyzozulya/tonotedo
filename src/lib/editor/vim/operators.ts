@@ -59,15 +59,18 @@ export function deleteLine(view: EditorView): boolean {
   // the preceding newline instead so we don't leave a stray blank line.
   let from = line.from;
   let to = Math.min(state.doc.length, line.to + 1);
+  let cursorAt = from; // post-change cursor: start of the line that takes this position
   if (line.number === state.doc.lines && line.from > 0) {
+    // Last line: swallow the preceding newline so no stray blank remains.
+    // The preceding newline is at line.from - 1; after deletion the doc ends at
+    // line.from - 2, so the cursor must land one position back (the new last char).
     from = line.from - 1;
     to = line.to;
+    cursorAt = Math.max(0, from - 1);
   }
   view.dispatch({
     changes: { from, to },
-    // CM maps the selection through the change; landing at `from` puts the
-    // cursor at the start of whatever line now occupies this position.
-    selection: EditorSelection.cursor(from),
+    selection: EditorSelection.cursor(cursorAt),
   });
   return true;
 }

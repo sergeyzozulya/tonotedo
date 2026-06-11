@@ -176,6 +176,14 @@ describe("operators", () => {
     expect(doc()).toBe("one\nthree");
   });
 
+  it("dd on the last line leaves cursor on the new last char (not past it)", () => {
+    mount("abc\ndef", true, 4); // on "def"
+    type("dd");
+    expect(doc()).toBe("abc");
+    // cursor must be on 'c' (position 2), not past the end (position 3)
+    expect(head()).toBe(2);
+  });
+
   it("yy then p pastes the line below", () => {
     mount("one\ntwo", true, 0); // on "one"
     type("yy");
