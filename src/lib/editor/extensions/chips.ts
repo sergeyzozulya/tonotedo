@@ -102,24 +102,141 @@ function headInRange(state: EditorState, from: number, to: number): boolean {
   return false;
 }
 
-// ── Widget helpers ────────────────────────────────────────────────────────────
+// ── Global style injection ────────────────────────────────────────────────────
+//
+// CM6's baseTheme / theme APIs scope all selectors under the editor root class,
+// so they cannot reference ancestor attributes like [data-tnd-theme] on <html>.
+// We inject one global <style> element (singleton, lazy) for the per-theme chip
+// rules, following the same cascade pattern as EntryList.svelte's :global() CSS.
 
-const COLOR_NAMES = ["slate", "red", "amber", "green", "teal", "blue", "violet", "pink"] as const;
-type ColorName = (typeof COLOR_NAMES)[number];
+let _globalStyleInjected = false;
 
-function isColorName(s: string): s is ColorName {
-  return (COLOR_NAMES as readonly string[]).includes(s);
+function ensureChipsGlobalStyle(): void {
+  if (_globalStyleInjected || typeof document === "undefined") return;
+  _globalStyleInjected = true;
+
+  const css = `
+/* ── ToNoteDo inline chip styles (injected by chips.ts) ── */
+
+/* ── Tag chips ────────────────────────────────────────────────────────────── */
+
+/* Default / paper / editorial: hash — accent-text, ui font, weight 600 */
+.cm-tnd-chip-tag {
+  color: var(--tnd-accent-text);
+  font-family: var(--tnd-font-ui);
+  font-weight: 600;
+  background: transparent;
+  border-radius: 0;
+  padding: 0;
 }
 
-function chipStyle(color: string): { fg: string; bg: string } {
-  if (isColorName(color)) {
-    return {
-      fg: `var(--tnd-chip-${color}-fg, #333)`,
-      bg: `var(--tnd-chip-${color}-bg, rgba(0,0,0,0.07))`,
-    };
-  }
-  // Hex escape-hatch: render verbatim.
-  return { fg: color, bg: `${color}22` };
+/* Mono → bracket: mono font, accent-text, weight 600 */
+[data-tnd-theme="mono"] .cm-tnd-chip-tag {
+  font-family: var(--tnd-font-mono);
+}
+
+/* Editorial → caps: text color, mono font, small uppercase, hairline underline, no # */
+[data-tnd-theme="editorial"] .cm-tnd-chip-tag {
+  color: var(--tnd-text);
+  font-family: var(--tnd-font-mono);
+  font-size: 0.74em;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--tnd-line-strong);
+  padding-bottom: 1px;
+}
+[data-tnd-theme="editorial"] .cm-tnd-chip-tag-hash {
+  display: none;
+}
+
+/* Fog + Soft → pill: panel2 bg + border + tag-radius, muted text, faded hash */
+[data-tnd-theme="fog"] .cm-tnd-chip-tag,
+[data-tnd-theme="soft"] .cm-tnd-chip-tag {
+  background: var(--tnd-panel2);
+  color: var(--tnd-text-muted);
+  border: 1px solid var(--tnd-line);
+  border-radius: var(--tnd-tag-radius);
+  padding: 1px 8px;
+  gap: 2px;
+  font-size: 0.82em;
+}
+[data-tnd-theme="fog"] .cm-tnd-chip-tag-hash,
+[data-tnd-theme="soft"] .cm-tnd-chip-tag-hash {
+  opacity: 0.5;
+}
+
+/* ── Mention chips ─────────────────────────────────────────────────────────── */
+
+/* Default: accent-soft pill, accent-text, ui font */
+.cm-tnd-chip-mention {
+  background: var(--tnd-accent-soft);
+  color: var(--tnd-accent-text);
+  font-family: var(--tnd-font-ui);
+  font-weight: 600;
+  font-size: 0.92em;
+  border-radius: 999px;
+  padding: 1px 7px 1px 3px;
+  margin: 0 1px;
+  vertical-align: -3px;
+}
+
+/* Mono → no pill, @name mono */
+[data-tnd-theme="mono"] .cm-tnd-chip-mention {
+  background: transparent;
+  font-family: var(--tnd-font-mono);
+  border-radius: 0;
+  padding: 0;
+  margin: 0;
+  vertical-align: baseline;
+}
+
+/* Avatar: size + shape */
+.cm-tnd-chip-mention .cm-tnd-chip-avatar {
+  width: 1em;
+  height: 1em;
+  border-radius: 50%;
+  background: var(--tnd-accent-soft);
+  color: var(--tnd-accent-text);
+}
+[data-tnd-theme="mono"] .cm-tnd-chip-mention .cm-tnd-chip-avatar {
+  display: none;
+}
+
+/* ── Wikilink chips ─────────────────────────────────────────────────────────── */
+
+/* Default: accent-text + 1.5px accent-soft bottom border */
+.cm-tnd-chip-wikilink {
+  color: var(--tnd-accent-text);
+  font-family: var(--tnd-font-ui);
+  font-weight: 600;
+  background: transparent;
+  padding: 0;
+  border-radius: 0;
+  text-decoration: none;
+  border-bottom: 1.5px solid var(--tnd-accent-soft);
+}
+
+/* Mono → [[link]] raw mono style, no border */
+[data-tnd-theme="mono"] .cm-tnd-chip-wikilink {
+  font-family: var(--tnd-font-mono);
+  border-bottom: none;
+  color: var(--tnd-accent-text);
+}
+
+/* Unresolved: faded */
+.cm-tnd-chip-wikilink--unresolved {
+  opacity: 0.55;
+  border-bottom-style: dashed;
+}
+[data-tnd-theme="mono"] .cm-tnd-chip-wikilink--unresolved {
+  border-bottom: none;
+}
+`;
+
+  const style = document.createElement("style");
+  style.setAttribute("data-tnd-chips", "1");
+  style.textContent = css;
+  document.head.appendChild(style);
 }
 
 // ── Tag chip ──────────────────────────────────────────────────────────────────
@@ -142,18 +259,21 @@ class TagChipWidget extends WidgetType {
   }
 
   toDOM(): HTMLElement {
-    const color = this.meta?.color ?? "slate";
-    const { fg, bg } = chipStyle(color);
+    ensureChipsGlobalStyle();
 
     const el = document.createElement("span");
     el.className = "cm-tnd-chip cm-tnd-chip-tag";
-    el.style.color = fg;
-    el.style.backgroundColor = bg;
 
-    const label = document.createElement("span");
-    label.className = "cm-tnd-chip-label";
-    label.textContent = `#${this.slug}`;
-    el.appendChild(label);
+    // Hash sub-span — CSS hides it for caps (editorial) and fades it for pill themes.
+    const hash = document.createElement("span");
+    hash.className = "cm-tnd-chip-tag-hash";
+    hash.textContent = "#";
+    el.appendChild(hash);
+
+    const name = document.createElement("span");
+    name.className = "cm-tnd-chip-tag-name";
+    name.textContent = this.slug;
+    el.appendChild(name);
 
     if (this.onClick) {
       const slug = this.slug;
@@ -195,20 +315,14 @@ class MentionChipWidget extends WidgetType {
   }
 
   toDOM(): HTMLElement {
-    // Use the person's color token when available, otherwise fall back to blue.
-    const color = this.meta?.color ?? "blue";
-    const { fg, bg } = chipStyle(color);
+    ensureChipsGlobalStyle();
 
     const el = document.createElement("span");
     el.className = "cm-tnd-chip cm-tnd-chip-mention";
-    el.style.color = fg;
-    el.style.backgroundColor = bg;
 
-    // Avatar / initial circle.
+    // Avatar / initial circle (hidden in Mono via CSS).
     const avatar = document.createElement("span");
     avatar.className = "cm-tnd-chip-avatar";
-    avatar.style.backgroundColor = bg;
-    avatar.style.color = fg;
 
     if (this.avatarSrc) {
       const img = document.createElement("img");
@@ -235,6 +349,8 @@ class MentionChipWidget extends WidgetType {
 
     const label = document.createElement("span");
     label.className = "cm-tnd-chip-label";
+    // In Mono theme, render as @name (mono, no pill); CSS handles the style.
+    // We always use displayName when available, fallback to @slug.
     label.textContent = this.meta?.displayName ?? `@${this.slug}`;
     el.appendChild(label);
 
@@ -279,12 +395,17 @@ class WikilinkChipWidget extends WidgetType {
   }
 
   toDOM(): HTMLElement {
+    ensureChipsGlobalStyle();
+
     const el = document.createElement("span");
     el.className = this.resolved
       ? "cm-tnd-chip cm-tnd-chip-wikilink"
       : "cm-tnd-chip cm-tnd-chip-wikilink cm-tnd-chip-wikilink--unresolved";
 
     // Prefer explicit display text, then resolved title, then raw target.
+    // In Mono theme, CSS makes this look like [[label]] via font; the raw text
+    // here is still just the label (the [[ ]] brackets are in the raw doc text
+    // which cursor-reveal shows when the cursor enters the token).
     const label = this.displayText ?? this.resolvedTitle ?? this.target;
     const text = document.createElement("span");
     text.className = "cm-tnd-chip-label";
@@ -569,15 +690,17 @@ export function chips(config: ChipConfig): import("@codemirror/state").Extension
 }
 
 // ── CSS theme ─────────────────────────────────────────────────────────────────
+//
+// Only structural / layout rules here. Color, font, and per-theme overrides
+// live in the global stylesheet injected by ensureChipsGlobalStyle() above,
+// which uses [data-tnd-theme] attribute selectors on <html> — the same pattern
+// as EntryList.svelte's :global([data-tnd-theme="..."]) CSS.
 
 export const chipsTheme = EditorView.baseTheme({
   ".cm-tnd-chip": {
     display: "inline-flex",
     alignItems: "center",
     gap: "3px",
-    borderRadius: "4px",
-    padding: "0 5px",
-    fontSize: "0.88em",
     lineHeight: "1.5",
     verticalAlign: "baseline",
     whiteSpace: "nowrap",
@@ -587,12 +710,12 @@ export const chipsTheme = EditorView.baseTheme({
     display: "inline-flex",
     alignItems: "center",
     justifyContent: "center",
-    width: "1.1em",
-    height: "1.1em",
+    width: "1em",
+    height: "1em",
     borderRadius: "50%",
     overflow: "hidden",
     flexShrink: "0",
-    fontSize: "0.75em",
+    fontSize: "0.82em",
     fontWeight: "600",
   },
   ".cm-tnd-chip-avatar-img": {
@@ -602,15 +725,6 @@ export const chipsTheme = EditorView.baseTheme({
   },
   ".cm-tnd-chip-avatar-initial": {
     lineHeight: "1",
-  },
-  ".cm-tnd-chip-wikilink": {
-    textDecoration: "underline",
-    textDecorationStyle: "dotted",
-    textUnderlineOffset: "2px",
-  },
-  ".cm-tnd-chip-wikilink--unresolved": {
-    opacity: "0.55",
-    textDecorationStyle: "dashed",
   },
   ".cm-tnd-chip-label": {
     lineHeight: "inherit",
