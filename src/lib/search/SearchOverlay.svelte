@@ -304,10 +304,31 @@
     tabindex="-1"
     onkeydown={onKeydown}
   >
-    <!-- Header: chips + input row -->
+    <!-- Header: query input row + chip filters -->
     <div class="search-header">
+      <!-- Search input -->
+      <div class="search-input-row">
+        <span class="search-icon" aria-hidden="true">⌕</span>
+        <input
+          bind:this={inputEl}
+          class="search-input"
+          type="search"
+          placeholder="Search entries…"
+          autocomplete="off"
+          spellcheck="false"
+          bind:value={queryText}
+          oninput={onInput}
+        />
+        {#if searching}
+          <span class="search-spinner" aria-label="Searching…">…</span>
+        {/if}
+        <kbd class="search-esc-hint">esc</kbd>
+      </div>
+
       <!-- Chip bar -->
       <div class="search-chips">
+        <span class="chips-label">filters</span>
+
         <!-- TAG chip -->
         <div class="chip-wrapper">
           <button
@@ -320,11 +341,11 @@
             aria-haspopup="listbox"
             aria-expanded={tagDropdownOpen}
           >
-            <span class="chip-icon">#</span>
+            <span class="chip-key">TAG:</span>
             {#if activeTagFilters.length > 0}
               {activeTagFilters.join(", ")}
             {:else}
-              Tag
+              any
             {/if}
             <span class="chip-chevron">▾</span>
           </button>
@@ -355,8 +376,7 @@
         <!-- Active tag chips (dismissible) -->
         {#each activeTagFilters as tag (tag)}
           <span class="active-chip">
-            #{tag}
-            <button
+            <span class="active-chip-key">TAG:</span>{tag}<button
               class="active-chip-remove"
               aria-label="Remove tag filter {tag}"
               onclick={() => removeTagFilter(tag)}>×</button
@@ -376,11 +396,11 @@
             aria-haspopup="listbox"
             aria-expanded={groupDropdownOpen}
           >
-            <span class="chip-icon">⊞</span>
+            <span class="chip-key">GROUP:</span>
             {#if activeGroupFilter}
               {activeGroupFilter}
             {:else}
-              Group
+              any
             {/if}
             <span class="chip-chevron">▾</span>
           </button>
@@ -414,33 +434,15 @@
 
         {#if activeGroupFilter}
           <span class="active-chip">
-            ⊞ {activeGroupFilter}
-            <button
+            <span class="active-chip-key">GROUP:</span>{activeGroupFilter}<button
               class="active-chip-remove"
               aria-label="Remove group filter"
               onclick={clearGroupFilter}>×</button
             >
           </span>
         {/if}
-      </div>
 
-      <!-- Search input -->
-      <div class="search-input-row">
-        <span class="search-icon" aria-hidden="true">⌕</span>
-        <input
-          bind:this={inputEl}
-          class="search-input"
-          type="search"
-          placeholder="Search entries…"
-          autocomplete="off"
-          spellcheck="false"
-          bind:value={queryText}
-          oninput={onInput}
-        />
-        {#if searching}
-          <span class="search-spinner" aria-label="Searching…">…</span>
-        {/if}
-        <kbd class="search-esc-hint">esc</kbd>
+        <span class="add-filter-hint" aria-hidden="true">+ filter</span>
       </div>
     </div>
 
@@ -475,12 +477,14 @@
               </span>
               <span class="result-age">{formatAge(entry.modifiedAt)}</span>
             </div>
-            <div class="result-meta">
-              <span class="result-group">{entry.group}</span>
-              {#each entry.tags.slice(0, 4) as tag (tag)}
-                <span class="result-tag">#{tag}</span>
-              {/each}
-            </div>
+            <div class="result-group">{entry.group}</div>
+            {#if entry.tags.length > 0}
+              <div class="result-tags">
+                {#each entry.tags.slice(0, 4) as tag (tag)}
+                  <span class="result-tag">#{tag}</span>
+                {/each}
+              </div>
+            {/if}
           </button>
         {/each}
       {/if}
@@ -543,9 +547,8 @@
   .search-backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.38);
+    background: rgba(0, 0, 0, 0.5);
     z-index: 400;
-    /* Visually distinct from the palette backdrop — slightly lighter */
   }
 
   /* ── Modal ───────────────────────────────────────────────────────────────── */
@@ -561,20 +564,84 @@
     flex-direction: column;
     background: var(--tnd-panel);
     border: 1px solid var(--tnd-line-strong);
-    border-radius: 10px;
+    border-radius: var(--tnd-radius);
     box-shadow:
       var(--tnd-shadow),
-      0 20px 60px rgba(0, 0, 0, 0.2);
+      0 24px 80px rgba(0, 0, 0, 0.5);
     z-index: 401;
     overflow: hidden;
-    /* Distinct from palette: broader, warmer border-radius */
   }
 
-  /* ── Header ──────────────────────────────────────────────────────────────── */
+  /* ── Header (query row + chips) ──────────────────────────────────────────── */
 
   .search-header {
-    padding: 12px 14px 8px;
-    border-bottom: 1px solid var(--tnd-line);
+    padding: 16px 22px 12px;
+    border-bottom: 1px solid var(--tnd-line-strong);
+    flex-shrink: 0;
+  }
+
+  /* ── Search input row ────────────────────────────────────────────────────── */
+
+  .search-input-row {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    border: 1px solid var(--tnd-line-strong);
+    padding: 9px 13px;
+    background: var(--tnd-panel);
+  }
+
+  .search-icon {
+    font-size: 16px;
+    color: var(--tnd-text-muted);
+    flex-shrink: 0;
+    line-height: 1;
+  }
+
+  .search-input {
+    flex: 1;
+    border: none;
+    outline: none;
+    background: transparent;
+    color: var(--tnd-text);
+    font-size: 16px;
+    font-family: var(--tnd-font-ui);
+    padding: 0;
+    min-width: 0;
+  }
+
+  .search-input::placeholder {
+    color: var(--tnd-text-faint);
+  }
+
+  /* Remove browser-default search cancel button */
+  .search-input::-webkit-search-cancel-button {
+    display: none;
+  }
+
+  .search-spinner {
+    font-size: 13px;
+    color: var(--tnd-text-faint);
+    animation: pulse 0.8s ease-in-out infinite;
+    flex-shrink: 0;
+  }
+
+  @keyframes pulse {
+    0%,
+    100% {
+      opacity: 0.4;
+    }
+    50% {
+      opacity: 1;
+    }
+  }
+
+  .search-esc-hint {
+    font-size: 11px;
+    color: var(--tnd-text-faint);
+    font-family: var(--tnd-font-mono);
+    padding: 2px 6px;
+    border: 1px solid var(--tnd-line);
     flex-shrink: 0;
   }
 
@@ -584,8 +651,14 @@
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 6px;
-    margin-bottom: 8px;
+    gap: 8px;
+    margin-top: 11px;
+  }
+
+  .chips-label {
+    font-size: 11px;
+    color: var(--tnd-text-faint);
+    font-family: var(--tnd-font-ui);
   }
 
   .chip-wrapper {
@@ -595,14 +668,14 @@
   .filter-chip {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
-    padding: 3px 9px 3px 8px;
+    gap: 5px;
+    padding: 3px 8px;
     border: 1px solid var(--tnd-line-strong);
-    border-radius: 20px;
-    background: var(--tnd-panel2);
-    color: var(--tnd-text-muted);
-    font-size: 12px;
-    font-family: inherit;
+    border-radius: var(--tnd-tag-radius);
+    background: transparent;
+    color: var(--tnd-text);
+    font-size: 11.5px;
+    font-family: var(--tnd-font-ui);
     cursor: pointer;
     transition:
       background 0.1s,
@@ -610,7 +683,6 @@
   }
 
   .filter-chip:hover {
-    background: var(--tnd-sel);
     border-color: var(--tnd-accent);
     color: var(--tnd-accent-text);
   }
@@ -622,45 +694,56 @@
     font-weight: 600;
   }
 
-  .chip-icon {
-    font-size: 11px;
-    opacity: 0.7;
+  .chip-key {
+    color: var(--tnd-accent-text);
+    font-weight: 700;
   }
 
   .chip-chevron {
     font-size: 9px;
     opacity: 0.6;
-    margin-left: 2px;
   }
 
   /* Active chip pill (dismissible) */
   .active-chip {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
-    padding: 2px 6px 2px 8px;
-    border-radius: 20px;
+    gap: 5px;
+    padding: 3px 8px;
+    border-radius: var(--tnd-tag-radius);
     background: var(--tnd-accent-soft);
+    color: var(--tnd-text);
+    font-size: 11.5px;
+    border: 1px solid var(--tnd-line-strong);
+  }
+
+  .active-chip-key {
     color: var(--tnd-accent-text);
-    font-size: 12px;
-    font-weight: 600;
-    border: 1px solid var(--tnd-accent);
+    font-weight: 700;
   }
 
   .active-chip-remove {
     background: none;
     border: none;
-    padding: 0 1px;
+    padding: 0;
     cursor: pointer;
     font-size: 13px;
     line-height: 1;
-    color: var(--tnd-accent-text);
-    opacity: 0.7;
+    color: var(--tnd-text-faint);
     font-family: inherit;
   }
 
   .active-chip-remove:hover {
-    opacity: 1;
+    color: var(--tnd-text);
+  }
+
+  /* + filter placeholder */
+  .add-filter-hint {
+    font-size: 11.5px;
+    color: var(--tnd-text-faint);
+    padding: 3px 8px;
+    border: 1px dashed var(--tnd-line);
+    font-family: var(--tnd-font-ui);
   }
 
   /* Dropdown panel */
@@ -673,7 +756,7 @@
     overflow-y: auto;
     background: var(--tnd-panel);
     border: 1px solid var(--tnd-line-strong);
-    border-radius: 7px;
+    border-radius: var(--tnd-radius);
     box-shadow: var(--tnd-shadow);
     z-index: 410;
     padding: 4px;
@@ -690,9 +773,9 @@
     background: none;
     color: var(--tnd-text-muted);
     font-size: 12.5px;
-    font-family: inherit;
+    font-family: var(--tnd-font-ui);
     cursor: pointer;
-    border-radius: 5px;
+    border-radius: calc(var(--tnd-radius) - 2px);
     text-align: left;
   }
 
@@ -731,79 +814,21 @@
     font-variant-numeric: tabular-nums;
   }
 
-  /* ── Search input ────────────────────────────────────────────────────────── */
-
-  .search-input-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-
-  .search-icon {
-    font-size: 16px;
-    color: var(--tnd-text-faint);
-    flex-shrink: 0;
-  }
-
-  .search-input {
-    flex: 1;
-    border: none;
-    outline: none;
-    background: transparent;
-    color: var(--tnd-text);
-    font-size: 15px;
-    font-family: inherit;
-    padding: 4px 0;
-    min-width: 0;
-  }
-
-  .search-input::placeholder {
-    color: var(--tnd-text-faint);
-  }
-
-  /* Remove browser-default search cancel button */
-  .search-input::-webkit-search-cancel-button {
-    display: none;
-  }
-
-  .search-spinner {
-    font-size: 13px;
-    color: var(--tnd-text-faint);
-    animation: pulse 0.8s ease-in-out infinite;
-    flex-shrink: 0;
-  }
-
-  @keyframes pulse {
-    0%,
-    100% {
-      opacity: 0.4;
-    }
-    50% {
-      opacity: 1;
-    }
-  }
-
-  .search-esc-hint {
-    font-size: 10.5px;
-    color: var(--tnd-text-faint);
-    font-family: ui-monospace, monospace;
-    flex-shrink: 0;
-  }
-
   /* ── Results ─────────────────────────────────────────────────────────────── */
 
   .search-results {
     flex: 1;
     overflow-y: auto;
     scrollbar-width: thin;
-    padding: 4px;
+    padding: 6px 0;
     min-height: 0;
   }
 
   .search-empty {
-    padding: 24px 18px;
+    padding: 28px 22px;
     color: var(--tnd-text-faint);
-    font-size: 13.5px;
+    font-size: 13px;
+    font-family: var(--tnd-font-ui);
     text-align: center;
   }
 
@@ -812,36 +837,40 @@
     flex-direction: column;
     gap: 3px;
     width: 100%;
-    padding: 8px 12px;
+    padding: 12px 22px;
     border: none;
-    background: none;
+    border-bottom: 1px solid var(--tnd-line);
+    background: transparent;
     color: var(--tnd-text);
-    font-family: inherit;
+    font-family: var(--tnd-font-ui);
     text-align: left;
     cursor: pointer;
-    border-radius: 6px;
     transition: background 0.07s;
   }
 
-  .result-item:hover,
-  .result-item--focused {
-    background: var(--tnd-panel2);
+  .result-item:last-child {
+    border-bottom: none;
+  }
+
+  .result-item:hover {
+    background: var(--tnd-accent-soft);
   }
 
   .result-item--focused {
-    background: var(--tnd-sel);
+    background: var(--tnd-accent-soft);
   }
 
   .result-main {
     display: flex;
     align-items: baseline;
-    gap: 8px;
+    justify-content: space-between;
+    gap: 12px;
   }
 
   .result-title {
     flex: 1;
-    font-size: 13.5px;
-    font-weight: 600;
+    font-size: 14px;
+    font-weight: 700;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -851,7 +880,8 @@
   .result-highlight {
     background: var(--tnd-accent-soft);
     color: var(--tnd-accent-text);
-    border-radius: 2px;
+    font-weight: 700;
+    padding: 0 1px;
     font-style: normal;
   }
 
@@ -862,25 +892,23 @@
     flex-shrink: 0;
   }
 
-  .result-meta {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    flex-wrap: wrap;
-  }
-
   .result-group {
-    font-size: 11.5px;
+    font-size: 10.5px;
     color: var(--tnd-text-faint);
     font-weight: 400;
+    margin: 3px 0 5px;
+  }
+
+  .result-tags {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
   }
 
   .result-tag {
     font-size: 11px;
-    color: var(--tnd-text-faint);
-    background: var(--tnd-panel2);
-    padding: 1px 5px;
-    border-radius: 3px;
+    color: var(--tnd-accent-text);
+    font-family: var(--tnd-font-ui);
   }
 
   /* ── Footer ──────────────────────────────────────────────────────────────── */
@@ -891,13 +919,14 @@
     align-items: center;
     justify-content: space-between;
     padding: 7px 14px;
-    border-top: 1px solid var(--tnd-line);
+    border-top: 1px solid var(--tnd-line-strong);
     background: var(--tnd-panel2);
   }
 
   .search-count {
-    font-size: 11.5px;
+    font-size: 11px;
     color: var(--tnd-text-faint);
+    font-family: var(--tnd-font-ui);
   }
 
   .save-btn {
@@ -906,9 +935,9 @@
     background: none;
     border: none;
     cursor: pointer;
-    font-family: inherit;
+    font-family: var(--tnd-font-ui);
     padding: 3px 8px;
-    border-radius: 4px;
+    border-radius: var(--tnd-radius);
     transition: background 0.1s;
   }
 
@@ -928,10 +957,10 @@
 
   .save-name-input {
     border: 1px solid var(--tnd-line-strong);
-    border-radius: 5px;
+    border-radius: var(--tnd-radius);
     padding: 3px 8px;
     font-size: 12px;
-    font-family: inherit;
+    font-family: var(--tnd-font-ui);
     background: var(--tnd-panel);
     color: var(--tnd-text);
     outline: none;
@@ -940,5 +969,27 @@
 
   .save-name-input:focus {
     border-color: var(--tnd-accent);
+  }
+
+  /* ── Per-theme overrides ─────────────────────────────────────────────────── */
+
+  /* Mono: mono font everywhere, no radius */
+  :global([data-tnd-theme="mono"]) .search-input,
+  :global([data-tnd-theme="mono"]) .search-esc-hint,
+  :global([data-tnd-theme="mono"]) .chips-label,
+  :global([data-tnd-theme="mono"]) .filter-chip,
+  :global([data-tnd-theme="mono"]) .active-chip,
+  :global([data-tnd-theme="mono"]) .result-item,
+  :global([data-tnd-theme="mono"]) .result-title,
+  :global([data-tnd-theme="mono"]) .result-tag,
+  :global([data-tnd-theme="mono"]) .search-count,
+  :global([data-tnd-theme="mono"]) .save-btn,
+  :global([data-tnd-theme="mono"]) .chip-option {
+    font-family: var(--tnd-font-mono);
+  }
+
+  :global([data-tnd-theme="mono"]) .chip-dropdown,
+  :global([data-tnd-theme="mono"]) .save-name-input {
+    border-radius: 0;
   }
 </style>

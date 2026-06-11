@@ -136,7 +136,7 @@
     <div class="palette-panel" role="dialog" aria-label="Command Palette" aria-modal="true">
       <!-- Search input -->
       <div class="palette-input-row">
-        <span class="palette-icon" aria-hidden="true">›_</span>
+        <span class="palette-icon" aria-hidden="true">⌕</span>
         <input
           bind:this={inputEl}
           bind:value={query}
@@ -156,12 +156,15 @@
             tabindex="-1">×</button
           >
         {/if}
+        <span class="palette-esc-hint">esc</span>
       </div>
 
       <!-- Results -->
       <ul class="palette-list" role="listbox" aria-label="Commands">
         {#if displayedCommands.length === 0}
           <li class="palette-empty">No commands match "{query}"</li>
+        {:else}
+          <li class="palette-section-label" aria-hidden="true">COMMANDS</li>
         {/if}
         {#each displayedCommands as cmd, i (cmd.id)}
           {@const active = i === selectedIndex}
@@ -179,7 +182,6 @@
             onmouseenter={() => (selectedIndex = i)}
           >
             <span class="palette-item-left">
-              <span class="palette-item-category">{cmd.category}</span>
               <span class="palette-item-name">
                 {#each getHighlightSegments(cmd) as seg (seg.text + seg.highlight)}
                   {#if seg.highlight}
@@ -194,6 +196,7 @@
               {/if}
             </span>
             <span class="palette-item-right">
+              <span class="palette-item-cat-badge">{cmd.category}</span>
               {#if !contextOk && cmd.when}
                 <span class="palette-item-hint">{cmd.when.replace("zone:", "")}</span>
               {/if}
@@ -216,6 +219,8 @@
 {/if}
 
 <style>
+  /* ── Backdrop ────────────────────────────────────────────────────────────── */
+
   .palette-backdrop {
     position: fixed;
     inset: 0;
@@ -227,34 +232,41 @@
     z-index: 9000;
   }
 
+  /* ── Panel ───────────────────────────────────────────────────────────────── */
+
   .palette-panel {
     width: min(620px, 92vw);
-    background: var(--tnd-panel, #fbfaf6);
-    border: 1px solid var(--tnd-line-strong, rgba(40, 38, 28, 0.3));
-    border-radius: 10px;
-    box-shadow: var(--tnd-shadow, 0 8px 32px rgba(0, 0, 0, 0.22));
+    background: var(--tnd-panel);
+    border: 1px solid var(--tnd-line-strong);
+    border-radius: var(--tnd-radius);
+    box-shadow:
+      var(--tnd-shadow),
+      0 20px 50px rgba(0, 0, 0, 0.5);
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    font-family: ui-sans-serif, system-ui, sans-serif;
+    font-family: var(--tnd-font-ui);
     font-size: 13px;
-    color: var(--tnd-text, #1f1e1a);
+    color: var(--tnd-text);
   }
+
+  /* ── Input row ───────────────────────────────────────────────────────────── */
 
   .palette-input-row {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 12px 14px;
-    border-bottom: 1px solid var(--tnd-line, rgba(40, 38, 28, 0.16));
+    gap: 10px;
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--tnd-line-strong);
   }
 
   .palette-icon {
-    font-family: ui-monospace, monospace;
-    font-size: 14px;
-    color: var(--tnd-accent, #3e7a52);
+    font-family: var(--tnd-font-mono);
+    font-size: 17px;
+    color: var(--tnd-text-muted);
     flex-shrink: 0;
     user-select: none;
+    line-height: 1;
   }
 
   .palette-input {
@@ -262,51 +274,72 @@
     border: none;
     outline: none;
     background: transparent;
-    font: inherit;
-    font-size: 14px;
-    color: var(--tnd-text, #1f1e1a);
+    font-family: var(--tnd-font-ui);
+    font-size: 16px;
+    color: var(--tnd-text);
   }
 
   .palette-input::placeholder {
-    color: var(--tnd-text-faint, #a8a393);
+    color: var(--tnd-text-faint);
   }
 
   .palette-clear {
     border: none;
     background: none;
     cursor: pointer;
-    color: var(--tnd-text-muted, #7c7868);
+    color: var(--tnd-text-muted);
     font-size: 16px;
     padding: 0 2px;
     line-height: 1;
+    font-family: var(--tnd-font-mono);
   }
+
+  .palette-esc-hint {
+    font-family: var(--tnd-font-mono);
+    font-size: 12px;
+    color: var(--tnd-text-faint);
+    flex-shrink: 0;
+  }
+
+  /* ── Command list ────────────────────────────────────────────────────────── */
 
   .palette-list {
     list-style: none;
-    padding: 4px 0;
+    padding: 6px 0 10px;
     margin: 0;
     max-height: 380px;
     overflow-y: auto;
+    scrollbar-width: thin;
+  }
+
+  /* Section heading within the list */
+  .palette-section-label {
+    padding: 8px 16px 4px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.07em;
+    color: var(--tnd-text-faint);
+    font-family: var(--tnd-font-ui);
   }
 
   .palette-empty {
     padding: 20px 16px;
     text-align: center;
-    color: var(--tnd-text-muted, #7c7868);
+    color: var(--tnd-text-muted);
     font-size: 13px;
   }
 
   .palette-item {
     display: flex;
-    align-items: baseline;
+    align-items: center;
     justify-content: space-between;
-    padding: 7px 14px;
+    padding: 11px 16px;
     cursor: default;
-    gap: 8px;
+    gap: 11px;
   }
 
   .palette-item.selected {
-    background: var(--tnd-accent-soft, rgba(62, 122, 82, 0.12));
+    background: var(--tnd-accent-soft);
   }
 
   .palette-item.inactive {
@@ -315,36 +348,33 @@
 
   .palette-item-left {
     display: flex;
-    align-items: baseline;
-    gap: 6px;
+    align-items: center;
+    gap: 11px;
     flex: 1;
     min-width: 0;
   }
 
-  .palette-item-category {
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--tnd-text-faint, #a8a393);
+  .palette-item-name {
+    font-size: 13.5px;
+    font-weight: 500;
+    color: var(--tnd-text);
     flex-shrink: 0;
-    width: 72px;
   }
 
-  .palette-item-name {
-    font-size: 13px;
-    color: var(--tnd-text, #1f1e1a);
-    flex-shrink: 0;
+  /* Selected row: name goes bold */
+  .palette-item.selected .palette-item-name {
+    font-weight: 700;
   }
 
   .palette-item-name mark {
     background: transparent;
-    color: var(--tnd-accent, #3e7a52);
-    font-weight: 600;
+    color: var(--tnd-accent-text);
+    font-weight: 700;
   }
 
   .palette-item-desc {
     font-size: 11px;
-    color: var(--tnd-text-muted, #7c7868);
+    color: var(--tnd-text-muted);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -359,26 +389,47 @@
 
   .palette-item-hint {
     font-size: 10px;
-    color: var(--tnd-text-faint, #a8a393);
+    color: var(--tnd-text-faint);
     font-style: italic;
   }
 
-  .palette-item-kbd {
-    font-family: ui-monospace, monospace;
-    font-size: 11px;
-    color: var(--tnd-text-muted, #7c7868);
-    background: var(--tnd-panel2, #eeebe2);
-    border: 1px solid var(--tnd-line-strong, rgba(40, 38, 28, 0.3));
-    border-radius: 4px;
-    padding: 1px 5px;
+  .palette-item-cat-badge {
+    font-size: 10.5px;
+    color: var(--tnd-text-faint);
+    font-family: var(--tnd-font-ui);
   }
+
+  .palette-item-kbd {
+    font-family: var(--tnd-font-mono);
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--tnd-accent-text);
+    padding: 0;
+    background: none;
+    border: none;
+  }
+
+  /* ── Footer ──────────────────────────────────────────────────────────────── */
 
   .palette-footer {
     display: flex;
     gap: 16px;
     padding: 7px 14px;
-    border-top: 1px solid var(--tnd-line, rgba(40, 38, 28, 0.16));
+    border-top: 1px solid var(--tnd-line-strong);
     font-size: 11px;
-    color: var(--tnd-text-faint, #a8a393);
+    color: var(--tnd-text-faint);
+    font-family: var(--tnd-font-ui);
+  }
+
+  /* ── Per-theme: Mono uses mono font throughout ───────────────────────────── */
+
+  :global([data-tnd-theme="mono"]) .palette-panel,
+  :global([data-tnd-theme="mono"]) .palette-input,
+  :global([data-tnd-theme="mono"]) .palette-item-name,
+  :global([data-tnd-theme="mono"]) .palette-item-desc,
+  :global([data-tnd-theme="mono"]) .palette-section-label,
+  :global([data-tnd-theme="mono"]) .palette-footer,
+  :global([data-tnd-theme="mono"]) .palette-item-cat-badge {
+    font-family: var(--tnd-font-mono);
   }
 </style>
