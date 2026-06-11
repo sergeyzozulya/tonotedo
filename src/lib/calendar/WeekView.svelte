@@ -69,8 +69,9 @@
     });
   }
 
+  // HOUR_HEIGHT: design uses HOUR_PX * 0.62 for week view = 58 * 0.62 ≈ 36px.
   const HOURS = Array.from({ length: 24 }, (_, i) => i);
-  const HOUR_HEIGHT = 52;
+  const HOUR_HEIGHT = 36; // px per hour (design: HOUR_PX=58 × 0.62)
 
   function timedTop(item: CalItem): number {
     const v = item.value;
@@ -133,24 +134,31 @@
 </script>
 
 <div class="week-view">
-  <!-- Day header row -->
+  <!-- Day header: 46px gutter + 7 col grid
+       Design: day abbrev 10px fw700 letterSpacing 0.06em faint uppercase,
+       day number 17px fw700 text (today: accentText), today col accentSoft bg. -->
   <div class="week-header">
-    <div class="week-time-gutter"></div>
+    <div class="week-gutter"></div>
     {#each weekDates as d, i (i)}
-      <div class="week-day-header" class:week-day-header--today={isToday(d)}>
+      <div
+        class="week-day-header"
+        class:week-day-header--today={isToday(d)}
+        class:week-day-header--last={i === 6}
+      >
         <span class="week-day-name">{WEEKDAY_SHORT[i]}</span>
         <span class="week-day-num" class:week-day-num--today={isToday(d)}>{d.day}</span>
       </div>
     {/each}
   </div>
 
-  <!-- All-day row -->
+  <!-- All-day row: "all-day" label gutter (9px faint), per-day event bars -->
   <div class="week-allday-row">
-    <div class="week-time-gutter week-time-gutter--label">All day</div>
+    <div class="week-gutter week-gutter--label">all-day</div>
     {#each weekDates as d, i (i)}
       {@const dayItems = allDayItemsForDate(d)}
       <div
         class="week-allday-cell"
+        class:week-allday-cell--last={i === 6}
         class:week-drop-target={dropTargetDay === i}
         role="gridcell"
         tabindex="0"
@@ -160,10 +168,10 @@
       >
         {#each dayItems as item (item.entryId + (item.occurrenceKey ?? ""))}
           <button
-            class="cal-chip"
-            class:cal-chip--selected={selectedItemId === item.entryId}
-            class:cal-chip--past={isPast(d)}
-            style={item.groupColor ? `--chip-color: ${item.groupColor}` : ""}
+            class="cal-bar"
+            class:cal-bar--selected={selectedItemId === item.entryId}
+            class:cal-bar--past={isPast(d)}
+            style={item.groupColor ? `--bar-color: ${item.groupColor}` : ""}
             draggable="true"
             ondragstart={(e) => onDragStart(e, item)}
             onclick={() => onSelectItem(item)}
@@ -175,10 +183,10 @@
     {/each}
   </div>
 
-  <!-- Timed scroll area -->
+  <!-- Timed scroll area: gutter col + 7 day cols with hour-slot lines -->
   <div class="week-time-body">
-    <!-- Hour labels -->
-    <div class="week-time-gutter-col">
+    <!-- Hour gutter: 46px, right-aligned labels 9.5px faint -->
+    <div class="week-gutter-col">
       {#each HOURS as h (h)}
         <div class="week-hour-label" style="height: {HOUR_HEIGHT}px;">{formatHour(h)}</div>
       {/each}
@@ -189,6 +197,8 @@
       {@const dayTimedItems = timedItemsForDate(d)}
       <div
         class="week-day-col"
+        class:week-day-col--today={isToday(d)}
+        class:week-day-col--last={i === 6}
         class:week-drop-target={dropTargetDay === i}
         role="gridcell"
         tabindex="0"
@@ -201,19 +211,18 @@
         {/each}
         {#each dayTimedItems as item (item.entryId + (item.occurrenceKey ?? ""))}
           <button
-            class="cal-chip cal-chip--timed"
-            class:cal-chip--selected={selectedItemId === item.entryId}
-            class:cal-chip--past={isPast(d)}
-            style="
-              top: {timedTop(item)}px;
-              height: {timedHeight(item)}px;
-              {item.groupColor ? `--chip-color: ${item.groupColor}` : ''}
-            "
+            class="cal-block"
+            class:cal-block--selected={selectedItemId === item.entryId}
+            class:cal-block--past={isPast(d)}
+            style="top: {timedTop(item) + 1}px; height: {Math.max(
+              timedHeight(item) - 2,
+              14,
+            )}px;{item.groupColor ? ` --bar-color: ${item.groupColor}` : ''}"
             draggable="true"
             ondragstart={(e) => onDragStart(e, item)}
             onclick={() => onSelectItem(item)}
           >
-            {item.title}
+            <span class="cal-block-title">{item.title}</span>
           </button>
         {/each}
       </div>
@@ -229,117 +238,135 @@
     overflow: hidden;
   }
 
+  /* ── Day header: 46px gutter + 7 cols ────────────────────────────────────── */
   .week-header {
-    display: flex;
+    display: grid;
+    grid-template-columns: 46px repeat(7, 1fr);
     border-bottom: 1px solid var(--tnd-line-strong);
     background: var(--tnd-panel);
     flex-shrink: 0;
   }
 
-  .week-time-gutter {
-    width: 52px;
+  /* Shared 46px gutter (time column) */
+  .week-gutter {
+    width: 46px;
     flex-shrink: 0;
+    border-right: 1px solid var(--tnd-line);
   }
 
-  .week-time-gutter--label {
+  .week-gutter--label {
     display: flex;
     align-items: center;
-    justify-content: center;
-    font-size: 10px;
+    justify-content: flex-end;
+    padding-right: 4px;
+    font-size: 9px;
     color: var(--tnd-text-faint);
+    font-family: var(--tnd-font-ui);
   }
 
   .week-day-header {
-    flex: 1;
+    padding: 6px 8px;
+    border-right: 1px solid var(--tnd-line);
     display: flex;
     flex-direction: column;
-    align-items: center;
-    padding: 6px 0 4px;
-    border-left: 1px solid var(--tnd-line);
     gap: 2px;
-    min-width: 0;
   }
 
   .week-day-header--today {
     background: var(--tnd-accent-soft);
   }
 
-  .week-day-name {
-    font-size: 10px;
-    font-weight: 600;
-    color: var(--tnd-text-faint);
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
+  .week-day-header--last {
+    border-right: none;
   }
 
+  /* Design: day abbrev 10px fw700 letterSpacing 0.06em uppercase faint */
+  .week-day-name {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--tnd-text-faint);
+    font-family: var(--tnd-font-ui);
+  }
+
+  /* Design: day number 17px fw700; today: accentText color */
   .week-day-num {
-    font-size: 16px;
-    font-weight: 400;
+    font-size: 17px;
+    font-weight: 700;
     color: var(--tnd-text-muted);
     line-height: 1;
+    font-family: var(--tnd-font-ui);
   }
 
   .week-day-num--today {
-    background: var(--tnd-accent);
-    color: #fff;
-    border-radius: 50%;
-    width: 24px;
-    height: 24px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 13px;
-    font-weight: 600;
+    color: var(--tnd-accent-text);
   }
 
+  /* ── All-day row ─────────────────────────────────────────────────────────── */
   .week-allday-row {
-    display: flex;
+    display: grid;
+    grid-template-columns: 46px repeat(7, 1fr);
     border-bottom: 1px solid var(--tnd-line);
-    min-height: 28px;
+    min-height: 22px;
     flex-shrink: 0;
     background: var(--tnd-panel);
   }
 
   .week-allday-cell {
-    flex: 1;
-    border-left: 1px solid var(--tnd-line);
-    padding: 3px 3px 2px;
+    border-right: 1px solid var(--tnd-line);
+    padding: 2px 3px;
     display: flex;
     flex-wrap: wrap;
     gap: 2px;
     align-items: flex-start;
-    min-height: 28px;
+    min-height: 22px;
   }
 
+  .week-allday-cell--last {
+    border-right: none;
+  }
+
+  /* ── Timed body: grid for scrollable area ────────────────────────────────── */
   .week-time-body {
     flex: 1;
-    display: flex;
+    display: grid;
+    grid-template-columns: 46px repeat(7, 1fr);
     overflow-y: auto;
     min-height: 0;
   }
 
-  .week-time-gutter-col {
-    width: 52px;
-    flex-shrink: 0;
+  .week-gutter-col {
     display: flex;
     flex-direction: column;
+    border-right: 1px solid var(--tnd-line);
   }
 
+  /* Design: hour labels 9.5px faint, right-aligned, padding 2px 4px */
   .week-hour-label {
     display: flex;
     align-items: flex-start;
     justify-content: flex-end;
-    padding: 2px 5px 0 0;
+    padding: 2px 4px 0;
     font-size: 9.5px;
     color: var(--tnd-text-faint);
     box-sizing: border-box;
+    font-family: var(--tnd-font-ui);
   }
 
   .week-day-col {
-    flex: 1;
     position: relative;
-    border-left: 1px solid var(--tnd-line);
+    border-right: 1px solid var(--tnd-line);
     min-width: 0;
+  }
+
+  .week-day-col--today {
+    background: var(--tnd-accent-soft);
+    opacity: 0.96;
+  }
+
+  .week-day-col--last {
+    border-right: none;
   }
 
   .week-hour-slot {
@@ -351,49 +378,83 @@
     background: var(--tnd-accent-soft) !important;
   }
 
-  /* Chips */
-  .cal-chip {
-    display: inline-flex;
+  /* ── All-day event bar (same pattern as month bars) ──────────────────────── */
+  .cal-bar {
+    display: flex;
     align-items: center;
-    padding: 1px 5px;
-    border-radius: 3px;
-    font-size: 11px;
-    font-weight: 500;
-    font-family: inherit;
-    cursor: pointer;
-    border: none;
-    text-align: left;
-    white-space: nowrap;
+    height: 17px;
+    padding: 0 4px;
+    border-left: 2px solid var(--bar-color, var(--tnd-accent-text));
+    background: var(--tnd-panel2);
+    font-family: var(--tnd-font-ui);
+    font-size: 10.5px;
+    font-weight: 700;
+    color: var(--tnd-text);
     overflow: hidden;
+    white-space: nowrap;
     text-overflow: ellipsis;
     width: 100%;
-    max-width: 100%;
-    background: var(--chip-color, var(--tnd-accent-soft));
-    color: var(--tnd-text);
-    line-height: 1.4;
+    text-align: left;
+    border-top: none;
+    border-right: none;
+    border-bottom: none;
+    cursor: pointer;
+    border-radius: 0;
+    transition: opacity 0.1s;
   }
 
-  .cal-chip:hover {
-    opacity: 0.82;
+  .cal-bar:hover {
+    opacity: 0.8;
   }
 
-  .cal-chip--selected {
-    outline: 2px solid var(--tnd-accent);
-    outline-offset: 1px;
+  .cal-bar--selected {
+    outline: 1px solid var(--tnd-accent);
   }
 
-  .cal-chip--past {
-    opacity: 0.48;
+  .cal-bar--past {
+    opacity: 0.45;
   }
 
-  .cal-chip--timed {
+  /* ── Timed event block ───────────────────────────────────────────────────────
+     Design: position absolute, left 2px right 2px, panel2 bg, borderLeft 2px
+     group-color, padding 1px 4px, title 9.5px fw700 text. */
+  .cal-block {
     position: absolute;
     left: 2px;
     right: 2px;
-    width: auto;
-    max-width: none;
-    border-radius: 4px;
-    padding: 2px 5px;
-    font-size: 10.5px;
+    background: var(--tnd-panel2);
+    border-left: 2px solid var(--bar-color, var(--tnd-accent-text));
+    border-top: none;
+    border-right: none;
+    border-bottom: none;
+    padding: 1px 4px;
+    overflow: hidden;
+    font-family: var(--tnd-font-ui);
+    cursor: pointer;
+    text-align: left;
+    border-radius: 0;
+    transition: opacity 0.1s;
+  }
+
+  .cal-block:hover {
+    opacity: 0.82;
+  }
+
+  .cal-block--selected {
+    outline: 1px solid var(--tnd-accent);
+  }
+
+  .cal-block--past {
+    opacity: 0.45;
+  }
+
+  .cal-block-title {
+    display: block;
+    font-size: 9.5px;
+    font-weight: 700;
+    color: var(--tnd-text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 </style>

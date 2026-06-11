@@ -345,32 +345,45 @@
         return "Agenda";
     }
   });
+
+  // Segmented view switcher options (matches design: Month/Week/Day + Agenda).
+  const VIEW_OPTIONS: { key: CalendarViewMode; label: string }[] = [
+    { key: "month", label: "Month" },
+    { key: "week", label: "Week" },
+    { key: "day", label: "Day" },
+    { key: "agenda", label: "Agenda" },
+  ];
 </script>
 
 <svelte:window onkeydown={onKeyDown} />
 
 <div class="calendar-view">
-  <!-- Toolbar -->
+  <!-- Toolbar — mirrors CalToolbar from screens-cal.jsx exactly -->
   <div class="cal-toolbar">
     <div class="cal-toolbar-left">
-      <button class="cal-btn cal-btn--today" onclick={goToday}>Today</button>
-      <button class="cal-btn cal-btn--nav" aria-label="Previous" onclick={goPrev}>‹</button>
-      <button class="cal-btn cal-btn--nav" aria-label="Next" onclick={goNext}>›</button>
-      <span class="cal-title">{titleLabel()}</span>
+      <!-- Segmented control: view switcher -->
+      <span class="cal-seg">
+        {#each VIEW_OPTIONS as opt (opt.key)}
+          <button
+            class="cal-seg-btn"
+            class:cal-seg-btn--active={viewMode === opt.key}
+            onclick={() => {
+              viewMode = opt.key;
+            }}>{opt.label}</button
+          >
+        {/each}
+      </span>
+
+      <!-- Prev / title / Next nav -->
+      <span class="cal-nav">
+        <button class="cal-nav-arrow" aria-label="Previous" onclick={goPrev}>‹</button>
+        <span class="cal-nav-title">{titleLabel()}</span>
+        <button class="cal-nav-arrow" aria-label="Next" onclick={goNext}>›</button>
+      </span>
     </div>
 
     <div class="cal-toolbar-right">
-      {#each ["day", "week", "month", "agenda"] as CalendarViewMode[] as mode (mode)}
-        <button
-          class="cal-btn cal-btn--view"
-          class:cal-btn--view-active={viewMode === mode}
-          onclick={() => {
-            viewMode = mode;
-          }}
-        >
-          {mode.charAt(0).toUpperCase() + mode.slice(1)}
-        </button>
-      {/each}
+      <button class="cal-today-btn" onclick={goToday}>Today</button>
     </div>
   </div>
 
@@ -418,91 +431,143 @@
     overflow: hidden;
   }
 
-  /* Toolbar */
+  /* ── Toolbar ─────────────────────────────────────────────────────────────────
+     Design: height 44px, padding 0 18px, space-between, border-bottom line.
+     Left: segmented-control + nav group.  Right: Today button. */
   .cal-toolbar {
+    height: 44px;
+    flex-shrink: 0;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 6px 12px;
-    border-bottom: 1px solid var(--tnd-line-strong);
+    padding: 0 18px;
+    border-bottom: 1px solid var(--tnd-line);
     background: var(--tnd-panel);
-    flex-shrink: 0;
-    gap: 8px;
-    flex-wrap: wrap;
+    gap: 14px;
   }
 
   .cal-toolbar-left {
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: 14px;
   }
 
   .cal-toolbar-right {
     display: flex;
     align-items: center;
-    gap: 2px;
   }
 
-  .cal-btn {
-    background: transparent;
+  /* ── Segmented control (view switcher) ───────────────────────────────────────
+     Design: outline box using lineStrong, segments separated by lineStrong.
+     Active segment: accent bg + white text.  Inactive: transparent + muted. */
+  .cal-seg {
+    display: inline-flex;
     border: 1px solid var(--tnd-line-strong);
-    color: var(--tnd-text-muted);
+  }
+
+  .cal-seg-btn {
+    padding: 4px 12px;
+    font-family: var(--tnd-font-ui);
     font-size: 12px;
-    padding: 3px 9px;
-    border-radius: 4px;
+    font-weight: 700;
+    color: var(--tnd-text-muted);
+    background: transparent;
+    border: none;
+    border-right: 1px solid var(--tnd-line-strong);
     cursor: pointer;
+    letter-spacing: var(--tnd-label-spacing);
+    text-transform: var(--tnd-label-transform);
+    line-height: 1;
+    transition:
+      background 0.08s,
+      color 0.08s;
+    white-space: nowrap;
+  }
+
+  .cal-seg-btn:last-child {
+    border-right: none;
+  }
+
+  .cal-seg-btn--active {
+    background: var(--tnd-accent);
+    color: #fff;
+  }
+
+  .cal-seg-btn:not(.cal-seg-btn--active):hover {
+    background: var(--tnd-panel2);
+  }
+
+  /* ── Nav group (‹ title ›) ───────────────────────────────────────────────────
+     Design: arrows in muted, title in text at 13px fw700 letterSpacing 0.02em. */
+  .cal-nav {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-family: var(--tnd-font-ui);
+    color: var(--tnd-text-muted);
+  }
+
+  .cal-nav-arrow {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 18px;
+    line-height: 1;
+    color: var(--tnd-text-muted);
+    padding: 0 2px;
     font-family: inherit;
+  }
+
+  .cal-nav-arrow:hover {
+    color: var(--tnd-text);
+  }
+
+  .cal-nav-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--tnd-text);
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+  }
+
+  /* ── Today button ────────────────────────────────────────────────────────────
+     Design: padding 3px 10px, border lineStrong, text fw700. */
+  .cal-today-btn {
+    padding: 3px 10px;
+    border: 1px solid var(--tnd-line-strong);
+    background: transparent;
+    color: var(--tnd-text);
+    font-size: 12px;
+    font-weight: 700;
+    font-family: var(--tnd-font-ui);
+    letter-spacing: var(--tnd-label-spacing);
+    text-transform: var(--tnd-label-transform);
+    cursor: pointer;
+    border-radius: var(--tnd-radius);
     white-space: nowrap;
     transition: background 0.08s;
   }
 
-  .cal-btn:hover {
+  .cal-today-btn:hover {
     background: var(--tnd-panel2);
   }
 
-  .cal-btn--today {
-    font-weight: 600;
-    margin-right: 4px;
-  }
-
-  .cal-btn--nav {
-    font-size: 16px;
-    padding: 1px 8px;
-    line-height: 1.2;
-  }
-
-  .cal-btn--view {
-    border-color: transparent;
-  }
-
-  .cal-btn--view-active {
-    background: var(--tnd-accent-soft);
-    color: var(--tnd-accent-text);
-    border-color: var(--tnd-accent);
-    font-weight: 600;
-  }
-
-  .cal-title {
-    font-size: 14px;
-    font-weight: 600;
-    color: var(--tnd-text);
-    margin-left: 8px;
-    white-space: nowrap;
-  }
-
+  /* ── Status bar ──────────────────────────────────────────────────────────── */
   .cal-status {
-    padding: 4px 12px;
-    font-size: 11.5px;
+    padding: 3px 18px;
+    font-size: 11px;
     color: var(--tnd-text-faint);
     background: var(--tnd-panel);
     border-bottom: 1px solid var(--tnd-line);
     flex-shrink: 0;
+    font-family: var(--tnd-font-ui);
   }
 
   .cal-status--error {
     color: var(--tnd-chip-red-fg);
   }
 
+  /* ── Body ────────────────────────────────────────────────────────────────── */
   .cal-body {
     flex: 1;
     min-height: 0;
