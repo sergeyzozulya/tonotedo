@@ -2,44 +2,42 @@
   // ActionSheet — long-press entry row context menu (spec 0013 §Touch translation:
   // context menus / right-click → long-press).
   //
-  // Callers: EntryList row onlongpress → open this sheet with the entry's id/title.
-  // Actions: Open (navigate to editor), Trash (placeholder callback — real trash
-  //          IPC is issue #32; emits console.log per spec scope).
-
-  interface Action {
-    id: string;
-    label: string;
-    destructive?: boolean;
-  }
+  // Actions: Open, Rename, Archive/Unarchive, Duplicate, Move to…, Move to Trash.
 
   interface Props {
     open?: boolean;
     entryTitle?: string;
     entryId?: string | null;
+    /** True when the entry is currently archived. */
+    entryArchived?: boolean;
     onClose?: () => void;
     /** Called when user taps "Open". */
     onOpen?: (entryId: string) => void;
     /** Called when user taps "Rename" (slug rename, spec 0002 §Identity). */
     onRename?: (entryId: string) => void;
-    /** Called when user taps "Trash". Placeholder — real IPC is #32. */
+    /** Called when user taps "Trash". */
     onTrash?: (entryId: string) => void;
+    /** Called when user taps "Archive" or "Unarchive". */
+    onArchive?: (entryId: string, archive: boolean) => void;
+    /** Called when user taps "Duplicate". */
+    onDuplicate?: (entryId: string) => void;
+    /** Called when user taps "Move to…". */
+    onMoveTo?: (entryId: string) => void;
   }
 
   let {
     open = false,
     entryTitle = "Entry",
     entryId = null,
+    entryArchived = false,
     onClose,
     onOpen,
     onRename,
     onTrash,
+    onArchive,
+    onDuplicate,
+    onMoveTo,
   }: Props = $props();
-
-  const actions: Action[] = [
-    { id: "open", label: "Open" },
-    { id: "rename", label: "Rename" },
-    { id: "trash", label: "Move to Trash", destructive: true },
-  ];
 
   function run(actionId: string): void {
     if (!entryId) return;
@@ -47,9 +45,13 @@
       onOpen?.(entryId);
     } else if (actionId === "rename") {
       onRename?.(entryId);
+    } else if (actionId === "archive") {
+      onArchive?.(entryId, !entryArchived);
+    } else if (actionId === "duplicate") {
+      onDuplicate?.(entryId);
+    } else if (actionId === "moveto") {
+      onMoveTo?.(entryId);
     } else if (actionId === "trash") {
-      // Placeholder — real trash IPC is issue #32.
-      console.log("[ActionSheet] trash entry:", entryId);
       onTrash?.(entryId);
     }
     onClose?.();
@@ -80,15 +82,16 @@
       </div>
 
       <!-- Action rows -->
-      {#each actions as action (action.id)}
-        <button
-          class="action-sheet-row"
-          class:action-sheet-row--destructive={action.destructive}
-          onclick={() => run(action.id)}
-        >
-          {action.label}
-        </button>
-      {/each}
+      <button class="action-sheet-row" onclick={() => run("open")}>Open</button>
+      <button class="action-sheet-row" onclick={() => run("rename")}>Rename</button>
+      <button class="action-sheet-row" onclick={() => run("archive")}>
+        {entryArchived ? "Unarchive" : "Archive"}
+      </button>
+      <button class="action-sheet-row" onclick={() => run("duplicate")}>Duplicate</button>
+      <button class="action-sheet-row" onclick={() => run("moveto")}>Move to…</button>
+      <button class="action-sheet-row action-sheet-row--destructive" onclick={() => run("trash")}>
+        Move to Trash
+      </button>
 
       <!-- Cancel (visually separated) -->
       <div class="action-sheet-cancel-gap" aria-hidden="true"></div>

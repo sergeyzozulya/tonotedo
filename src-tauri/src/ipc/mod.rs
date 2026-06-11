@@ -477,6 +477,9 @@ pub struct EntrySummaryDto {
     pub people: Vec<String>,
     #[serde(rename = "modifiedAt")]
     pub modified_at: String,
+    /// `archived` flag from the frontmatter (spec 0002).  Absent = not archived.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub archived: bool,
 }
 
 /// `Page<T>` DTO (maps to `Page<T>` in types.ts).
@@ -593,6 +596,7 @@ pub fn search(
             tags,
             people,
             modified_at: sr.updated.clone().unwrap_or_default(),
+            archived: false, // search result rows don't carry archived; filter excluded in frontend
         });
     }
 
@@ -798,6 +802,7 @@ pub fn entries_in_group(
                 tags,
                 people,
                 modified_at,
+                archived: row.archived,
             }
         })
         .collect();

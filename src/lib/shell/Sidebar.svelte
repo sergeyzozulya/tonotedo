@@ -21,7 +21,9 @@
   import type { SavedSearch } from "../search/saved-searches-store.svelte.js";
   import type { PersonMeta } from "../ipc/types.js";
   import PeopleSection from "../people/PeopleSection.svelte";
+  import GroupPicker from "./GroupPicker.svelte";
   import { ipc } from "../ipc/index.js";
+  import type { GroupMeta } from "../ipc/types.js";
 
   interface Props {
     /** Root-level tree nodes (already sorted + aggregated). */
@@ -58,6 +60,8 @@
     pluginsOpen?: boolean;
     /** Called after a group is created/renamed/moved so parent can refresh. */
     onGroupsChanged?: () => void;
+    /** Flat group list from ipc.list_groups() (for the group picker). */
+    allGroups?: GroupMeta[];
   }
 
   let {
@@ -78,6 +82,7 @@
     onPluginsOpen,
     pluginsOpen = false,
     onGroupsChanged,
+    allGroups = [],
   }: Props = $props();
 
   // ── Per-node collapsed state ──────────────────────────────────────────────────
@@ -206,6 +211,83 @@
       onGroupsChanged?.();
     } else {
       console.error("[sidebar] trash_group failed:", res.error.message);
+    }
+  }
+
+  // ── Move group picker ─────────────────────────────────────────────────────
+
+  let moveGroupPickerPath = $state<string | null>(null);
+  let moveGroupError = $state<string | null>(null);
+
+  function startMoveGroup(path: string): void {
+    moveGroupPickerPath = path;
+    groupMenuPath = null;
+  }
+
+  function cancelMoveGroup(): void {
+    moveGroupPickerPath = null;
+    moveGroupError = null;
+  }
+
+  async function commitMoveGroup(srcPath: string, dstParent: string): Promise<void> {
+    moveGroupPickerPath = null;
+    const res = await ipc.move_group(srcPath, dstParent);
+    if (res.ok) {
+      moveGroupError = null;
+      onGroupsChanged?.();
+    } else {
+      moveGroupError = res.error.message;
+      // Surface inline error briefly (2s).
+      setTimeout(() => {
+        moveGroupError = null;
+      }, 3000);
+    }
+  }
+
+  // ── Drag-and-drop (group → group) ────────────────────────────────────────
+
+  /** Path of the group currently being dragged. */
+  let dragSrcPath = $state<string | null>(null);
+  /** Path of the group currently being hovered as a drop target. */
+  let dropTargetPath = $state<string | null>(null);
+
+  function onDragStart(e: DragEvent, path: string): void {
+    dragSrcPath = path;
+    e.dataTransfer?.setData("text/plain", path);
+    if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+  }
+
+  function onDragEnd(): void {
+    dragSrcPath = null;
+    dropTargetPath = null;
+  }
+
+  function onDragOver(e: DragEvent, path: string): void {
+    e.preventDefault();
+    // Don't allow dropping onto self or a descendant.
+    if (dragSrcPath && (path === dragSrcPath || path.startsWith(dragSrcPath + "/"))) {
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "none";
+      return;
+    }
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+    dropTargetPath = path;
+  }
+
+  function onDragLeave(): void {
+    dropTargetPath = null;
+  }
+
+  async function onDrop(e: DragEvent, dstParent: string): Promise<void> {
+    e.preventDefault();
+    dropTargetPath = null;
+    const src = dragSrcPath ?? e.dataTransfer?.getData("text/plain");
+    dragSrcPath = null;
+    if (!src || src === dstParent || dstParent.startsWith(src + "/")) return;
+    const res = await ipc.move_group(src, dstParent);
+    if (res.ok) {
+      onGroupsChanged?.();
+    } else {
+      console.error("[sidebar] move_group (DnD) failed:", res.error.message);
     }
   }
 </script>
@@ -359,6 +441,23 @@
   </footer>
 </nav>
 
+<!-- Move group error toast -->
+{#if moveGroupError}
+  <div class="sidebar-toast sidebar-toast--error" role="alert">{moveGroupError}</div>
+{/if}
+
+<!-- Group picker for "Move to…" -->
+{#if moveGroupPickerPath !== null}
+  <GroupPicker
+    groups={allGroups.filter(
+      (g) => g.path !== moveGroupPickerPath && !g.path.startsWith(moveGroupPickerPath + "/"),
+    )}
+    title={`Move "${moveGroupPickerPath.split("/").at(-1)}" to…`}
+    onPick={(dstParent) => void commitMoveGroup(moveGroupPickerPath!, dstParent)}
+    onClose={cancelMoveGroup}
+  />
+{/if}
+
 {#snippet treeNode(node: GroupNode, depth: number)}
   {@const selected = node.path === selectedPath}
   {@const hasChildren = node.children.length > 0}
@@ -387,13 +486,20 @@
     <div
       class="sidebar-row"
       class:sidebar-row--selected={selected}
+      class:sidebar-row--drop-target={dropTargetPath === node.path && dragSrcPath !== node.path}
       role="treeitem"
       aria-selected={selected}
       aria-expanded={hasChildren ? open : undefined}
       tabindex="0"
+      draggable="true"
       style="--depth: {depth};"
       onclick={() => selectGroup(node.path, hasChildren)}
       onkeydown={(e) => (e.key === "Enter" || e.key === " ") && selectGroup(node.path, hasChildren)}
+      ondragstart={(e) => onDragStart(e, node.path)}
+      ondragend={onDragEnd}
+      ondragover={(e) => onDragOver(e, node.path)}
+      ondragleave={onDragLeave}
+      ondrop={(e) => onDrop(e, node.path)}
     >
       {#if selected}
         <span class="sidebar-row-accent-bar" aria-hidden="true"></span>
@@ -434,6 +540,7 @@
           >New subgroup</button
         >
         <button class="group-menu-item" onclick={() => startRename(node.path)}>Rename</button>
+        <button class="group-menu-item" onclick={() => startMoveGroup(node.path)}>Move to…</button>
         <button
           class="group-menu-item group-menu-item--danger"
           onclick={() => trashGroup(node.path)}>Move to Trash</button
@@ -797,6 +904,37 @@
     border-radius: 50%;
     background: var(--tnd-accent);
     flex-shrink: 0;
+  }
+
+  /* ── Drag-and-drop drop-target highlight ──────────────────────────────────── */
+
+  .sidebar-row--drop-target {
+    background: var(--tnd-accent-soft);
+    outline: 2px solid var(--tnd-accent);
+    outline-offset: -2px;
+  }
+
+  /* ── Move error toast ────────────────────────────────────────────────────── */
+
+  :global(.sidebar-toast) {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--tnd-panel);
+    border: 1px solid var(--tnd-line-strong);
+    border-radius: var(--tnd-radius, 6px);
+    padding: 8px 16px;
+    font-size: 13px;
+    color: var(--tnd-text);
+    box-shadow: var(--tnd-shadow, 0 4px 12px rgba(0, 0, 0, 0.15));
+    z-index: 9999;
+    pointer-events: none;
+  }
+
+  :global(.sidebar-toast--error) {
+    color: var(--tnd-chip-red-fg, #c0392b);
+    border-color: var(--tnd-chip-red-fg, #c0392b);
   }
 
   /* ── Responsive: sidebar slides over on narrow viewports ──────────────────── */

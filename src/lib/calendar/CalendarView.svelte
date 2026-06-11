@@ -6,6 +6,7 @@
   //   group        — optional group filter (from sidebar selection)
   //   onSelectEntry — callback when user clicks an item (opens docked side panel)
 
+  import { untrack } from "svelte";
   import { ipc } from "../ipc/index.js";
   import type { CalendarWindowItem } from "../ipc/types.js";
   import type { CalItem, CalDate, CalendarViewMode } from "./types.js";
@@ -32,13 +33,29 @@
     onSelectEntry?: (entryId: string) => void;
     /** Called when a drag-to-reschedule writes a ChangeSpec back to the document. */
     onApplyEdit?: (entryId: string, change: ChangeSpec) => void;
+    /**
+     * Externally requested view mode (view.day / view.week / view.month / view.agenda
+     * commands from the palette). When provided and different from the current mode,
+     * the view switches immediately.
+     */
+    requestedView?: CalendarViewMode | null;
   }
 
-  let { group = null, onSelectEntry, onApplyEdit }: Props = $props();
+  let { group = null, onSelectEntry, onApplyEdit, requestedView = null }: Props = $props();
 
   // ── View state ────────────────────────────────────────────────────────────────
 
   let viewMode = $state<CalendarViewMode>("month");
+
+  // Apply externally requested view when it changes.
+  // Use untrack to read viewMode without subscribing to it — the effect
+  // must only re-run when requestedView changes, not on every internal
+  // viewMode mutation (which would override the user's own navigation).
+  $effect(() => {
+    if (requestedView && requestedView !== untrack(() => viewMode)) {
+      viewMode = requestedView;
+    }
+  });
   // "anchor" date — the current day/week/month being viewed.
   let anchorDate = $state<Date>(new Date());
 

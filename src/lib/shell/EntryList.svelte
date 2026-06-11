@@ -2,7 +2,8 @@
   // Entry list pane (spec 0002, issue #18).
   //
   // Shows entries for the selected group: title, preview snippet, tag chips,
-  // updated-at time.  Archived entries are excluded per spec 0002.
+  // updated-at time.  Archived entries are excluded per spec 0002 by default;
+  // a "Show archived" toggle reveals them (visually muted).
   //
   // Design reference: TNDEntryList in docs/design.html:
   //   - Panel width 336px, header 48px with group name + sort label.
@@ -28,10 +29,27 @@
     onEntrySelect: (id: string) => void;
     /** Called when the user long-presses an entry row (touch). */
     onLongPress?: (id: string, title: string) => void;
+    /** Called when user right-clicks / wants the context menu for an entry. */
+    onContextMenu?: (id: string, title: string, archived: boolean) => void;
   }
 
-  let { groupName, entries, selectedId, loading, error, onEntrySelect, onLongPress }: Props =
-    $props();
+  let {
+    groupName,
+    entries,
+    selectedId,
+    loading,
+    error,
+    onEntrySelect,
+    onLongPress,
+    onContextMenu,
+  }: Props = $props();
+
+  let showArchived = $state(false);
+
+  // Filter archived entries unless toggled.
+  const visibleEntries = $derived(showArchived ? entries : entries.filter((e) => !e.archived));
+
+  const archivedCount = $derived(entries.filter((e) => e.archived).length);
 
   // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -69,6 +87,13 @@
     el.addEventListener("pointercancel", up);
   }
 
+  function handleContextMenu(e: MouseEvent, entry: EntrySummary): void {
+    if (onContextMenu) {
+      e.preventDefault();
+      onContextMenu(entry.id, entry.title || entry.id, entry.archived ?? false);
+    }
+  }
+
   /** Trim to max 120 chars, at a word boundary. */
   function snippet(title: string, text: string | undefined): string {
     if (!text) return "";
@@ -94,9 +119,20 @@
   <header class="entry-list-header">
     <div class="entry-list-header-left">
       <span class="entry-list-title">{groupName || "All entries"}</span>
-      <span class="entry-list-count">{entries.length}</span>
+      <span class="entry-list-count">{visibleEntries.length}</span>
     </div>
     <div class="entry-list-header-right">
+      {#if archivedCount > 0}
+        <button
+          class="entry-list-archived-toggle"
+          class:entry-list-archived-toggle--active={showArchived}
+          onclick={() => (showArchived = !showArchived)}
+          title={showArchived ? "Hide archived" : `Show ${archivedCount} archived`}
+          aria-pressed={showArchived}
+        >
+          {showArchived ? "Hide archived" : `+${archivedCount} archived`}
+        </button>
+      {/if}
       <span class="entry-list-sort-label">Updated</span>
       <span class="entry-list-sort-icon" aria-hidden="true">▾</span>
     </div>
@@ -108,28 +144,39 @@
       <div class="entry-list-state">Loading…</div>
     {:else if error}
       <div class="entry-list-state entry-list-state--error">{error}</div>
-    {:else if entries.length === 0}
-      <div class="entry-list-state">No entries</div>
+    {:else if visibleEntries.length === 0}
+      <div class="entry-list-state">
+        {entries.length === 0 ? "No entries" : "No entries (all archived)"}
+      </div>
     {:else}
       <ul class="entry-list-items" role="listbox" aria-label="Entries in {groupName}">
-        {#each entries as entry (entry.id)}
+        {#each visibleEntries as entry (entry.id)}
           {@const selected = entry.id === selectedId}
           <li
             class="entry-item"
             class:entry-item--selected={selected}
+            class:entry-item--archived={entry.archived}
             role="option"
             aria-selected={selected}
             tabindex="0"
             onclick={() => onEntrySelect(entry.id)}
             onkeydown={(e) => (e.key === "Enter" || e.key === " ") && onEntrySelect(entry.id)}
             onpointerdown={(e) => handlePointerDown(e, entry)}
+            oncontextmenu={(e) => handleContextMenu(e, entry)}
           >
             {#if selected}
               <span class="entry-item-accent-bar" aria-hidden="true"></span>
             {/if}
             <!-- Title + date -->
             <div class="entry-item-top">
-              <span class="entry-item-title">{entry.title || entry.id}</span>
+              <span class="entry-item-title">
+                {#if entry.archived}
+                  <span class="entry-item-archived-badge" title="Archived" aria-label="Archived"
+                    >⊘</span
+                  >
+                {/if}
+                {entry.title || entry.id}
+              </span>
               <span class="entry-item-date">{formatDate(entry.modifiedAt)}</span>
             </div>
             <!-- Snippet -->
@@ -222,6 +269,30 @@
     font-size: 10px;
   }
 
+  /* Archived toggle button */
+  .entry-list-archived-toggle {
+    font-size: 11px;
+    font-family: inherit;
+    color: var(--tnd-text-faint);
+    background: none;
+    border: 1px solid var(--tnd-line-strong);
+    border-radius: 3px;
+    padding: 1px 5px;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+
+  .entry-list-archived-toggle:hover {
+    background: var(--tnd-panel2);
+    color: var(--tnd-text-muted);
+  }
+
+  .entry-list-archived-toggle--active {
+    background: var(--tnd-accent-soft);
+    color: var(--tnd-accent-text);
+    border-color: var(--tnd-accent);
+  }
+
   /* Body scroll region */
   .entry-list-body {
     flex: 1;
@@ -281,6 +352,11 @@
     background: var(--tnd-accent-soft);
   }
 
+  /* Archived entry: muted appearance */
+  .entry-item--archived {
+    opacity: 0.55;
+  }
+
   /* Active left bar */
   .entry-item-accent-bar {
     position: absolute;
@@ -312,10 +388,19 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    display: flex;
+    align-items: center;
+    gap: 4px;
   }
 
   .entry-item--selected .entry-item-title {
     color: var(--tnd-text);
+  }
+
+  .entry-item-archived-badge {
+    font-size: 11px;
+    color: var(--tnd-text-faint);
+    flex-shrink: 0;
   }
 
   .entry-item-date {
